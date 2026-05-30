@@ -1,72 +1,76 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 300" width="800" height="300">
   <defs>
-    <linearGradient id="bg4" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#0d1117"/>
-      <stop offset="100%" stop-color="#161b22"/>
+    <linearGradient id="wbg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0a0c0f"/>
+      <stop offset="100%" stop-color="#0f1318"/>
     </linearGradient>
-    <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+    <linearGradient id="goldGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#b8860b"/>
+      <stop offset="50%" stop-color="#ffd700"/>
+      <stop offset="100%" stop-color="#b8860b"/>
+    </linearGradient>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
       <path d="M0,0 L0,6 L8,3 z" fill="#56f5a3"/>
     </marker>
   </defs>
 
-  <rect width="800" height="300" fill="url(#bg4)"/>
+  <rect width="800" height="300" fill="url(#wbg)"/>
 
   <!-- Title -->
-  <text x="400" y="34" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="17" font-weight="700" fill="#e6edf3" text-anchor="middle">How XiT Works</text>
+  <text x="400" y="32" font-family="'PingFang SC', 'Microsoft YaHei', Georgia, serif" font-size="16" font-weight="700" fill="url(#goldGrad)" text-anchor="middle">内功运转流程</text>
 
-  <!-- Step 1: Command -->
-  <rect x="28" y="66" width="130" height="100" rx="10" fill="#161b22" stroke="#30363d" stroke-width="1.5"/>
-  <text x="93" y="95" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#56f5a3" text-anchor="middle">① Command</text>
-  <text x="93" y="115" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#8b949e" text-anchor="middle">go test -v</text>
-  <text x="93" y="131" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#8b949e" text-anchor="middle">git diff</text>
-  <text x="93" y="147" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#8b949e" text-anchor="middle">grep -r</text>
+  <!-- Step 1: AI 发起命令 -->
+  <rect x="20" y="60" width="132" height="100" rx="10" fill="#0f1117" stroke="#1e2530" stroke-width="1.5"/>
+  <text x="86" y="88" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#56f5a3" text-anchor="middle">① AI 发起命令</text>
+  <text x="86" y="108" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#6b7280" text-anchor="middle">go test</text>
+  <text x="86" y="124" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#6b7280" text-anchor="middle">git diff</text>
+  <text x="86" y="140" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#6b7280" text-anchor="middle">grep -r</text>
 
-  <!-- Arrow 1 -->
-  <line x1="162" y1="116" x2="196" y2="116" stroke="#56f5a3" stroke-width="2" marker-end="url(#arrow)"/>
+  <!-- Arrow -->
+  <line x1="156" y1="110" x2="190" y2="110" stroke="#56f5a3" stroke-width="2" marker-end="url(#arr)"/>
 
-  <!-- Step 2: xit auto -->
-  <rect x="200" y="66" width="130" height="100" rx="10" fill="#132a1e" stroke="#56f5a3" stroke-width="1.5"/>
-  <text x="265" y="95" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#56f5a3" text-anchor="middle">② xit auto</text>
-  <text x="265" y="115" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#e6edf3" text-anchor="middle">run command</text>
-  <text x="265" y="131" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#e6edf3" text-anchor="middle">capture output</text>
-  <text x="265" y="147" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#e6edf3" text-anchor="middle">apply filter</text>
+  <!-- Step 2: xit auto 运功 -->
+  <rect x="194" y="60" width="132" height="100" rx="10" fill="#0a120d" stroke="#1e4a30" stroke-width="1.5"/>
+  <text x="260" y="88" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#56f5a3" text-anchor="middle">② 运转吸T神功</text>
+  <text x="260" y="108" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#e2e8f0" text-anchor="middle">xit auto</text>
+  <text x="260" y="124" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="10" fill="#6b7280" text-anchor="middle">捕获输出</text>
+  <text x="260" y="140" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="10" fill="#6b7280" text-anchor="middle">运行过滤器</text>
 
-  <!-- Arrow 2 splits into two -->
   <!-- Down arrow to raw_log -->
-  <line x1="265" y1="170" x2="265" y2="206" stroke="#56f5a3" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="260" y1="164" x2="260" y2="198" stroke="#56f5a3" stroke-width="2" marker-end="url(#arr)"/>
 
   <!-- Right arrow to summary -->
-  <line x1="334" y1="116" x2="370" y2="116" stroke="#56f5a3" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="330" y1="110" x2="364" y2="110" stroke="#56f5a3" stroke-width="2" marker-end="url(#arr)"/>
 
-  <!-- Step 3a: raw_log -->
-  <rect x="200" y="210" width="130" height="70" rx="10" fill="#161b22" stroke="#30363d" stroke-width="1.5"/>
-  <text x="265" y="234" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#79c0ff" text-anchor="middle">③ raw_log</text>
-  <text x="265" y="252" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#8b949e" text-anchor="middle">full output saved</text>
-  <text x="265" y="268" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#8b949e" text-anchor="middle">local · audit ready</text>
+  <!-- Step 3a: raw_log 留证 -->
+  <rect x="194" y="202" width="132" height="72" rx="10" fill="#0f1117" stroke="#1e2530" stroke-width="1.5"/>
+  <text x="260" y="226" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#4299e1" text-anchor="middle">③ raw_log 留证</text>
+  <text x="260" y="246" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#6b7280" text-anchor="middle">完整输出本地</text>
+  <text x="260" y="262" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="10" fill="#6b7280" text-anchor="middle">随时可查</text>
 
-  <!-- Step 3b: Summary -->
-  <rect x="374" y="66" width="138" height="100" rx="10" fill="#161b22" stroke="#30363d" stroke-width="1.5"/>
-  <text x="443" y="95" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#56f5a3" text-anchor="middle">③ Summary</text>
-  <text x="443" y="115" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#8b949e" text-anchor="middle">exit_code: 0</text>
-  <text x="443" y="131" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#8b949e" text-anchor="middle">reduction: 99%</text>
-  <text x="443" y="147" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#8b949e" text-anchor="middle">key facts only</text>
+  <!-- Step 3b: 摘要输出 -->
+  <rect x="368" y="60" width="134" height="100" rx="10" fill="#0f1117" stroke="#1e2530" stroke-width="1.5"/>
+  <text x="435" y="88" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#56f5a3" text-anchor="middle">③ 摘要输出</text>
+  <text x="435" y="108" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#6b7280" text-anchor="middle">exit_code: 0</text>
+  <text x="435" y="124" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#6b7280" text-anchor="middle">reduction: 99%</text>
+  <text x="435" y="140" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="10" fill="#6b7280" text-anchor="middle">关键要点</text>
 
-  <!-- Arrow 3 -->
-  <line x1="516" y1="116" x2="552" y2="116" stroke="#56f5a3" stroke-width="2" marker-end="url(#arrow)"/>
+  <!-- Arrow -->
+  <line x1="506" y1="110" x2="540" y2="110" stroke="#56f5a3" stroke-width="2" marker-end="url(#arr)"/>
 
-  <!-- Step 4: AI CLI -->
-  <rect x="556" y="66" width="138" height="100" rx="10" fill="#1a1a2e" stroke="#7c3aed" stroke-width="1.5"/>
-  <text x="625" y="95" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#a78bfa" text-anchor="middle">④ AI CLI</text>
-  <text x="625" y="115" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#8b949e" text-anchor="middle">compact context</text>
-  <text x="625" y="131" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#8b949e" text-anchor="middle">less tokens used</text>
-  <text x="625" y="147" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#8b949e" text-anchor="middle">Kimi / Claude / …</text>
+  <!-- Step 4: 进入 AI 上下文 -->
+  <rect x="544" y="60" width="134" height="100" rx="10" fill="#12101a" stroke="#3a2d6b" stroke-width="1.5"/>
+  <text x="611" y="85" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#9f7aea" text-anchor="middle">④ 进入 AI 上下文</text>
+  <text x="611" y="105" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="10" fill="#6b7280" text-anchor="middle">精简上下文</text>
+  <text x="611" y="121" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="10" fill="#6b7280" text-anchor="middle">Token 压力降低</text>
+  <text x="611" y="137" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#6b7280" text-anchor="middle">Kimi / Claude / …</text>
 
-  <!-- Privacy note -->
-  <rect x="28" y="210" width="164" height="70" rx="10" fill="#161b22" stroke="#30363d" stroke-width="1.5"/>
-  <text x="110" y="234" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" fill="#56f5a3" text-anchor="middle" font-weight="600">Privacy Guarantee</text>
-  <text x="110" y="252" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#8b949e" text-anchor="middle">✓ no telemetry</text>
-  <text x="110" y="268" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#8b949e" text-anchor="middle">✓ 100% local</text>
+  <!-- Privacy badge -->
+  <rect x="20" y="202" width="164" height="72" rx="10" fill="#0f1117" stroke="#1e2530" stroke-width="1.5"/>
+  <text x="102" y="226" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#56f5a3" text-anchor="middle" font-weight="600">安全隐私</text>
+  <text x="102" y="246" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#6b7280" text-anchor="middle">✓ 无 telemetry</text>
+  <text x="102" y="262" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#6b7280" text-anchor="middle">✓ 全程本地</text>
 
   <!-- Bottom note -->
-  <text x="400" y="286" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11.5" fill="#6e7681" text-anchor="middle">All compression happens locally · nothing leaves your machine · raw_log is your audit trail</text>
+  <text x="400" y="288" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11.5" fill="#374151" text-anchor="middle">全程本地运功 · 无任何数据离开本机 · raw_log 是你的审计留证</text>
 </svg>

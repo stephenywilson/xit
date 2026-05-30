@@ -1,307 +1,199 @@
 <div align="center">
 
+<img src="docs/assets/xit-hero.svg" alt="XiT / 吸T神功" width="800"/>
+
 # XiT / 吸T神功
 
-**Stop dumping 30k+ bytes of logs into your AI agent.**
+**专治 AI CLI 被终端日志撑爆上下文**
 
-吸走废 Token，留下有效上下文。
+`go test -v ./...` 输出 35,629 字节 → 吸T后 318 字节 · 压缩率 **99%** · 省 ~9k Token
 
-[![npm](https://img.shields.io/npm/v/xitsg?label=npm%3A%20xitsg&color=56f5a3)](https://www.npmjs.com/package/xitsg)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)](https://www.npmjs.com/package/xitsg)
-[![No telemetry](https://img.shields.io/badge/telemetry-none-56f5a3)](#safety--privacy)
-
-</div>
-
-```bash
-npm i -g xitsg
-xit auto go test -v ./...
-```
-
-> The npm package is `xitsg` because `xit` is taken on npm. The installed command is `xit`.
-
-<div align="center">
-
-![XiT Hero](docs/assets/xit-hero.svg)
+[![npm](https://img.shields.io/npm/v/xitsg?color=56f5a3&label=xitsg&style=flat-square)](https://www.npmjs.com/package/xitsg)
+[![Go](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat-square&logo=go)](https://go.dev)
+[![License](https://img.shields.io/badge/license-MIT-b8860b?style=flat-square)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-6b7280?style=flat-square)](#支持平台)
 
 </div>
 
 ---
 
-## Real dogfood metrics
-
-| Metric | Result |
-|--------|-------:|
-| Lifetime output reduction | **91.8%** |
-| Current-session reduction | **98.7%** |
-| Estimated tokens saved (lifetime) | **~359k Token** |
-| Latest `go test -v ./...` turn saving | **~9k Token** |
-| Commands compressed (lifetime) | **120** |
-
-> Metrics from local XiT dogfood runs on this repository.  
-> Token savings are estimated: `saved_tokens = saved_bytes / 4`. Not a tokenizer guarantee.
-
-<div align="center">
-
-![XiT Metrics](docs/assets/metrics.svg)
-
-</div>
-
----
-
-## Why this matters
-
-AI coding agents have a limited context window. When your agent runs `go test`, `git diff`, `grep -r`, or `docker logs`, the raw output floods the context with noise — repeated log lines, progress bars, irrelevant pass/fail details.
-
-**The AI reads thousands of tokens of junk. You pay for it. Reviews get slower.**
-
-But you can't just throw the output away — raw evidence still matters for debugging.
-
-XiT compresses command output **locally** into a compact summary and saves the full raw output to `.xit/runs/` for audit. The AI gets signal. You keep the evidence.
-
----
-
-## Before / After
-
-<div align="center">
-
-![Before / After](docs/assets/before-after.svg)
-
-</div>
-
-**Before:**
-
-```bash
-go test -v ./...
-# → 35,629 bytes of verbose output enters your AI context
-# → ~8,907 tokens consumed (saved_bytes / 4 est.)
-```
-
-**After:**
-
-```bash
-xit auto go test -v ./...
-```
-
-```
-XiT Auto Summary
-command:    go test -v ./...
-exit_code:  0
-reduction:  99%
-saved:      ~8,907 tokens (saved_bytes / 4 est.)
-raw_log:    .xit/runs/20260530-go-test.raw.log  ← local only
-
-Key facts:
-- All tests passed · no panic
-- 19 packages · 0 failures
-- Full raw output preserved locally
-```
-
----
-
-## How it works
-
-<div align="center">
-
-![Workflow](docs/assets/workflow.svg)
-
-</div>
-
-1. **Run** — `xit auto <command>` executes your command unchanged
-2. **Capture** — records stdout, stderr, exit code, duration
-3. **Save** — full raw output written to `.xit/runs/<timestamp>.raw.log`
-4. **Filter** — selects the right compressor for the command type
-5. **Output** — prints compact summary, preserves exit code
-6. **Track** — appends to `.xit/history.jsonl`, run `xit gain` for stats
-
----
-
-## Benchmark and hit rate
-
-```bash
-xit gain                       # Lifetime compression stats
-xit kimi session               # Current session breakdown
-xit kimi hitrate --last 10m    # Routing accuracy
-xit bench compression          # Filter quality benchmark
-```
-
-Sample output from this repository:
-
-```
-Lifetime reduction:  91.8%
-Session reduction:   98.7%
-Commands:            120
-Saved tokens:        ~359k  (saved_bytes / 4 est.)
-Latest turn:         ~9k tokens saved (go test -v ./...)
-```
-
-> Results vary by command type and workflow. Local dogfood sample only.
-
----
-
-## Current AI CLI support
-
-| AI CLI | Status | Notes |
-|--------|--------|-------|
-| Kimi CLI | **Functional prototype** | rules, hooks, turn lifecycle, optional toolbar |
-| Claude Code | In progress | hook experiments and validation ongoing |
-| Codex | Planned | future adapter |
-| Cursor | Planned | future adapter |
-
-XiT is currently most useful with **Kimi CLI**. Claude Code, Codex, and Cursor adapters are being developed.
-
----
-
-## Install
+## 一行安装
 
 ```bash
 npm i -g xitsg
 ```
 
-```bash
-xit --version
-# xit version 0.2.40
-```
-
-Platforms: macOS (arm64 + x64) · Linux (x64 + arm64) · Windows (x64)
-
-Pre-compiled Go binaries are bundled — no compilation needed at install time.
+安装后命令名为 `xit`。无需配置，开箱即用。
 
 ---
 
-## Quick start
+## 实战战绩
 
-```bash
-xit auto go test -v ./...    # Compress go test output
-xit auto git diff            # Compress git diff
-xit auto grep -r "TODO" .    # Compress grep output
-xit auto npm test            # Compress npm test
-xit auto docker logs <name>  # Compress docker logs
+> 本地 dogfood 数据 · Token 为估算值（saved\_bytes / 4，非精确 tokenizer）
 
-xit gain                     # View lifetime savings
-xit doctor                   # Check environment
-```
+<img src="docs/assets/metrics.svg" alt="实战战绩" width="800"/>
 
----
-
-## Command coverage
-
-| Command type | Compression strategy |
-|---|---|
-| `go test` | exit code, pass/fail stats, failure highlights |
-| `git diff` | changed files, risky paths, compact hunk summary |
-| `git log` | one line per commit, total count |
-| `git status` | branch, staged/unstaged counts, key files |
-| `grep` / `rg` | grouped by file, capped examples |
-| `npm test` / `pytest` / `cargo test` | pass/fail summary, top failures |
-| `tsc` / `eslint` | errors grouped by file |
-| `docker logs` | dedup repeated lines, surface errors |
-| `find` / `ls` | directory aggregation, skips noisy folders |
+| 指标 | 数据 |
+|------|------|
+| 历史压缩率 | **91.8%**（120 条命令） |
+| 当前会话压缩率 | **98.7%**（6 条命令） |
+| 历史估算省 Token | **~359k**（saved\_bytes / 4） |
+| 单次最高节省 | **~9k Token**（`go test -v ./...`） |
+| 命中率 | **100%**（每条命令均生成摘要） |
 
 ---
 
-## Kimi CLI integration
+## 它解决什么问题
 
-<div align="center">
+Kimi、Claude Code、Codex 等 AI CLI 会把你每次运行的终端输出原封不动塞进上下文。
 
-![Kimi Toolbar](docs/assets/kimi-toolbar.svg)
+`go test -v ./...` 一跑，9000 个 Token 没了。
+`docker logs` 一扔，上下文直接爆掉。
 
-</div>
+**吸T神功的解法：**
 
-### Step 1 — Install XiT rules
+```
+AI 说 xit auto go test -v ./...
+         ↓
+XiT 捕获完整输出 → 过滤噪音 → 输出摘要（318 字节）
+         ↓
+原始日志本地留存 → .xit/runs/xxx.raw.log
+```
 
-Teaches Kimi to proactively run `xit auto` for high-output commands:
+AI 读摘要，你留证据。Token 压力归零。
+
+---
+
+## 吸T前后对比
+
+<img src="docs/assets/before-after.svg" alt="吸T前后对比" width="800"/>
+
+---
+
+## 江湖适配图谱
+
+<img src="docs/assets/workflow.svg" alt="内功运转流程" width="800"/>
+
+| AI CLI | 状态 | 接入方式 |
+|--------|------|----------|
+| **Kimi CLI** | ✅ 已打通 | rules 模式 + hook observe + toolbar patch |
+| **Claude Code** | 🔄 适配中 | `xit auto <cmd>` 直接调用 |
+| **DeepSeek CLI** | 🎯 下一目标 | 调研中 |
+| **Codex CLI** | 📋 规划中 | — |
+| **Cursor** | 📋 规划中 | — |
+
+---
+
+## 常用招式
 
 ```bash
-xit init kimi --method official_hook --scope user --yes
-xit kimi rules install --scope user --yes
+# 运功：让 AI 通过 xit auto 发起任何命令
+xit auto go test -v ./...
+xit auto git diff HEAD~1
+xit auto grep -r "TODO" ./src
+xit auto docker logs mycontainer --tail 200
+
+# 查阅：查看历史战绩
+xit history
+
+# 留证：查看某次原始输出
+xit log show <run-id>
+
+# 清场：清理旧日志
+xit log clean --older-than 7d
 ```
 
-Restart Kimi. It will now prefer `xit auto go test -v ./...` over raw `go test -v ./...`.
+| 招式 | 命令 | 效果 |
+|------|------|------|
+| 运功 | `xit auto <任意命令>` | 捕获 + 压缩 + 摘要 |
+| 查阅 | `xit history` | 查历史战绩与压缩率 |
+| 留证 | `xit log show <id>` | 查完整原始输出 |
+| 清场 | `xit log clean` | 清理旧 raw\_log |
 
-### Step 2 — Verify
+---
+
+## Kimi 实战案例
+
+<img src="docs/assets/kimi-toolbar.svg" alt="Kimi 实战状态栏" width="800"/>
+
+**rules 模式（推荐）：** 把以下规则加入 Kimi 的 SKILL.md / rules 文件：
+
+```
+当你需要运行终端命令时，使用 xit auto <命令> 代替直接运行命令。
+例：xit auto go test -v ./...（而非 go test -v ./...）
+```
+
+**状态栏 patch（可选）：**
 
 ```bash
-xit kimi rules status --scope user
-xit doctor kimi --deep
-xit kimi benchmark
-```
-
-### Step 3 — Optional toolbar
-
-Shows XiT status in Kimi's bottom bar:
-
-```
-吸T神功 · 准备就绪
-吸T神功 · 正在吸T中
-本次吸T 1次 · 省 ~9k Token
-```
-
-```bash
+# 安装
 xit kimi status-patch install --yes --accept-risk
+
+# 回滚
+xit kimi status-patch uninstall --yes
 ```
 
-> ⚠️ The toolbar patch is **opt-in** and experimental. It modifies your local Kimi Python package.
-> Roll back at any time: `xit kimi status-patch uninstall --yes`
-
-Full Kimi docs → [docs/kimi.md](docs/kimi.md)
+> 此功能修改本地 Kimi package，可随时回滚，不影响 XiT 主功能。详见 [docs/kimi.md](docs/kimi.md)。
 
 ---
 
-## Safety & privacy
+## 下一站：DeepSeek 系 AI CLI
 
-- **No telemetry** — nothing is sent anywhere
-- **No cloud upload** — all processing is local
-- **raw logs stay local** — `.xit/runs/<timestamp>.raw.log`
-- **history stays local** — `.xit/history.jsonl`
-- **status patch is opt-in** — requires `--yes --accept-risk`, rollback supported
-- **fail-open** — if XiT errors, original command output is preserved
-- **`saved_tokens = saved_bytes / 4`** — local estimate, not a tokenizer guarantee
+DeepSeek CLI 正在调研接入方案。目标：通过 `xit auto` 无缝接入，同样实现 90%+ 压缩率。
 
-→ [docs/privacy.md](docs/privacy.md)
+进展会在 [Releases](https://github.com/stephenywilson/xit/releases) 同步更新。
 
 ---
 
-## npm package
+## 安全与隐私
 
-```
-Package:   xitsg
-Version:   0.2.40
-Install:   npm i -g xitsg
-Command:   xit
-```
+- **零 telemetry**：不收集任何使用数据
+- **全程本地**：所有输出处理在本机完成，不经过任何外部服务器
+- **raw\_log 留证**：完整原始输出保存在 `.xit/runs/`，随时可查
 
-The name `xitsg` is used because `xit` is already taken on npm. The installed CLI command is still `xit`.
+详见 [docs/privacy.md](docs/privacy.md)。
 
 ---
 
-## Build from source
+## 路线图
+
+- [x] `xit auto` 核心压缩引擎
+- [x] raw\_log 本地留存
+- [x] Kimi CLI 适配（rules + hook + toolbar）
+- [x] npm 全平台分发（macOS / Linux / Windows）
+- [ ] DeepSeek CLI 适配
+- [ ] Claude Code 深度集成
+- [ ] 自定义过滤器 DSL
+- [ ] 压缩规则插件系统
+
+---
+
+## npm 包说明
+
+包名 `xitsg`，CLI 命令为 `xit`。
 
 ```bash
-git clone https://github.com/stephenywilson/xit
-cd xit
-go build -o xit ./cmd/xit/main.go
-mkdir -p ~/.local/bin && cp xit ~/.local/bin/xit
-xit --version
+npm i -g xitsg    # 安装
+xit --version     # 验证
+xit auto --help   # 查看 auto 子命令帮助
 ```
 
-Requirements: Go 1.21+
+**支持平台：**
+
+| 平台 | 架构 | 支持 |
+|------|------|------|
+| macOS | Apple Silicon (arm64) | ✅ |
+| macOS | Intel (x64) | ✅ |
+| Linux | x64 | ✅ |
+| Linux | arm64 | ✅ |
+| Windows | x64 | ✅ |
+
+源码：[github.com/stephenywilson/xit](https://github.com/stephenywilson/xit)
 
 ---
 
-## Roadmap
+<div align="center">
 
-- [x] `xit auto` compression — go test, git diff, grep, npm test, docker logs
-- [x] raw\_log local evidence trail
-- [x] Kimi CLI — rules mode, hook observe, turn lifecycle, optional toolbar
-- [x] Multi-platform npm binary (v0.2.40)
-- [ ] Claude Code adapter hardening
-- [ ] Codex adapter
-- [ ] Cursor adapter
-- [ ] Optional real tokenizer support
+*全程本地运功 · 无任何数据离开本机 · raw\_log 是你的审计留证*
 
----
-
-## License
-
-MIT — see [LICENSE](LICENSE)
+</div>

@@ -1,87 +1,112 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 440" width="800" height="440">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 460" width="800" height="460">
   <defs>
     <linearGradient id="hbg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#0d1117"/>
-      <stop offset="100%" stop-color="#161b22"/>
+      <stop offset="0%" stop-color="#0a0c0f"/>
+      <stop offset="100%" stop-color="#0f1318"/>
+    </linearGradient>
+    <linearGradient id="cardBg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#12171e"/>
+      <stop offset="100%" stop-color="#0d1117"/>
+    </linearGradient>
+    <linearGradient id="goldGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#b8860b"/>
+      <stop offset="50%" stop-color="#ffd700"/>
+      <stop offset="100%" stop-color="#b8860b"/>
     </linearGradient>
     <filter id="glow">
-      <feDropShadow dx="0" dy="0" stdDeviation="8" flood-color="#56f5a3" flood-opacity="0.2"/>
+      <feDropShadow dx="0" dy="0" stdDeviation="6" flood-color="#56f5a3" flood-opacity="0.3"/>
+    </filter>
+    <filter id="goldGlow">
+      <feDropShadow dx="0" dy="0" stdDeviation="4" flood-color="#ffd700" flood-opacity="0.4"/>
     </filter>
   </defs>
 
-  <rect width="800" height="440" fill="url(#hbg)"/>
+  <!-- Background -->
+  <rect width="800" height="460" fill="url(#hbg)"/>
+
+  <!-- Decorative side lines -->
+  <line x1="28" y1="20" x2="28" y2="440" stroke="#2a1a00" stroke-width="1"/>
+  <line x1="772" y1="20" x2="772" y2="440" stroke="#2a1a00" stroke-width="1"/>
+  <line x1="28" y1="20" x2="772" y2="20" stroke="#2a1a00" stroke-width="1"/>
+  <line x1="28" y1="440" x2="772" y2="440" stroke="#2a1a00" stroke-width="1"/>
+  <!-- Corner dots -->
+  <circle cx="28" cy="20" r="3" fill="#b8860b"/>
+  <circle cx="772" cy="20" r="3" fill="#b8860b"/>
+  <circle cx="28" cy="440" r="3" fill="#b8860b"/>
+  <circle cx="772" cy="440" r="3" fill="#b8860b"/>
+
+  <!-- Title: XiT -->
+  <text x="400" y="72" font-family="Georgia, 'Times New Roman', serif" font-size="42" font-weight="bold" fill="url(#goldGrad)" text-anchor="middle" filter="url(#goldGlow)">XiT / 吸T神功</text>
+
+  <!-- Subtitle -->
+  <text x="400" y="102" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="15" fill="#9e8040" text-anchor="middle">专治 AI CLI 被终端日志撑爆上下文</text>
+
+  <!-- Decorative divider -->
+  <line x1="120" y1="116" x2="340" y2="116" stroke="#2a1a00" stroke-width="1"/>
+  <circle cx="400" cy="116" r="4" fill="#b8860b"/>
+  <line x1="460" y1="116" x2="680" y2="116" stroke="#2a1a00" stroke-width="1"/>
 
   <!-- Terminal card -->
-  <rect x="40" y="28" width="720" height="384" rx="12" fill="#161b22" stroke="#30363d" stroke-width="1.5" filter="url(#glow)"/>
+  <rect x="44" y="130" width="712" height="258" rx="10" fill="url(#cardBg)" stroke="#1e2530" stroke-width="1.5" filter="url(#glow)"/>
 
-  <!-- Title bar -->
-  <rect x="40" y="28" width="720" height="40" rx="12" fill="#21262d"/>
-  <rect x="40" y="52" width="720" height="16" fill="#21262d"/>
-  <circle cx="72" cy="48" r="7" fill="#ff5f57"/>
-  <circle cx="96" cy="48" r="7" fill="#febc2e"/>
-  <circle cx="120" cy="48" r="7" fill="#28c840"/>
-  <text x="400" y="52" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="13" fill="#8b949e" text-anchor="middle">Terminal — ~/projects/xit</text>
+  <!-- Terminal titlebar -->
+  <rect x="44" y="130" width="712" height="36" rx="10" fill="#161b24"/>
+  <rect x="44" y="150" width="712" height="16" fill="#161b24"/>
+  <circle cx="74" cy="148" r="6" fill="#c0392b"/>
+  <circle cx="96" cy="148" r="6" fill="#e67e22"/>
+  <circle cx="118" cy="148" r="6" fill="#27ae60"/>
+  <text x="400" y="152" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#4a5568" text-anchor="middle">terminal — 吸T神功运功中</text>
 
-  <!-- Install line -->
-  <text x="72" y="92" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="13" fill="#6e7681">$</text>
-  <text x="86" y="92" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="13" fill="#8b949e">npm i -g xitsg</text>
-  <text x="600" y="92" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#56f5a3">added 1 package ✓</text>
+  <!-- Install command -->
+  <text x="68" y="192" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12.5" fill="#4a5568">$</text>
+  <text x="82" y="192" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12.5" fill="#6b7280">npm i -g xitsg</text>
+  <text x="590" y="192" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#56f5a3">added 1 package ✓</text>
 
-  <!-- Command line -->
-  <text x="72" y="116" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="13.5" fill="#56f5a3">$</text>
-  <text x="88" y="116" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="13.5" fill="#e6edf3">xit auto go test -v ./...</text>
+  <!-- Main command -->
+  <text x="68" y="218" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="13.5" fill="#56f5a3">$</text>
+  <text x="84" y="218" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="13.5" fill="#e2e8f0">xit auto go test -v ./...</text>
 
-  <!-- Divider -->
-  <line x1="72" y1="132" x2="728" y2="132" stroke="#30363d" stroke-width="1"/>
+  <line x1="68" y1="232" x2="736" y2="232" stroke="#1e2530" stroke-width="1"/>
 
-  <!-- XiT Auto Summary -->
-  <text x="72" y="158" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="13" fill="#56f5a3" font-weight="bold">XiT Auto Summary</text>
+  <!-- Summary output -->
+  <text x="68" y="256" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="13" fill="#56f5a3" font-weight="bold" filter="url(#glow)">XiT Auto Summary</text>
 
-  <text x="72" y="182" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#6e7681">command:    </text>
-  <text x="172" y="182" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#e6edf3">go test -v ./...</text>
+  <text x="68" y="278" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#4a5568">exit_code:  </text>
+  <text x="168" y="278" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#56f5a3">0</text>
+  <text x="280" y="278" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#4a5568">reduction:</text>
+  <text x="366" y="278" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#56f5a3">99%</text>
+  <text x="440" y="278" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#4a5568">省:</text>
+  <text x="466" y="278" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#56f5a3">~9k Token</text>
+  <text x="590" y="278" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#374151">(saved_bytes/4 est.)</text>
 
-  <text x="72" y="202" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#6e7681">exit_code:  </text>
-  <text x="172" y="202" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#56f5a3">0</text>
+  <text x="68" y="300" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#4a5568">raw_log:    </text>
+  <text x="168" y="300" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#4299e1">.xit/runs/20260530-go-test.raw.log</text>
+  <text x="566" y="300" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#56f5a3">← 本地留存</text>
 
-  <text x="72" y="222" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#6e7681">reduction:  </text>
-  <text x="172" y="222" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#56f5a3">99%  (35,629 bytes → 318 bytes)</text>
+  <text x="68" y="320" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#4a5568">要点:       </text>
+  <text x="168" y="320" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#cbd5e0">测试通过 · 无 panic · 19 个包 · 证据已留</text>
 
-  <text x="72" y="242" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#6e7681">saved:      </text>
-  <text x="172" y="242" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#56f5a3">~8,907 tokens  </text>
-  <text x="400" y="242" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#6e7681">(saved_bytes / 4 est.)</text>
+  <line x1="68" y1="335" x2="736" y2="335" stroke="#1e2530" stroke-width="1"/>
 
-  <text x="72" y="262" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#6e7681">raw_log:    </text>
-  <text x="172" y="262" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#79c0ff">.xit/runs/20260530-go-test.raw.log  </text>
-  <text x="588" y="262" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#56f5a3">← local only</text>
+  <!-- Lifetime stats -->
+  <text x="68" y="357" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#374151">历史战绩：120 条命令 · 91.8% 压缩率 · 已省 ~359k Token（估算）</text>
 
-  <text x="72" y="282" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#6e7681">key facts:  </text>
-  <text x="172" y="282" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#e6edf3">All tests passed · no panic · 19 packages</text>
+  <!-- Bottom badges -->
+  <rect x="44" y="400" width="712" height="40" rx="0" fill="#0a0c0f"/>
+  <line x1="44" y1="400" x2="756" y2="400" stroke="#1e2530" stroke-width="1"/>
 
-  <!-- Divider -->
-  <line x1="72" y1="298" x2="728" y2="298" stroke="#30363d" stroke-width="1"/>
+  <rect x="64" y="410" width="108" height="20" rx="4" fill="#0f1810" stroke="#1e4a30" stroke-width="1"/>
+  <text x="118" y="424" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#56f5a3" text-anchor="middle">✓ 无 telemetry</text>
 
-  <!-- Lifetime stats bar -->
-  <text x="72" y="320" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#6e7681">Lifetime: 120 commands · 91.8% reduction · ~359k tokens saved</text>
+  <rect x="182" y="410" width="96" height="20" rx="4" fill="#0f1810" stroke="#1e4a30" stroke-width="1"/>
+  <text x="230" y="424" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#56f5a3" text-anchor="middle">✓ 本地运功</text>
 
-  <!-- Divider -->
-  <line x1="72" y1="334" x2="728" y2="334" stroke="#30363d" stroke-width="1"/>
+  <rect x="288" y="410" width="116" height="20" rx="4" fill="#0f1810" stroke="#1e4a30" stroke-width="1"/>
+  <text x="346" y="424" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#56f5a3" text-anchor="middle">✓ raw_log 留证</text>
 
-  <!-- Badge row -->
-  <rect x="72" y="350" width="120" height="24" rx="5" fill="#0d2218" stroke="#1e4a30" stroke-width="1"/>
-  <text x="132" y="366" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#56f5a3" text-anchor="middle">✓ no telemetry</text>
+  <rect x="416" y="410" width="132" height="20" rx="4" fill="#0f1810" stroke="#56f5a3" stroke-width="1"/>
+  <text x="482" y="424" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#56f5a3" text-anchor="middle">npm i -g xitsg</text>
 
-  <rect x="204" y="350" width="104" height="24" rx="5" fill="#0d2218" stroke="#1e4a30" stroke-width="1"/>
-  <text x="256" y="366" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#56f5a3" text-anchor="middle">✓ local only</text>
-
-  <rect x="320" y="350" width="122" height="24" rx="5" fill="#0d2218" stroke="#1e4a30" stroke-width="1"/>
-  <text x="381" y="366" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#56f5a3" text-anchor="middle">✓ raw_log saved</text>
-
-  <rect x="454" y="350" width="134" height="24" rx="5" fill="#0d2218" stroke="#56f5a3" stroke-width="1"/>
-  <text x="521" y="366" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#56f5a3" text-anchor="middle">npm i -g xitsg</text>
-
-  <rect x="600" y="350" width="140" height="24" rx="5" fill="#0d2218" stroke="#1e4a30" stroke-width="1"/>
-  <text x="670" y="366" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#56f5a3" text-anchor="middle">Kimi CLI: ✓ ready</text>
-
-  <!-- Tagline -->
-  <text x="400" y="406" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="14" fill="#8b949e" text-anchor="middle">Noisy output in.  Compact AI context out.  Raw evidence stays local.</text>
+  <rect x="560" y="410" width="160" height="20" rx="4" fill="#0f1810" stroke="#1e4a30" stroke-width="1"/>
+  <text x="640" y="424" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#ffd700" text-anchor="middle">Kimi CLI · 已打通</text>
 </svg>

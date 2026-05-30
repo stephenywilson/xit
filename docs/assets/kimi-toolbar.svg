@@ -1,63 +1,68 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 360" width="800" height="360">
   <defs>
-    <linearGradient id="bg3" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#0d1117"/>
-      <stop offset="100%" stop-color="#161b22"/>
+    <linearGradient id="ktbg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0a0c0f"/>
+      <stop offset="100%" stop-color="#0f1318"/>
+    </linearGradient>
+    <linearGradient id="goldGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#b8860b"/>
+      <stop offset="50%" stop-color="#ffd700"/>
+      <stop offset="100%" stop-color="#b8860b"/>
     </linearGradient>
   </defs>
 
-  <rect width="800" height="360" fill="url(#bg3)"/>
+  <rect width="800" height="360" fill="url(#ktbg)"/>
 
   <!-- Title -->
-  <text x="400" y="36" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="17" font-weight="700" fill="#e6edf3" text-anchor="middle">Optional Kimi CLI Toolbar Patch</text>
-  <text x="400" y="58" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="13" fill="#8b949e" text-anchor="middle">Shows XiT status in Kimi's bottom bar · opt-in · rollback supported</text>
+  <text x="400" y="34" font-family="'PingFang SC', 'Microsoft YaHei', Georgia, serif" font-size="16" font-weight="700" fill="url(#goldGrad)" text-anchor="middle">Kimi 实战状态栏</text>
+  <text x="400" y="56" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12.5" fill="#6b7280" text-anchor="middle">可选高级功能 · 修改本地 Kimi package · 可回滚 · 不影响 XiT 主功能</text>
 
   <!-- Kimi window simulation -->
-  <rect x="60" y="78" width="680" height="248" rx="10" fill="#161b22" stroke="#30363d" stroke-width="1.5"/>
+  <rect x="60" y="74" width="680" height="252" rx="10" fill="#0d1117" stroke="#1e2530" stroke-width="1.5"/>
 
   <!-- Title bar -->
-  <rect x="60" y="78" width="680" height="36" rx="10" fill="#21262d"/>
-  <rect x="60" y="98" width="680" height="16" fill="#21262d"/>
-  <circle cx="88" cy="96" r="6" fill="#ff5f57"/>
-  <circle cx="110" cy="96" r="6" fill="#febc2e"/>
-  <circle cx="132" cy="96" r="6" fill="#28c840"/>
-  <text x="400" y="100" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#8b949e" text-anchor="middle">kimi — ~/projects/xit</text>
+  <rect x="60" y="74" width="680" height="36" rx="10" fill="#161b24"/>
+  <rect x="60" y="94" width="680" height="16" fill="#161b24"/>
+  <circle cx="88" cy="92" r="6" fill="#c0392b"/>
+  <circle cx="110" cy="92" r="6" fill="#e67e22"/>
+  <circle cx="132" cy="92" r="6" fill="#27ae60"/>
+  <text x="400" y="96" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#4a5568" text-anchor="middle">kimi — ~/projects/xit</text>
 
-  <!-- Kimi chat area -->
-  <text x="90" y="138" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#6e7681">Kimi ></text>
-  <text x="138" y="138" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#e6edf3">Running tests with XiT compression...</text>
+  <!-- Chat area -->
+  <text x="90" y="132" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#4a5568">Kimi ></text>
+  <text x="140" y="132" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#e2e8f0">帮我跑一下测试，看看有没有问题</text>
 
-  <text x="90" y="162" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#6e7681">Kimi ></text>
-  <text x="138" y="162" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#e6edf3">xit auto go test -v ./...</text>
+  <text x="90" y="155" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#4a5568">Kimi ></text>
+  <text x="140" y="155" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#e2e8f0">xit auto go test -v ./...</text>
 
-  <!-- XiT summary in chat -->
-  <rect x="90" y="174" width="550" height="60" rx="6" fill="#132a1e" stroke="#1e4a30" stroke-width="1"/>
-  <text x="106" y="193" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#56f5a3">XiT Auto Summary  ·  exit_code: 0  ·  reduction: 99%</text>
-  <text x="106" y="211" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#8b949e">All tests passed  ·  raw_log: .xit/runs/20260530-go-test.raw.log</text>
-  <text x="106" y="227" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#6e7681">saved_tokens ≈ 9000  (saved_bytes / 4 estimate)</text>
+  <!-- XiT result in chat -->
+  <rect x="90" y="165" width="570" height="62" rx="6" fill="#0d1f12" stroke="#1e3a24" stroke-width="1"/>
+  <text x="106" y="184" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#56f5a3">XiT Auto Summary · exit_code: 0 · reduction: 99% · 省 ~9k Token</text>
+  <text x="106" y="202" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#6b7280">测试通过 · 无 panic · raw_log 已留存 .xit/runs/</text>
+  <text x="106" y="220" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#374151">Token 节省估算：saved_bytes / 4（非精确 tokenizer）</text>
 
   <!-- Input area -->
-  <rect x="60" y="280" width="680" height="2" fill="#30363d"/>
-  <text x="90" y="298" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#6e7681">> </text>
-  <text x="106" y="298" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#e6edf3">|</text>
+  <rect x="60" y="276" width="680" height="2" fill="#1e2530"/>
+  <text x="90" y="295" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#4a5568">> </text>
+  <text x="106" y="295" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#e2e8f0">|</text>
 
-  <!-- Bottom toolbar (the XiT patch area) -->
-  <rect x="60" y="304" width="680" height="22" rx="0" fill="#0d4a2d"/>
-  <rect x="60" y="304" width="680" height="22" rx="0" fill="none" stroke="#56f5a3" stroke-width="0.5" opacity="0.4"/>
+  <!-- Bottom toolbar (XiT patch) -->
+  <rect x="60" y="300" width="680" height="26" rx="0" fill="#062010"/>
+  <line x1="60" y1="300" x2="740" y2="300" stroke="#1e4a30" stroke-width="1"/>
+  <line x1="60" y1="325" x2="740" y2="325" stroke="#1e4a30" stroke-width="0.5"/>
 
-  <!-- Toolbar states - showing different rotations -->
-  <!-- State 1 (left) -->
-  <rect x="68" y="308" width="188" height="14" rx="3" fill="#0a3520"/>
-  <text x="162" y="319" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#56f5a3" text-anchor="middle">吸T神功 · 准备就绪</text>
+  <!-- State 1 -->
+  <rect x="70" y="306" width="190" height="14" rx="3" fill="#0a1a0e"/>
+  <text x="165" y="317" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#56f5a3" text-anchor="middle">吸T神功 · 准备就绪</text>
 
-  <!-- State 2 (middle) -->
-  <rect x="268" y="308" width="192" height="14" rx="3" fill="#0a3520"/>
-  <text x="364" y="319" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#56f5a3" text-anchor="middle">吸T神功 · 正在吸T中 ⟳</text>
+  <!-- State 2 -->
+  <rect x="272" y="306" width="200" height="14" rx="3" fill="#0a1a0e"/>
+  <text x="372" y="317" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#56f5a3" text-anchor="middle">吸T神功 · 正在吸T中 ⟳</text>
 
-  <!-- State 3 (right) -->
-  <rect x="472" y="308" width="254" height="14" rx="3" fill="#0a3520"/>
-  <text x="599" y="319" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#56f5a3" text-anchor="middle">本次吸T 1次 · 省 ~9k Token</text>
+  <!-- State 3 -->
+  <rect x="484" y="306" width="244" height="14" rx="3" fill="#0a1a0e"/>
+  <text x="606" y="317" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#ffd700" text-anchor="middle">本次吸T 1次 · 省 ~9k Token</text>
 
   <!-- Caption -->
-  <text x="400" y="348" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11.5" fill="#6e7681" text-anchor="middle">Toolbar cycles through status every 15s · install: xit kimi status-patch install --yes --accept-risk</text>
+  <text x="400" y="348" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11.5" fill="#374151" text-anchor="middle">安装：xit kimi status-patch install --yes --accept-risk · 回滚：xit kimi status-patch uninstall --yes</text>
 </svg>

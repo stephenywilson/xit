@@ -1,96 +1,85 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 390" width="800" height="390">
   <defs>
     <linearGradient id="babg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#0d1117"/>
-      <stop offset="100%" stop-color="#161b22"/>
+      <stop offset="0%" stop-color="#0a0c0f"/>
+      <stop offset="100%" stop-color="#0f1318"/>
+    </linearGradient>
+    <linearGradient id="goldGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#b8860b"/>
+      <stop offset="50%" stop-color="#ffd700"/>
+      <stop offset="100%" stop-color="#b8860b"/>
     </linearGradient>
   </defs>
 
   <rect width="800" height="390" fill="url(#babg)"/>
 
   <!-- Title -->
-  <text x="400" y="36" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="17" font-weight="700" fill="#e6edf3" text-anchor="middle">Before vs After</text>
+  <text x="400" y="34" font-family="'PingFang SC', 'Microsoft YaHei', Georgia, serif" font-size="17" font-weight="700" fill="url(#goldGrad)" text-anchor="middle">吸T前后对比</text>
 
   <!-- LEFT: Before panel -->
-  <rect x="28" y="54" width="318" height="304" rx="10" fill="#161b22" stroke="#f85149" stroke-width="1.5"/>
+  <rect x="28" y="52" width="316" height="306" rx="10" fill="#120a0a" stroke="#4a1010" stroke-width="1.5"/>
+  <rect x="28" y="52" width="316" height="36" rx="10" fill="#1e0808"/>
+  <rect x="28" y="72" width="316" height="16" fill="#1e0808"/>
+  <text x="186" y="74" font-family="'PingFang SC', 'Microsoft YaHei', monospace" font-size="12" fill="#c0392b" text-anchor="middle" font-weight="600">✗ 吸T前 · 噪音入体</text>
 
-  <!-- Header -->
-  <rect x="28" y="54" width="318" height="36" rx="10" fill="#2d1b1b"/>
-  <rect x="28" y="74" width="318" height="16" fill="#2d1b1b"/>
-  <text x="187" y="76" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#f85149" text-anchor="middle" font-weight="600">✗  BEFORE  —  Raw output</text>
+  <text x="48" y="108" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#6b7280">$ go test -v ./...</text>
+  <text x="48" y="126" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#374151">=== RUN   TestAutoShim</text>
+  <text x="48" y="142" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#374151">--- PASS: TestAutoShim (0.00s)</text>
+  <text x="48" y="158" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#374151">=== RUN   TestPolicy</text>
+  <text x="48" y="174" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#374151">--- PASS: TestPolicy (0.00s)</text>
+  <text x="48" y="190" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#374151">=== RUN   TestSession</text>
+  <text x="48" y="206" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#374151">--- PASS: TestSession (0.23s)</text>
+  <text x="48" y="222" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#374151">=== RUN   TestHistory</text>
+  <text x="48" y="238" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#374151">--- PASS: TestHistory (0.00s)</text>
+  <text x="48" y="254" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#2d3748">    ··· 400+ 行日志 ···</text>
+  <text x="48" y="270" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#374151">ok  github.com/.../autoshim</text>
+  <text x="48" y="286" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#374151">ok  github.com/.../session</text>
 
-  <!-- Command -->
-  <text x="48" y="110" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11.5" fill="#8b949e">$ go test -v ./...</text>
+  <rect x="48" y="312" width="110" height="22" rx="4" fill="#1e0808"/>
+  <text x="103" y="326" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#c0392b" text-anchor="middle">35,629 bytes</text>
+  <rect x="168" y="312" width="96" height="22" rx="4" fill="#1e0808"/>
+  <text x="216" y="326" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#c0392b" text-anchor="middle">~8,907 tokens</text>
 
-  <!-- Noisy content -->
-  <text x="48" y="130" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#6e7681">=== RUN   TestAutoShim/Policy_classify</text>
-  <text x="48" y="147" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#6e7681">--- PASS: TestAutoShim/Policy_classify (0.00s)</text>
-  <text x="48" y="164" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#6e7681">=== RUN   TestShim</text>
-  <text x="48" y="181" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#6e7681">--- PASS: TestShim (0.00s)</text>
-  <text x="48" y="198" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#6e7681">=== RUN   TestSession_basic</text>
-  <text x="48" y="215" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#6e7681">--- PASS: TestSession_basic (0.23s)</text>
-  <text x="48" y="232" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#6e7681">=== RUN   TestHistory_append</text>
-  <text x="48" y="249" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#6e7681">--- PASS: TestHistory_append (0.00s)</text>
-  <text x="48" y="266" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#484f58">    ··· 400+ more lines ···</text>
-  <text x="48" y="283" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#6e7681">ok  github.com/.../autoshim  0.33s</text>
-  <text x="48" y="300" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#6e7681">ok  github.com/.../session   0.81s</text>
-
-  <!-- Size badges -->
-  <rect x="48" y="318" width="96" height="22" rx="4" fill="#2d1b1b"/>
-  <text x="96" y="332" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#f85149" text-anchor="middle">35,629 bytes</text>
-
-  <rect x="154" y="318" width="80" height="22" rx="4" fill="#2d1b1b"/>
-  <text x="194" y="332" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#f85149" text-anchor="middle">~8,907 tokens</text>
-
-  <!-- MIDDLE arrow -->
-  <text x="400" y="164" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="13" fill="#56f5a3" text-anchor="middle" font-weight="700">xit auto</text>
-  <line x1="358" y1="195" x2="442" y2="195" stroke="#56f5a3" stroke-width="2.5"/>
-  <polygon points="442,189 455,195 442,201" fill="#56f5a3"/>
-  <polygon points="358,189 345,195 358,201" fill="#56f5a3"/>
-  <text x="400" y="222" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#56f5a3" text-anchor="middle" font-weight="700">99%</text>
-  <text x="400" y="240" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#8b949e" text-anchor="middle">reduction</text>
-  <text x="400" y="260" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#6e7681" text-anchor="middle">saved_bytes / 4 est.</text>
+  <!-- MIDDLE arrow section -->
+  <text x="400" y="158" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="13" fill="#56f5a3" text-anchor="middle" font-weight="700">运转吸T神功</text>
+  <text x="400" y="178" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#4a5568" text-anchor="middle">xit auto</text>
+  <line x1="358" y1="202" x2="442" y2="202" stroke="#56f5a3" stroke-width="2.5"/>
+  <polygon points="442,196 455,202 442,208" fill="#56f5a3"/>
+  <polygon points="358,196 345,202 358,208" fill="#56f5a3"/>
+  <text x="400" y="232" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="13" fill="#56f5a3" text-anchor="middle" font-weight="700">99%</text>
+  <text x="400" y="250" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#6b7280" text-anchor="middle">真气归元</text>
+  <text x="400" y="268" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="9.5" fill="#374151" text-anchor="middle">saved_bytes / 4 est.</text>
 
   <!-- RIGHT: After panel -->
-  <rect x="454" y="54" width="318" height="304" rx="10" fill="#161b22" stroke="#56f5a3" stroke-width="1.5"/>
+  <rect x="454" y="52" width="316" height="306" rx="10" fill="#0a120d" stroke="#1e4a30" stroke-width="1.5"/>
+  <rect x="454" y="52" width="316" height="36" rx="10" fill="#0d1f12"/>
+  <rect x="454" y="72" width="316" height="16" fill="#0d1f12"/>
+  <text x="612" y="74" font-family="'PingFang SC', 'Microsoft YaHei', monospace" font-size="12" fill="#56f5a3" text-anchor="middle" font-weight="600">✓ 吸T后 · 真气归元</text>
 
-  <!-- Header -->
-  <rect x="454" y="54" width="318" height="36" rx="10" fill="#132a1e"/>
-  <rect x="454" y="74" width="318" height="16" fill="#132a1e"/>
-  <text x="613" y="76" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#56f5a3" text-anchor="middle" font-weight="600">✓  AFTER  —  XiT Summary</text>
+  <text x="474" y="108" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#6b7280">$ xit auto go test -v ./...</text>
+  <text x="474" y="132" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#56f5a3" font-weight="bold">XiT Auto Summary</text>
 
-  <!-- Command -->
-  <text x="474" y="110" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11.5" fill="#8b949e">$ xit auto go test -v ./...</text>
+  <text x="474" y="156" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#4a5568">exit_code: </text>
+  <text x="566" y="156" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#56f5a3">0</text>
+  <text x="474" y="176" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#4a5568">reduction: </text>
+  <text x="566" y="176" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#56f5a3">99%</text>
+  <text x="474" y="196" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#4a5568">省 Token: </text>
+  <text x="566" y="196" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#ffd700">~9k（估算）</text>
+  <text x="474" y="216" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#4a5568">raw_log:   </text>
+  <text x="566" y="216" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#4299e1">.xit/runs/…log ← 本地</text>
 
-  <!-- Summary output -->
-  <text x="474" y="134" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#56f5a3" font-weight="bold">XiT Auto Summary</text>
+  <line x1="474" y1="230" x2="750" y2="230" stroke="#1e3a24" stroke-width="1"/>
 
-  <text x="474" y="156" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#6e7681">command:   </text>
-  <text x="566" y="156" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#e6edf3">go test -v ./...</text>
+  <text x="474" y="252" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#6b7280">要点：</text>
+  <text x="474" y="272" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#cbd5e0">· 测试通过 · 无 panic</text>
+  <text x="474" y="290" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#cbd5e0">· 19 个包 · 0 失败</text>
+  <text x="474" y="308" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#cbd5e0">· 完整原始输出本地留存</text>
 
-  <text x="474" y="175" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#6e7681">exit_code: </text>
-  <text x="566" y="175" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#56f5a3">0</text>
-
-  <text x="474" y="194" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#6e7681">reduction: </text>
-  <text x="566" y="194" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#56f5a3">99%</text>
-
-  <text x="474" y="213" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#6e7681">raw_log:   </text>
-  <text x="566" y="213" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#79c0ff">.xit/runs/…raw.log ←local</text>
-
-  <line x1="474" y1="226" x2="752" y2="226" stroke="#30363d" stroke-width="1"/>
-
-  <text x="474" y="246" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#6e7681">Key facts:</text>
-  <text x="474" y="264" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#e6edf3">· All tests passed · no panic</text>
-  <text x="474" y="281" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#e6edf3">· 19 packages · 0 failures</text>
-  <text x="474" y="298" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#e6edf3">· Full raw output preserved</text>
-
-  <!-- Size badges -->
-  <rect x="474" y="318" width="72" height="22" rx="4" fill="#132a1e"/>
-  <text x="510" y="332" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#56f5a3" text-anchor="middle">318 bytes</text>
-
-  <rect x="556" y="318" width="96" height="22" rx="4" fill="#132a1e"/>
-  <text x="604" y="332" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#56f5a3" text-anchor="middle">~80 tokens</text>
+  <rect x="474" y="322" width="72" height="22" rx="4" fill="#0d1f12"/>
+  <text x="510" y="337" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#56f5a3" text-anchor="middle">318 bytes</text>
+  <rect x="556" y="322" width="106" height="22" rx="4" fill="#0d1f12"/>
+  <text x="609" y="337" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#56f5a3" text-anchor="middle">~80 tokens</text>
 
   <!-- Bottom note -->
-  <text x="400" y="376" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11.5" fill="#6e7681" text-anchor="middle">Real dogfood: 35,629 bytes → 318 bytes · ~8,907 tokens saved · saved_bytes / 4 estimate</text>
+  <text x="400" y="376" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11.5" fill="#4a5568" text-anchor="middle">AI 读摘要，你留证据。这就是吸T神功的核心。</text>
 </svg>

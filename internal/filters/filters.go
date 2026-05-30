@@ -204,12 +204,43 @@ func adjustConfidence(base string, res *runner.Result) string {
 	}
 }
 
+// isDiagnosticFind returns true for find commands that search only limited
+// system paths (e.g. tool discovery). These are low-output diagnostic commands
+// and should not be counted as missed high-noise.
+func isDiagnosticFind(args []string) bool {
+	if len(args) < 2 || args[0] != "find" {
+		return false
+	}
+	limitedPaths := map[string]bool{
+		"/opt/homebrew":        true,
+		"/usr/local":           true,
+		"/usr/local/bin":       true,
+		"/opt/homebrew/bin":    true,
+		"/usr/bin":             true,
+		"/bin":                 true,
+	}
+	hasLimitedPath := false
+	for _, arg := range args[1:] {
+		if strings.HasPrefix(arg, "-") {
+			break
+		}
+		if !limitedPaths[arg] {
+			return false
+		}
+		hasLimitedPath = true
+	}
+	return hasLimitedPath
+}
+
 // ClassifyPolicy returns the compression policy for a command:
 //   should_compress   — high-output commands that clearly benefit from XiT
 //   should_passthrough — short-output commands where compression adds little value
 //   needs_review      — edge cases or unknown commands
 func ClassifyPolicy(args []string) string {
 	if len(args) == 0 {
+		return "needs_review"
+	}
+	if isDiagnosticFind(args) {
 		return "needs_review"
 	}
 	tk := tupleKey(args)

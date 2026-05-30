@@ -2574,3 +2574,113 @@ func TestShimInstallTakeoverRefused(t *testing.T) {
 		t.Errorf("expected --takeover hint, got:\n%s", out)
 	}
 }
+
+func TestClaudeStatuslineNoDaiGuanCe(t *testing.T) {
+	bin := buildXit(t)
+	tmpHome := t.TempDir()
+	cmd := exec.Command(bin, "claude", "statusline")
+	cmd.Env = append(os.Environ(), "HOME="+tmpHome, "XIT_HOME=", "XIT_NONINTERACTIVE=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("xit claude statusline failed: %v\n%s", err, out)
+	}
+	line := string(out)
+	if strings.Contains(line, "待观测") {
+		t.Errorf("statusLine should not contain 待观测, got: %s", line)
+	}
+}
+
+func TestClaudeStatuslineNoColor(t *testing.T) {
+	bin := buildXit(t)
+	tmpHome := t.TempDir()
+	cmd := exec.Command(bin, "claude", "statusline")
+	cmd.Env = append(os.Environ(), "HOME="+tmpHome, "XIT_HOME=", "XIT_NONINTERACTIVE=1", "NO_COLOR=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("xit claude statusline failed: %v\n%s", err, out)
+	}
+	line := string(out)
+	if strings.Contains(line, "\033[") {
+		t.Errorf("NO_COLOR should not emit ANSI codes, got: %q", line)
+	}
+	if !strings.Contains(line, "准备就绪") {
+		t.Errorf("expected 准备就绪 in fallback, got: %s", line)
+	}
+}
+
+func TestClaudeStatuslineJSON(t *testing.T) {
+	bin := buildXit(t)
+	tmpHome := t.TempDir()
+	cmd := exec.Command(bin, "claude", "statusline", "--json")
+	cmd.Env = append(os.Environ(), "HOME="+tmpHome, "XIT_HOME=", "XIT_NONINTERACTIVE=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("xit claude statusline --json failed: %v\n%s", err, out)
+	}
+	var data map[string]interface{}
+	if err := json.Unmarshal(out, &data); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, out)
+	}
+	if data["line"] == nil {
+		t.Error("missing line in JSON")
+	}
+	if data["color"] != "gold" {
+		t.Errorf("expected color gold, got %v", data["color"])
+	}
+}
+
+func TestClaudeStatuslineAutostateRunning(t *testing.T) {
+	bin := buildXit(t)
+	tmpHome := t.TempDir()
+	tmpProject := t.TempDir()
+
+	_ = os.MkdirAll(filepath.Join(tmpProject, "state"), 0755)
+	state := `{"status":"running","started_at":"` + time.Now().Format(time.RFC3339) + `","command":"go test"}`
+	_ = os.WriteFile(filepath.Join(tmpProject, "state", "current.json"), []byte(state), 0644)
+
+	cmd := exec.Command(bin, "claude", "statusline", "--json")
+	cmd.Env = append(os.Environ(), "HOME="+tmpHome, "XIT_HOME="+tmpProject, "XIT_NONINTERACTIVE=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("xit claude statusline --json failed: %v\n%s", err, out)
+	}
+	var data map[string]interface{}
+	if err := json.Unmarshal(out, &data); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, out)
+	}
+	line, _ := data["line"].(string)
+	if !strings.Contains(line, "正在吸T中") {
+		t.Errorf("expected 正在吸T中 for running autostate, got: %s", line)
+	}
+	if data["source"] != "autostate_running" {
+		t.Errorf("expected source autostate_running, got %v", data["source"])
+	}
+}
+
+func TestClaudeStatuslineAutostateCompleted(t *testing.T) {
+	bin := buildXit(t)
+	tmpHome := t.TempDir()
+	tmpProject := t.TempDir()
+
+	_ = os.MkdirAll(filepath.Join(tmpProject, "state"), 0755)
+	state := `{"status":"completed","finished_at":"` + time.Now().Format(time.RFC3339) + `","saved_bytes":4000,"command":"go test"}`
+	_ = os.WriteFile(filepath.Join(tmpProject, "state", "current.json"), []byte(state), 0644)
+
+	cmd := exec.Command(bin, "claude", "statusline", "--json")
+	cmd.Env = append(os.Environ(), "HOME="+tmpHome, "XIT_HOME="+tmpProject, "XIT_NONINTERACTIVE=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("xit claude statusline --json failed: %v\n%s", err, out)
+	}
+	var data map[string]interface{}
+	if err := json.Unmarshal(out, &data); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, out)
+	}
+	line, _ := data["line"].(string)
+	if !strings.Contains(line, "本次省1k Token") {
+		t.Errorf("expected 本次省1k Token for completed autostate, got: %s", line)
+	}
+	if data["source"] != "autostate_completed" {
+		t.Errorf("expected source autostate_completed, got %v", data["source"])
+	}
+}

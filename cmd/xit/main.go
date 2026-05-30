@@ -98,7 +98,7 @@ func main() {
 			os.Exit(1)
 		}
 		os.Exit(0)
-	case "kimi", "claude", "codex", "gemini", "cursor":
+	case "kimi", "claude", "codex", "gemini", "cursor", "antigravity":
 		os.Exit(cmdWrapper(arg, rest[1:], mode))
 	case "claude-hook":
 		if err := cmdClaudeHook(rest[1:]); err != nil {
@@ -1273,6 +1273,9 @@ func cmdWrapper(target string, args []string, globalMode string) int {
 
 	if target == "claude" && len(args) > 0 && args[0] == "statusline" {
 		return cmdClaudeStatusline(args[1:])
+	}
+	if target == "antigravity" && len(args) > 0 && args[0] == "statusline" {
+		return cmdAntigravityStatusline(args[1:])
 	}
 
 	home := userXiTHome()
@@ -2872,6 +2875,284 @@ func cmdClaudeStatuslineUninstall(args []string) int {
 }
 
 // ---------- End Claude StatusLine ----------
+
+// ---------- Antigravity StatusLine ----------
+
+const (
+	antigravityStatusLineFallback = "吸T神功 · Antigravity · 待观测"
+	antigravityStatusLineReady    = "吸T神功 · Antigravity · 准备就绪"
+)
+
+func antigravitySettingsPath() string {
+	homeDir := os.Getenv("HOME")
+	if homeDir == "" {
+		if h, err := os.UserHomeDir(); err == nil {
+			homeDir = h
+		}
+	}
+	return filepath.Join(homeDir, ".gemini", "antigravity-cli", "settings.json")
+}
+
+func cmdAntigravityStatusline(args []string) int {
+	if len(args) > 0 {
+		switch args[0] {
+		case "install":
+			return cmdAntigravityStatuslineInstall(args[1:])
+		case "status":
+			return cmdAntigravityStatuslineStatus()
+		case "uninstall":
+			return cmdAntigravityStatuslineUninstall(args[1:])
+		}
+	}
+
+	useJSON := false
+	for _, a := range args {
+		if a == "--json" {
+			useJSON = true
+		}
+	}
+
+	line, data := computeAntigravityStatuslineText()
+
+	if useJSON {
+		out, _ := json.MarshalIndent(data, "", "  ")
+		fmt.Println(string(out))
+		return 0
+	}
+
+	noColor := os.Getenv("NO_COLOR") != ""
+	if noColor {
+		fmt.Println(line)
+	} else {
+		fmt.Printf("%s%s%s\n", statusLineGoldColor, line, statusLineReset)
+	}
+	return 0
+}
+
+func computeAntigravityStatuslineText() (string, map[string]interface{}) {
+	// fail-open: any panic returns fallback
+	defer func() { recover() }() //nolint
+
+	homeDir := os.Getenv("HOME")
+	if homeDir == "" {
+		if h, err := os.UserHomeDir(); err == nil {
+			homeDir = h
+		}
+	}
+	if homeDir == "" {
+		return antigravityStatusLineFallback, map[string]interface{}{"line": antigravityStatusLineFallback, "source": "no_home"}
+	}
+	userXiT := filepath.Join(homeDir, ".xit")
+	projectHome := xitHome()
+	window := 10 * time.Minute
+
+	// Recent hitrate (10 min window). For Antigravity this is history-only.
+	report, _ := hitrate.ComputeReportForAdapter("antigravity", userXiT, projectHome, window)
+	hasRecentEvents := report != nil && report.ShellCommandsSeen > 0
+	hitRatePct := 0.0
+	verdictPass := false
+	if report != nil && (report.ShouldCompress.Total+report.ShouldPassthrough.Total) > 0 {
+		total := report.ShouldCompress.Total + report.ShouldPassthrough.Total
+		correct := report.ShouldCompress.CorrectlyWrapped + report.ShouldPassthrough.CorrectlyPassthrough
+		hitRatePct = float64(correct) / float64(total) * 100
+		verdictPass = report.Verdict == "pass"
+	}
+
+	// Recent token savings from xit auto history (10 min).
+	savedTokens := 0
+	if m, err := history.ComputeSessionMetrics(projectHome, window); err == nil && m != nil {
+		if m.CurrentSession.SavedBytes > 0 {
+			savedTokens = m.CurrentSession.SavedBytes / 4
+		}
+	}
+	if savedTokens == 0 {
+		if m, err := history.ComputeSessionMetrics(userXiT, window); err == nil && m != nil {
+			if m.CurrentSession.SavedBytes > 0 {
+				savedTokens = m.CurrentSession.SavedBytes / 4
+			}
+		}
+	}
+
+	// Build one-line text by priority.
+	var line string
+	switch {
+	case hasRecentEvents && verdictPass && savedTokens > 0:
+		line = fmt.Sprintf("吸T神功 · 本次省%s · 命中率%.0f%%", formatTokenCount(savedTokens), hitRatePct)
+	case hasRecentEvents && verdictPass:
+		line = fmt.Sprintf("吸T神功 · Antigravity · 命中率%.0f%%", hitRatePct)
+	case savedTokens > 0 && hasRecentEvents:
+		line = fmt.Sprintf("吸T神功 · 本次省%s · 命中率%.0f%%", formatTokenCount(savedTokens), hitRatePct)
+	case savedTokens > 0:
+		line = fmt.Sprintf("吸T神功 · 本次省%s Token · 待观测", formatTokenCount(savedTokens))
+	case hasRecentEvents:
+		line = antigravityStatusLineReady
+	default:
+		line = antigravityStatusLineFallback
+	}
+
+	verdictStr := ""
+	if report != nil {
+		verdictStr = report.Verdict
+	}
+	data := map[string]interface{}{
+		"line":                line,
+		"color":               "gold",
+		"hit_rate":            hitRatePct,
+		"saved_tokens_recent": savedTokens,
+		"has_recent_events":   hasRecentEvents,
+		"verdict":             verdictStr,
+	}
+	return line, data
+}
+
+func cmdAntigravityStatuslineInstall(args []string) int {
+	scope := "user"
+	yes := false
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--yes":
+			yes = true
+		case args[i] == "--scope" && i+1 < len(args):
+			scope = args[i+1]
+			i++
+		case strings.HasPrefix(args[i], "--scope="):
+			scope = strings.TrimPrefix(args[i], "--scope=")
+		}
+	}
+
+	if scope != "user" {
+		fmt.Fprintf(os.Stderr, "xit antigravity statusline install: only --scope user is supported\n")
+		return 1
+	}
+
+	settingsPath := antigravitySettingsPath()
+	m, err := readRawSettings(settingsPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error reading %s: %v\n", settingsPath, err)
+		return 1
+	}
+
+	// Check if already installed.
+	if _, exists := m["statusLine"]; exists && !yes {
+		fmt.Printf("XiT Antigravity StatusLine already present in %s\n", settingsPath)
+		fmt.Println("Use --yes to overwrite.")
+		return 1
+	}
+
+	// Backup if file exists.
+	if _, statErr := os.Stat(settingsPath); statErr == nil {
+		if backupPath, backupErr := claudehook.BackupSettings(settingsPath); backupErr == nil && backupPath != "" {
+			fmt.Printf("backup: %s\n", backupPath)
+		}
+	}
+
+	// Resolve absolute path to xit for reliable execution inside Antigravity CLI.
+	xitPath, lookErr := exec.LookPath("xit")
+	if lookErr != nil || xitPath == "" {
+		candidates := []string{
+			filepath.Join(os.Getenv("HOME"), ".local", "bin", "xit"),
+			"/usr/local/bin/xit",
+			"/opt/homebrew/bin/xit",
+		}
+		for _, c := range candidates {
+			if _, err := os.Stat(c); err == nil {
+				xitPath = c
+				break
+			}
+		}
+	}
+	if xitPath == "" {
+		fmt.Fprintln(os.Stderr, "cannot find xit in PATH; ensure xit is installed and in PATH before installing statusLine")
+		return 1
+	}
+
+	// Build statusLine value.
+	statusLineVal := map[string]interface{}{
+		"type":    "command",
+		"command": xitPath + " antigravity statusline",
+		"padding": 0,
+	}
+	slData, _ := json.Marshal(statusLineVal)
+	m["statusLine"] = json.RawMessage(slData)
+
+	if err := writeRawSettings(settingsPath, m); err != nil {
+		fmt.Fprintf(os.Stderr, "error writing %s: %v\n", settingsPath, err)
+		return 1
+	}
+
+	fmt.Println("XiT Antigravity StatusLine installed.")
+	fmt.Println()
+	fmt.Printf("scope:    user\n")
+	fmt.Printf("settings: %s\n", settingsPath)
+	fmt.Printf("command:  xit antigravity statusline\n")
+	fmt.Println()
+	fmt.Println("Restart Antigravity CLI to activate the status line.")
+	fmt.Println("Use 'xit antigravity statusline status' to verify.")
+	return 0
+}
+
+func cmdAntigravityStatuslineStatus() int {
+	settingsPath := antigravitySettingsPath()
+	layer := inspectStatusLineLayer(settingsPath)
+
+	fmt.Println("XiT Antigravity StatusLine")
+	fmt.Println()
+	fmt.Printf("settings:\n")
+	fmt.Printf("  path:             %s\n", layer.Path)
+	fmt.Printf("  exists:           %v\n", layer.Exists)
+	fmt.Printf("  installed:        %v\n", layer.Installed)
+	if layer.Installed {
+		fmt.Printf("  command:          %s\n", layer.Command)
+		fmt.Printf("  command_absolute: %s\n", layer.CommandAbsolute)
+		fmt.Printf("  command_exists:   %v\n", layer.CommandExists)
+		fmt.Printf("  command_exec_ok:  %v\n", layer.CommandExecOK)
+	}
+	fmt.Println()
+	fmt.Printf("hook_mode:        not available (no hooks for Antigravity)\n")
+	fmt.Printf("reroute:          disabled\n")
+	fmt.Printf("strict:           disabled\n")
+	return 0
+}
+
+func cmdAntigravityStatuslineUninstall(args []string) int {
+	yes := false
+	for _, a := range args {
+		if a == "--yes" {
+			yes = true
+		}
+	}
+	if !yes {
+		fmt.Fprintln(os.Stderr, "error: uninstall requires --yes")
+		return 1
+	}
+
+	settingsPath := antigravitySettingsPath()
+	m, err := readRawSettings(settingsPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error reading %s: %v\n", settingsPath, err)
+		return 1
+	}
+	if _, exists := m["statusLine"]; !exists {
+		fmt.Printf("statusLine not found in %s\n", settingsPath)
+		return 0
+	}
+
+	if backupPath, backupErr := claudehook.BackupSettings(settingsPath); backupErr == nil && backupPath != "" {
+		fmt.Printf("backup: %s\n", backupPath)
+	}
+
+	delete(m, "statusLine")
+	if err := writeRawSettings(settingsPath, m); err != nil {
+		fmt.Fprintf(os.Stderr, "error writing %s: %v\n", settingsPath, err)
+		return 1
+	}
+
+	fmt.Println("XiT Antigravity StatusLine uninstalled.")
+	fmt.Printf("settings: %s\n", settingsPath)
+	return 0
+}
+
+// ---------- End Antigravity StatusLine ----------
 
 func cmdClaudeHitrate(args []string) int {
 	window := 2 * time.Hour

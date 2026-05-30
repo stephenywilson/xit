@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 220" width="800" height="220">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 240" width="800" height="240">
   <defs>
     <linearGradient id="mbg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0%" stop-color="#0a0c0f"/>
@@ -15,40 +15,44 @@
     </linearGradient>
   </defs>
 
-  <rect width="800" height="220" fill="url(#mbg)"/>
+  <rect width="800" height="240" fill="url(#mbg)"/>
 
   <!-- Section title -->
-  <text x="400" y="26" font-family="'PingFang SC', 'Microsoft YaHei', Georgia, serif" font-size="13" fill="#6b7280" text-anchor="middle">实战战绩 · 本地 dogfood 数据 · Token 为估算值（saved_bytes / 4）</text>
+  <text x="400" y="26" font-family="'PingFang SC', 'Microsoft YaHei', Georgia, serif" font-size="13" fill="#6b7280" text-anchor="middle">预计收益 · 实际效果取决于命令类型与 AI CLI 使用方式</text>
 
-  <!-- Card 1 -->
-  <rect x="20" y="42" width="175" height="152" rx="10" fill="url(#cardGrad)" stroke="#1e3a24" stroke-width="1.5"/>
-  <text x="107" y="92" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="44" font-weight="800" fill="#56f5a3" text-anchor="middle">91.5%</text>
-  <line x1="40" y1="108" x2="175" y2="108" stroke="#1e3a24" stroke-width="1"/>
-  <text x="107" y="130" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#6b7280" text-anchor="middle">历史输出</text>
-  <text x="107" y="148" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#6b7280" text-anchor="middle">压缩率</text>
-  <text x="107" y="180" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#374151" text-anchor="middle">120 条命令</text>
+  <!-- Card 1: 压缩率 -->
+  <rect x="20" y="42" width="175" height="162" rx="10" fill="url(#cardGrad)" stroke="#1e3a24" stroke-width="1.5"/>
+  <text x="107" y="96" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="36" font-weight="800" fill="#56f5a3" text-anchor="middle">80–95%</text>
+  <line x1="40" y1="112" x2="175" y2="112" stroke="#1e3a24" stroke-width="1"/>
+  <text x="107" y="134" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#6b7280" text-anchor="middle">高噪音命令</text>
+  <text x="107" y="152" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#6b7280" text-anchor="middle">预计压缩率</text>
+  <text x="107" y="190" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#374151" text-anchor="middle">目标区间</text>
 
-  <!-- Card 2 -->
-  <rect x="208" y="42" width="175" height="152" rx="10" fill="url(#cardGrad)" stroke="#1e3a24" stroke-width="1.5"/>
-  <text x="295" y="92" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="44" font-weight="800" fill="#56f5a3" text-anchor="middle">98.7%</text>
-  <line x1="228" y1="108" x2="363" y2="108" stroke="#1e3a24" stroke-width="1"/>
-  <text x="295" y="130" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#6b7280" text-anchor="middle">当前会话</text>
-  <text x="295" y="148" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#6b7280" text-anchor="middle">压缩率</text>
-  <text x="295" y="180" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#374151" text-anchor="middle">本次 6 条命令</text>
+  <!-- Card 2: Token节省 -->
+  <rect x="208" y="42" width="175" height="162" rx="10" fill="url(#cardGrad)" stroke="#1e3a24" stroke-width="1.5"/>
+  <text x="295" y="96" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="44" font-weight="800" fill="#56f5a3" text-anchor="middle">80%+</text>
+  <line x1="228" y1="112" x2="363" y2="112" stroke="#1e3a24" stroke-width="1"/>
+  <text x="295" y="134" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#6b7280" text-anchor="middle">高命中场景</text>
+  <text x="295" y="152" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#6b7280" text-anchor="middle">预计 Token 节省</text>
+  <text x="295" y="190" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#374151" text-anchor="middle">saved_bytes / 4 估算</text>
 
-  <!-- Card 3 -->
-  <rect x="396" y="42" width="175" height="152" rx="10" fill="url(#cardGrad)" stroke="#1e3a24" stroke-width="1.5"/>
-  <text x="483" y="92" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="38" font-weight="800" fill="#56f5a3" text-anchor="middle">~340k</text>
-  <line x1="416" y1="108" x2="551" y2="108" stroke="#1e3a24" stroke-width="1"/>
-  <text x="483" y="130" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#6b7280" text-anchor="middle">估算已省</text>
-  <text x="483" y="148" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#6b7280" text-anchor="middle">Token（历史）</text>
-  <text x="483" y="180" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#374151" text-anchor="middle">saved_bytes / 4 估算</text>
+  <!-- Card 3: 命中率目标 -->
+  <rect x="396" y="42" width="175" height="162" rx="10" fill="url(#cardGrad)" stroke="#1e3a24" stroke-width="1.5"/>
+  <text x="483" y="96" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="44" font-weight="800" fill="#56f5a3" text-anchor="middle">90%+</text>
+  <line x1="416" y1="112" x2="551" y2="112" stroke="#1e3a24" stroke-width="1"/>
+  <text x="483" y="134" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#6b7280" text-anchor="middle">AI CLI 路由</text>
+  <text x="483" y="152" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#6b7280" text-anchor="middle">命中率目标</text>
+  <text x="483" y="190" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#374151" text-anchor="middle">正确使用 xit auto</text>
 
-  <!-- Card 4 -->
-  <rect x="584" y="42" width="196" height="152" rx="10" fill="url(#cardGrad)" stroke="#1e3a24" stroke-width="1.5"/>
-  <text x="682" y="92" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="44" font-weight="800" fill="#ffd700" text-anchor="middle">~9k</text>
-  <line x1="604" y1="108" x2="760" y2="108" stroke="#1e3a24" stroke-width="1"/>
-  <text x="682" y="130" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#6b7280" text-anchor="middle">最近单次</text>
-  <text x="682" y="148" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#6b7280" text-anchor="middle">Token 节省</text>
-  <text x="682" y="180" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#374151" text-anchor="middle">go test -v ./...</text>
+  <!-- Card 4: raw_log -->
+  <rect x="584" y="42" width="196" height="162" rx="10" fill="url(#cardGrad)" stroke="#1e3a24" stroke-width="1.5"/>
+  <text x="682" y="82" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="28" font-weight="800" fill="#4299e1" text-anchor="middle">raw_log</text>
+  <text x="682" y="108" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="13" fill="#56f5a3" text-anchor="middle">本地留证</text>
+  <line x1="604" y1="118" x2="760" y2="118" stroke="#1e3a24" stroke-width="1"/>
+  <text x="682" y="140" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#6b7280" text-anchor="middle">零遥测</text>
+  <text x="682" y="158" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#6b7280" text-anchor="middle">不上传日志</text>
+  <text x="682" y="190" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#374151" text-anchor="middle">.xit/runs/ 本地保存</text>
+
+  <!-- Bottom note -->
+  <text x="400" y="222" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#374151" text-anchor="middle">实际效果取决于命令类型、输出规模与 AI CLI 使用方式 · Token 为 saved_bytes / 4 估算</text>
 </svg>

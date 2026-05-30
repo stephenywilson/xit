@@ -30,15 +30,12 @@
   <text x="48" y="190" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#374151">=== RUN   TestSession</text>
   <text x="48" y="206" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#374151">--- PASS: TestSession (0.23s)</text>
   <text x="48" y="222" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#374151">=== RUN   TestHistory</text>
-  <text x="48" y="238" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#374151">--- PASS: TestHistory (0.00s)</text>
-  <text x="48" y="254" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#2d3748">    ··· 400+ 行日志 ···</text>
-  <text x="48" y="270" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#374151">ok  github.com/.../autoshim</text>
-  <text x="48" y="286" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#374151">ok  github.com/.../session</text>
+  <text x="48" y="238" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#2d3748">    ··· 数百到数千行日志 ···</text>
+  <text x="48" y="254" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#374151">ok  github.com/.../autoshim</text>
+  <text x="48" y="270" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#374151">ok  github.com/.../session</text>
 
-  <rect x="48" y="312" width="110" height="22" rx="4" fill="#1e0808"/>
-  <text x="103" y="326" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#c0392b" text-anchor="middle">35,629 bytes</text>
-  <rect x="168" y="312" width="96" height="22" rx="4" fill="#1e0808"/>
-  <text x="216" y="326" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#c0392b" text-anchor="middle">~8,907 tokens</text>
+  <rect x="48" y="296" width="254" height="22" rx="4" fill="#1e0808"/>
+  <text x="175" y="311" font-family="'PingFang SC', 'Microsoft YaHei', monospace" font-size="10.5" fill="#c0392b" text-anchor="middle">几千到数万字节 · 占满 AI 上下文</text>
 
   <!-- MIDDLE arrow section -->
   <text x="400" y="158" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="13" fill="#56f5a3" text-anchor="middle" font-weight="700">运转吸T神功</text>
@@ -46,8 +43,8 @@
   <line x1="358" y1="202" x2="442" y2="202" stroke="#56f5a3" stroke-width="2.5"/>
   <polygon points="442,196 455,202 442,208" fill="#56f5a3"/>
   <polygon points="358,196 345,202 358,208" fill="#56f5a3"/>
-  <text x="400" y="232" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="13" fill="#56f5a3" text-anchor="middle" font-weight="700">99%</text>
-  <text x="400" y="250" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#6b7280" text-anchor="middle">真气归元</text>
+  <text x="400" y="232" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="13" fill="#56f5a3" text-anchor="middle" font-weight="700">80–95%</text>
+  <text x="400" y="250" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#6b7280" text-anchor="middle">预计压缩率</text>
   <text x="400" y="268" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="9.5" fill="#374151" text-anchor="middle">saved_bytes / 4 est.</text>
 
   <!-- RIGHT: After panel -->
@@ -63,8 +60,8 @@
   <text x="566" y="156" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#56f5a3">0</text>
   <text x="474" y="176" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#4a5568">reduction: </text>
   <text x="566" y="176" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#56f5a3">99%</text>
-  <text x="474" y="196" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#4a5568">省 Token: </text>
-  <text x="566" y="196" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#ffd700">~9k（估算）</text>
+  <text x="474" y="196" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#4a5568">预计省 Token: </text>
+  <text x="590" y="196" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#ffd700">80%+（估算）</text>
   <text x="474" y="216" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#4a5568">raw_log:   </text>
   <text x="566" y="216" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#4299e1">.xit/runs/…log ← 本地</text>
 
@@ -72,14 +69,12 @@
 
   <text x="474" y="252" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#6b7280">要点：</text>
   <text x="474" y="272" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#cbd5e0">· 测试通过 · 无 panic</text>
-  <text x="474" y="290" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#cbd5e0">· 19 个包 · 0 失败</text>
-  <text x="474" y="308" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#cbd5e0">· 完整原始输出本地留存</text>
+  <text x="474" y="290" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#cbd5e0">· 完整原始输出本地留存</text>
+  <text x="474" y="308" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11" fill="#cbd5e0">· 证据可随时查阅</text>
 
-  <rect x="474" y="322" width="72" height="22" rx="4" fill="#0d1f12"/>
-  <text x="510" y="337" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#56f5a3" text-anchor="middle">318 bytes</text>
-  <rect x="556" y="322" width="106" height="22" rx="4" fill="#0d1f12"/>
-  <text x="609" y="337" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#56f5a3" text-anchor="middle">~80 tokens</text>
+  <rect x="474" y="322" width="192" height="22" rx="4" fill="#0d1f12"/>
+  <text x="570" y="337" font-family="'PingFang SC', 'Microsoft YaHei', monospace" font-size="10.5" fill="#56f5a3" text-anchor="middle">短摘要 · 预计省 80%+ Token</text>
 
   <!-- Bottom note -->
-  <text x="400" y="376" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11.5" fill="#4a5568" text-anchor="middle">AI 读摘要，你留证据。这就是吸T神功的核心。</text>
+  <text x="400" y="376" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="11.5" fill="#4a5568" text-anchor="middle">AI 读摘要，你留证据。实际压缩率因命令类型而异。</text>
 </svg>

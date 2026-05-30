@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/assets/xit-hero.svg" alt="XiT / 吸T神功" width="800"/>
+<img src="docs/assets/xit-hero.png" alt="XiT / 吸T神功" width="800"/>
 
 # XiT / 吸T神功
 

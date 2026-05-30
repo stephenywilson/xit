@@ -1,49 +1,66 @@
-# XiT — Kimi CLI Integration Guide
+# Kimi CLI 实战适配
 
-## Overview
+Kimi CLI 是 XiT 第一套已跑通的实战适配，用来验证 rules、hook、turn lifecycle、中文状态栏这条链路可行。
 
-XiT's Kimi CLI integration is a **functional prototype**. It works today via rules mode and hook observe. The optional toolbar patch adds a visible status bar inside Kimi.
+![Kimi 实战状态栏](assets/kimi-toolbar.png)
 
 ---
 
-## Installation
-
-### 1. Rules mode (recommended)
-
-Installs a skill file at `~/.kimi/skills/xit/SKILL.md`. Kimi discovers it at startup and proactively uses `xit auto` for high-output commands.
+## 安装
 
 ```bash
 xit init kimi --method official_hook --scope user --yes
 xit kimi rules install --scope user --yes
 ```
 
-Restart Kimi. Verify:
+重启 Kimi 后验证：
 
 ```bash
 xit kimi rules status --scope user
 ```
 
-### 2. Verify Kimi uses XiT
-
-Paste this into Kimi:
-
-```
-Run the tests and show me a summary
-```
-
-Kimi should respond with `xit auto go test -v ./...` instead of raw `go test -v ./...`.
-
-To get the exact dogfood prompt:
-
-```bash
-xit kimi rules dogfood
-```
+验证 Kimi 是否正确使用 XiT：在 Kimi 中说"帮我跑测试"，Kimi 应该调用 `xit auto go test -v ./...`，而不是直接调用 `go test -v ./...`。
 
 ---
 
-## Hook observe mode
+## 可选中文状态栏
 
-Records Kimi's tool calls to `.xit/kimi-hooks/events.jsonl` without blocking anything.
+状态栏是可选高级功能，会修改本地 Kimi Python package（`ui/shell/prompt.py`）。不影响 XiT 主功能，可随时回滚。
+
+状态栏示例：
+
+- `吸T神功 · 准备就绪`：等待下一轮命令
+- `吸T神功 · 正在吸T中`：xit auto 正在接管高噪音命令
+- `本次吸T 1 次 · 省 X Token`：本次 turn 的估算节省
+- `XiT ON · raw_log 留证中`：已留存原始输出
+
+**安装：**
+
+```bash
+xit kimi status-patch install --yes --accept-risk
+```
+
+**回滚：**
+
+```bash
+xit kimi status-patch uninstall --yes
+```
+
+其他 patch 命令：
+
+```bash
+xit kimi status-patch status      # 检查兼容性（只读）
+xit kimi status-patch dry-run     # 预览 patch 计划（不改文件）
+xit kimi status-patch validate    # 在临时副本验证语法
+```
+
+> Kimi 更新可能使 patch 失效，安装前会自动创建备份。
+
+---
+
+## Hook observe 模式
+
+记录 Kimi 的 tool call 到 `.xit/kimi-hooks/events.jsonl`，不阻断任何操作。
 
 ```bash
 xit hook status kimi --scope user
@@ -52,66 +69,56 @@ xit hook stats kimi
 
 ---
 
-## Safe reroute (optional)
+## Safe reroute（可选）
 
-When enabled, XiT returns a `deny` response to Kimi's PreToolUse hook for high-output commands, recommending `xit auto <original>` instead.
+对高噪音命令返回 deny，建议 Kimi 改用 `xit auto <原命令>`。
 
 ```bash
 xit hook enable-reroute kimi --yes
 xit hook disable-reroute kimi --yes
 ```
 
-> **Note:** Kimi shows the deny as a Shell tool ERROR, not a soft suggestion. Kimi may not automatically re-run `xit auto <command>`. Rules mode is the preferred path.
+> 注意：Kimi 会把 deny 显示为 Shell tool ERROR，不是软提示。Kimi 不一定会自动重跑 `xit auto <命令>`。推荐优先使用 rules 模式。
 
 ---
 
-## Optional toolbar patch
+## Token 口径
 
-Modifies Kimi's local Python package to show XiT status in the bottom bar.
+Token 节省是估算值：
 
-Status rotates every 15 seconds:
-- `吸T神功 · 准备就绪`
-- `吸T神功 · 正在吸T中`
-- `本次吸T 1次 · 省 ~9k Token`
-- `XiT ON · raw_log 留证中`
-
-```bash
-# Check compatibility (read-only)
-xit kimi status-patch status
-
-# Preview patch plan (no file changes)
-xit kimi status-patch dry-run
-
-# Validate syntax on temp copy
-xit kimi status-patch validate
-
-# Install (requires --yes --accept-risk)
-xit kimi status-patch install --yes --accept-risk
-
-# Uninstall and restore from backup
-xit kimi status-patch uninstall --yes
+```
+saved_tokens = saved_bytes / 4
 ```
 
-> ⚠️ The toolbar patch is experimental. It modifies Kimi's `ui/shell/prompt.py`. Kimi updates may break it. Backup is created automatically before install.
+这不是 tokenizer 精确计数。实际效果取决于命令类型、输出规模和 AI CLI 是否正确使用 `xit auto`。
 
 ---
 
-## Full health check
+## 安全说明
+
+- 无遥测，不上传日志
+- raw_log 保存在本地（`.xit/runs/`）
+- 状态栏 patch 可回滚，安装前自动备份
+- XiT 主功能不依赖状态栏 patch
+
+---
+
+## 健康检查
 
 ```bash
 xit doctor kimi --deep
-# or
+# 或
 xit kimi doctor
 ```
 
-## Compression stats
+## 查看压缩统计
 
 ```bash
 xit kimi benchmark
 xit gain
 ```
 
-## Uninstall everything
+## 完整卸载
 
 ```bash
 xit kimi rules uninstall --scope user --yes

@@ -29,7 +29,7 @@ import (
 	"os/exec"
 )
 
-const version = "0.2.40"
+const version = "0.2.41"
 
 func main() {
 	mode, rest := parseArgs(os.Args[1:])

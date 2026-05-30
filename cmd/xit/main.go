@@ -2459,8 +2459,8 @@ func cmdBenchCompression(args []string) int {
 const (
 	statusLineGoldColor = "\033[38;5;178m"
 	statusLineReset     = "\033[0m"
-	statusLineFallback  = "吸T神功 · Claude observe · 待观测"
-	statusLineReady     = "吸T神功 · Claude observe · 准备就绪"
+	statusLineFallback  = "吸T神功 · Claude · 准备就绪"
+	statusLineReady     = "吸T神功 · Claude · 准备就绪"
 )
 
 func cmdClaudeStatusline(args []string) int {
@@ -2515,6 +2515,10 @@ func computeClaudeStatuslineText() (string, map[string]interface{}) {
 	userXiT := filepath.Join(homeDir, ".xit")
 	projectHome := xitHome()
 	window := 10 * time.Minute
+	now := time.Now()
+
+	// 1. Check autostate for running or recently completed xit auto.
+	autoState, autoPath, _ := autostate.Read(projectHome, userXiT)
 
 	// Check hook installed (project scope only, observe mode).
 	hookInstalled := false
@@ -2522,62 +2526,84 @@ func computeClaudeStatuslineText() (string, map[string]interface{}) {
 		hookInstalled = st.Installed
 	}
 
-	// Recent hitrate (10 min window).
-	report, _ := hitrate.ComputeReportForAdapter("claude", userXiT, projectHome, window)
-	hasRecentEvents := report != nil && report.ShellCommandsSeen > 0
-	hitRatePct := 0.0
-	verdictPass := false
-	if report != nil && (report.ShouldCompress.Total+report.ShouldPassthrough.Total) > 0 {
-		total := report.ShouldCompress.Total + report.ShouldPassthrough.Total
-		correct := report.ShouldCompress.CorrectlyWrapped + report.ShouldPassthrough.CorrectlyPassthrough
-		hitRatePct = float64(correct) / float64(total) * 100
-		verdictPass = report.Verdict == "pass"
-	}
+	var line string
+	source := "history"
 
-	// Recent token savings from xit auto history (10 min).
-	savedTokens := 0
-	if m, err := history.ComputeSessionMetrics(projectHome, window); err == nil && m != nil {
-		if m.CurrentSession.SavedBytes > 0 {
-			savedTokens = m.CurrentSession.SavedBytes / 4
+	switch {
+	case autostate.IsRunningFresh(autoState, now):
+		line = "吸T神功 · 正在吸T中"
+		source = "autostate_running"
+	case autostate.IsCompletedFresh(autoState, now) && autoState != nil && autoState.SavedBytes > 0:
+		line = fmt.Sprintf("吸T神功 · 本次省%s Token", formatTokenCount(int(autoState.SavedBytes/4)))
+		source = "autostate_completed"
+	default:
+		// Recent hitrate (10 min window).
+		report, _ := hitrate.ComputeReportForAdapter("claude", userXiT, projectHome, window)
+		hasRecentEvents := report != nil && report.ShellCommandsSeen > 0
+		hitRatePct := 0.0
+		verdictPass := false
+		if report != nil && (report.ShouldCompress.Total+report.ShouldPassthrough.Total) > 0 {
+			total := report.ShouldCompress.Total + report.ShouldPassthrough.Total
+			correct := report.ShouldCompress.CorrectlyWrapped + report.ShouldPassthrough.CorrectlyPassthrough
+			hitRatePct = float64(correct) / float64(total) * 100
+			verdictPass = report.Verdict == "pass"
 		}
-	}
-	if savedTokens == 0 {
-		if m, err := history.ComputeSessionMetrics(userXiT, window); err == nil && m != nil {
+
+		// Recent token savings from xit auto history (10 min).
+		savedTokens := 0
+		if m, err := history.ComputeSessionMetrics(projectHome, window); err == nil && m != nil {
 			if m.CurrentSession.SavedBytes > 0 {
 				savedTokens = m.CurrentSession.SavedBytes / 4
 			}
 		}
+		if savedTokens == 0 {
+			if m, err := history.ComputeSessionMetrics(userXiT, window); err == nil && m != nil {
+				if m.CurrentSession.SavedBytes > 0 {
+					savedTokens = m.CurrentSession.SavedBytes / 4
+				}
+			}
+		}
+
+		// Build one-line text by priority.
+		switch {
+		case hasRecentEvents && verdictPass && savedTokens > 0:
+			line = fmt.Sprintf("吸T神功 · 本次省%s · 命中率%.0f%%", formatTokenCount(savedTokens), hitRatePct)
+		case hasRecentEvents && verdictPass:
+			line = fmt.Sprintf("吸T神功 · Claude · 命中率%.0f%%", hitRatePct)
+		case savedTokens > 0 && hasRecentEvents:
+			line = fmt.Sprintf("吸T神功 · 本次省%s · 命中率%.0f%%", formatTokenCount(savedTokens), hitRatePct)
+		case savedTokens > 0:
+			line = fmt.Sprintf("吸T神功 · 本次省%s Token", formatTokenCount(savedTokens))
+		case hookInstalled:
+			line = statusLineReady
+		default:
+			line = statusLineFallback
+		}
+
+		verdictStr := ""
+		if report != nil {
+			verdictStr = report.Verdict
+		}
+		data := map[string]interface{}{
+			"line":                line,
+			"color":               "gold",
+			"hit_rate":            hitRatePct,
+			"saved_tokens_recent": savedTokens,
+			"hook_installed":      hookInstalled,
+			"has_recent_events":   hasRecentEvents,
+			"verdict":             verdictStr,
+			"source":              source,
+			"autostate_path":      autoPath,
+		}
+		return line, data
 	}
 
-	// Build one-line text by priority.
-	var line string
-	switch {
-	case hasRecentEvents && verdictPass && savedTokens > 0:
-		line = fmt.Sprintf("吸T神功 · 本次省%s · 命中率%.0f%%", formatTokenCount(savedTokens), hitRatePct)
-	case hasRecentEvents && verdictPass:
-		line = fmt.Sprintf("吸T神功 · Claude observe · 命中率%.0f%%", hitRatePct)
-	case savedTokens > 0 && hasRecentEvents:
-		line = fmt.Sprintf("吸T神功 · 本次省%s · 命中率%.0f%%", formatTokenCount(savedTokens), hitRatePct)
-	case savedTokens > 0:
-		line = fmt.Sprintf("吸T神功 · 本次省%s Token · 待观测", formatTokenCount(savedTokens))
-	case hookInstalled:
-		line = statusLineReady
-	default:
-		line = statusLineFallback
-	}
-
-	verdictStr := ""
-	if report != nil {
-		verdictStr = report.Verdict
-	}
 	data := map[string]interface{}{
-		"line":                line,
-		"color":               "gold",
-		"hit_rate":            hitRatePct,
-		"saved_tokens_recent": savedTokens,
-		"hook_installed":      hookInstalled,
-		"has_recent_events":   hasRecentEvents,
-		"verdict":             verdictStr,
+		"line":           line,
+		"color":          "gold",
+		"source":         source,
+		"hook_installed": hookInstalled,
+		"autostate_path": autoPath,
 	}
 	return line, data
 }

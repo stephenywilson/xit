@@ -90,6 +90,10 @@ func TestClassifyPolicy(t *testing.T) {
 		{"npm install", []string{"npm", "install"}, "needs_review"},
 		{"unknown", []string{"foobar"}, "needs_review"},
 		{"empty", []string{}, "needs_review"},
+		{"diagnostic find limited paths", []string{"find", "/opt/homebrew", "/usr/local", "-name", "rg"}, "needs_review"},
+		{"diagnostic find single path", []string{"find", "/usr/bin", "-name", "ls"}, "needs_review"},
+		{"find project", []string{"find", ".", "-name", "*.go"}, "should_compress"},
+		{"find root", []string{"find", "/", "-name", "*.go"}, "should_compress"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

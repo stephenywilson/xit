@@ -85,9 +85,10 @@ Claude Code 支持官方 `statusLine` API，在底部状态栏显示自定义文
 
 输出示例：
 ```
-吸T神功 · Claude observe · 命中率100%
-吸T神功 · 本次省9k · 命中率100%
-吸T神功 · Claude observe · 准备就绪
+吸T神功 · 正在吸T中
+吸T神功 · 本次省9k Token
+吸T神功 · Claude · 命中率100%
+吸T神功 · Claude · 准备就绪
 ```
 
 颜色：暗金 `\033[38;5;178m`（256-color gold）
@@ -125,12 +126,14 @@ xit claude statusline uninstall --yes             # 移除 statusLine
 
 | 条件 | 输出 |
 |------|------|
-| 最近 10min 有 hook events + verdict pass | `吸T神功 · Claude observe · 命中率X%` |
-| 最近 10min 有 xit auto history | `吸T神功 · 本次省Xk · 命中率Y%` |
-| hook installed 但无数据 | `吸T神功 · Claude observe · 准备就绪` |
-| 无法判断 | `吸T神功 · Claude observe · 待观测` |
+| xit auto running（10min 内） | `吸T神功 · 正在吸T中` |
+| xit auto completed（30s 内） | `吸T神功 · 本次省Xk Token` |
+| 最近 10min 有 hook events + verdict pass | `吸T神功 · Claude · 命中率X%` |
+| 最近 10min 有 xit auto history | `吸T神功 · 本次省Xk Token` |
+| hook installed 但无数据 | `吸T神功 · Claude · 准备就绪` |
+| 无法判断 | `吸T神功 · Claude · 准备就绪` |
 
-fail-open：任何异常均输出 `待观测`，不 panic，不输出多行。
+fail-open：任何异常均输出 `吸T神功 · Claude · 准备就绪`，不 panic，不输出多行。
 
 ## 技术说明
 

@@ -1,0 +1,63 @@
+# XiT runtime data
+.xit/
+cmd/xit/.xit/
+
+# Local compiled binaries (root-level only)
+/xit
+/main
+/xit-darwin-arm64
+/xit-darwin-amd64
+/xit-linux-amd64
+/xit-linux-arm64
+/xit-windows-amd64.exe
+/xit_check
+
+# AI CLI local config (contains local hooks, oauth, backups — not for repo)
+.claude/
+.kimi/
+
+# Temp smoke test dirs
+.tmp_smoke_*/
+
+# npm build artifacts
+npm/xitsg/*.tgz
+npm/xitsg/xitsg-*.tgz
+
+# Node package lock (test artifacts)
+package-lock.json
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Go build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/
+
+# Coverage and profiles
+coverage.out
+coverage.txt
+*.cover
+*.prof
+
+# Temp files
+*.tmp
+tmp/
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

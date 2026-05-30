@@ -1,0 +1,31 @@
+{
+  "name": "xitsg",
+  "version": "0.2.40",
+  "description": "XiT / 吸T神功: AI CLI command-output compression, raw_log evidence, and Kimi integration.",
+  "bin": {
+    "xit": "bin/xit.js"
+  },
+  "files": [
+    "bin",
+    "vendor",
+    "README.md",
+    "LICENSE"
+  ],
+  "preferGlobal": true,
+  "license": "MIT",
+  "keywords": [
+    "xit",
+    "ai",
+    "cli",
+    "kimi",
+    "compression",
+    "raw-log"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/stephenywilson/xit.git"
+  },
+  "engines": {
+    "node": ">=14"
+  }
+}

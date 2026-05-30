@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -2658,10 +2659,31 @@ func cmdClaudeStatuslineInstall(args []string) int {
 		}
 	}
 
+	// Resolve absolute path to xit for reliable execution inside Claude Code.
+	xitPath, lookErr := exec.LookPath("xit")
+	if lookErr != nil || xitPath == "" {
+		// Fallback to common install locations
+		candidates := []string{
+			filepath.Join(os.Getenv("HOME"), ".local", "bin", "xit"),
+			"/usr/local/bin/xit",
+			"/opt/homebrew/bin/xit",
+		}
+		for _, c := range candidates {
+			if _, err := os.Stat(c); err == nil {
+				xitPath = c
+				break
+			}
+		}
+	}
+	if xitPath == "" {
+		fmt.Fprintln(os.Stderr, "cannot find xit in PATH; ensure xit is installed and in PATH before installing statusLine")
+		return 1
+	}
+
 	// Build statusLine value.
 	statusLineVal := map[string]interface{}{
 		"type":    "command",
-		"command": "xit claude statusline",
+		"command": xitPath + " claude statusline",
 		"padding": 0,
 	}
 	slData, _ := json.Marshal(statusLineVal)
@@ -2683,27 +2705,75 @@ func cmdClaudeStatuslineInstall(args []string) int {
 	return 0
 }
 
-func cmdClaudeStatuslineStatus() int {
-	settingsPath := claudeLocalSettingsPath()
-	m, err := readRawSettings(settingsPath)
-	installed := false
-	command := ""
-	if err == nil {
-		if slRaw, exists := m["statusLine"]; exists {
-			installed = true
-			var sl map[string]interface{}
-			if json.Unmarshal(slRaw, &sl) == nil {
-				if cmd, ok := sl["command"].(string); ok {
-					command = cmd
+type statusLineLayer struct {
+	Path            string
+	Exists          bool
+	Installed       bool
+	Command         string
+	CommandAbsolute string
+	CommandExists   bool
+	CommandExecOK   bool
+}
+
+func inspectStatusLineLayer(path string) *statusLineLayer {
+	l := &statusLineLayer{Path: path}
+	m, err := readRawSettings(path)
+	if err != nil {
+		return l
+	}
+	l.Exists = true
+	if slRaw, exists := m["statusLine"]; exists {
+		l.Installed = true
+		var sl map[string]interface{}
+		if json.Unmarshal(slRaw, &sl) == nil {
+			if cmd, ok := sl["command"].(string); ok {
+				l.Command = cmd
+				// Extract first word as executable candidate
+				fields := strings.Fields(cmd)
+				if len(fields) > 0 {
+					candidate := fields[0]
+					if filepath.IsAbs(candidate) {
+						l.CommandAbsolute = candidate
+					} else {
+						if abs, err := exec.LookPath(candidate); err == nil {
+							l.CommandAbsolute = abs
+						}
+					}
+					if _, err := os.Stat(l.CommandAbsolute); err == nil {
+						l.CommandExists = true
+					}
+					// Try exec permission
+					if runtime.GOOS != "windows" {
+						if info, err := os.Stat(l.CommandAbsolute); err == nil {
+							mode := info.Mode()
+							l.CommandExecOK = mode&0111 != 0
+						}
+					} else {
+						l.CommandExecOK = l.CommandExists
+					}
 				}
 			}
 		}
 	}
+	return l
+}
+
+func cmdClaudeStatuslineStatus() int {
+	projectLocal := inspectStatusLineLayer(claudeLocalSettingsPath())
+	project := inspectStatusLineLayer(filepath.Join(".claude", "settings.json"))
+
+	userPath := ""
+	if homeDir := os.Getenv("HOME"); homeDir != "" {
+		userPath = filepath.Join(homeDir, ".claude", "settings.json")
+	} else if h, err := os.UserHomeDir(); err == nil {
+		userPath = filepath.Join(h, ".claude", "settings.json")
+	}
+	user := inspectStatusLineLayer(userPath)
 
 	userXiT := ""
 	if homeDir := os.Getenv("HOME"); homeDir != "" {
 		userXiT = filepath.Join(homeDir, ".xit")
-	} else if h, err2 := os.UserHomeDir(); err2 == nil {
+	} else if h, err := os.UserHomeDir(); err == nil {
 		userXiT = filepath.Join(h, ".xit")
 	}
 
@@ -2724,24 +2794,42 @@ func cmdClaudeStatuslineStatus() int {
 		}
 	}
 
+	printLayer := func(name string, l *statusLineLayer) {
+		fmt.Printf("%s:\n", name)
+		fmt.Printf("  path:             %s\n", l.Path)
+		fmt.Printf("  exists:           %v\n", l.Exists)
+		fmt.Printf("  installed:        %v\n", l.Installed)
+		if l.Installed {
+			fmt.Printf("  command:          %s\n", l.Command)
+			fmt.Printf("  command_absolute: %s\n", l.CommandAbsolute)
+			fmt.Printf("  command_exists:   %v\n", l.CommandExists)
+			fmt.Printf("  command_exec_ok:  %v\n", l.CommandExecOK)
+		}
+	}
+
 	fmt.Println("XiT Claude StatusLine")
 	fmt.Println()
-	fmt.Printf("scope:      project-local\n")
-	fmt.Printf("settings:   %s\n", settingsPath)
-	if installed {
-		fmt.Printf("installed:  yes\n")
-		if command != "" {
-			fmt.Printf("command:    %s\n", command)
-		}
-	} else {
-		fmt.Printf("installed:  no\n")
-		fmt.Printf("\nTo install: xit claude statusline install --scope project-local --yes\n")
+	printLayer("project_local", projectLocal)
+	fmt.Println()
+	printLayer("project", project)
+	fmt.Println()
+	printLayer("user", user)
+	fmt.Println()
+
+	// Guess effective layer
+	effective := "unknown"
+	if user.Installed {
+		effective = "user"
+	} else if project.Installed {
+		effective = "project"
+	} else if projectLocal.Installed {
+		effective = "project-local"
 	}
-	fmt.Printf("color:      gold\n")
-	fmt.Printf("official_api: yes\n")
-	fmt.Printf("hook_mode:  %s\n", hookMode)
-	fmt.Printf("reroute:    %s\n", reroute)
-	fmt.Printf("strict:     disabled\n")
+	fmt.Printf("effective_guess:  %s\n", effective)
+	fmt.Println()
+	fmt.Printf("hook_mode:        %s\n", hookMode)
+	fmt.Printf("reroute:          %s\n", reroute)
+	fmt.Printf("strict:           disabled\n")
 	return 0
 }
 

@@ -2,6 +2,9 @@
 .xit/
 cmd/xit/.xit/
 
+# Antigravity CLI runtime
+.antigravitycli/
+
 # Local compiled binaries (root-level only)
 /xit
 /main

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/stephenywilson/xit/internal/autoshim"
+	"github.com/stephenywilson/xit/internal/autostate"
 	"github.com/stephenywilson/xit/internal/claudehook"
 	"github.com/stephenywilson/xit/internal/config"
 	"github.com/stephenywilson/xit/internal/doctor"
@@ -2945,52 +2946,81 @@ func computeAntigravityStatuslineText() (string, map[string]interface{}) {
 	userXiT := filepath.Join(homeDir, ".xit")
 	projectHome := xitHome()
 	window := 10 * time.Minute
+	now := time.Now()
 
-	// Recent hitrate (10 min window). For Antigravity this is history-only.
-	report, _ := hitrate.ComputeReportForAdapter("antigravity", userXiT, projectHome, window)
-	hasRecentEvents := report != nil && report.ShellCommandsSeen > 0
-	hitRatePct := 0.0
-	if report != nil && (report.ShouldCompress.Total+report.ShouldPassthrough.Total) > 0 {
-		total := report.ShouldCompress.Total + report.ShouldPassthrough.Total
-		correct := report.ShouldCompress.CorrectlyWrapped + report.ShouldPassthrough.CorrectlyPassthrough
-		hitRatePct = float64(correct) / float64(total) * 100
-	}
+	// 1. Check autostate for running or recently completed xit auto.
+	autoState, autoPath, _ := autostate.Read(projectHome, userXiT)
 
-	// Recent token savings from xit auto history (10 min).
-	savedTokens := 0
-	if m, err := history.ComputeSessionMetrics(projectHome, window); err == nil && m != nil {
-		if m.CurrentSession.SavedBytes > 0 {
-			savedTokens = m.CurrentSession.SavedBytes / 4
+	var line string
+	source := "history"
+
+	switch {
+	case autostate.IsRunningFresh(autoState, now):
+		line = "吸T神功 · 正在吸T中"
+		source = "autostate_running"
+	case autostate.IsCompletedFresh(autoState, now) && autoState != nil && autoState.SavedBytes > 0:
+		line = fmt.Sprintf("吸T神功 · 本次省%s Token", formatTokenCount(int(autoState.SavedBytes/4)))
+		source = "autostate_completed"
+	default:
+		// Recent hitrate (10 min window). For Antigravity this is history-only.
+		report, _ := hitrate.ComputeReportForAdapter("antigravity", userXiT, projectHome, window)
+		hasRecentEvents := report != nil && report.ShellCommandsSeen > 0
+		hitRatePct := 0.0
+		if report != nil && (report.ShouldCompress.Total+report.ShouldPassthrough.Total) > 0 {
+			total := report.ShouldCompress.Total + report.ShouldPassthrough.Total
+			correct := report.ShouldCompress.CorrectlyWrapped + report.ShouldPassthrough.CorrectlyPassthrough
+			hitRatePct = float64(correct) / float64(total) * 100
 		}
-	}
-	if savedTokens == 0 {
-		if m, err := history.ComputeSessionMetrics(userXiT, window); err == nil && m != nil {
+
+		// Recent token savings from xit auto history (10 min).
+		savedTokens := 0
+		if m, err := history.ComputeSessionMetrics(projectHome, window); err == nil && m != nil {
 			if m.CurrentSession.SavedBytes > 0 {
 				savedTokens = m.CurrentSession.SavedBytes / 4
 			}
 		}
+		if savedTokens == 0 {
+			if m, err := history.ComputeSessionMetrics(userXiT, window); err == nil && m != nil {
+				if m.CurrentSession.SavedBytes > 0 {
+					savedTokens = m.CurrentSession.SavedBytes / 4
+				}
+			}
+		}
+
+		if savedTokens > 0 {
+			line = fmt.Sprintf("吸T神功 · 本次省%s Token", formatTokenCount(savedTokens))
+		} else if hasRecentEvents {
+			line = antigravityStatusLineReady
+		} else {
+			line = antigravityStatusLineFallback
+		}
+
+		verdictStr := ""
+		if report != nil {
+			verdictStr = report.Verdict
+		}
+		data := map[string]interface{}{
+			"line":                line,
+			"color":               "gold",
+			"hit_rate":            hitRatePct,
+			"saved_tokens_recent": savedTokens,
+			"has_recent_events":   hasRecentEvents,
+			"verdict":             verdictStr,
+			"source":              source,
+			"autostate_path":      autoPath,
+		}
+		return line, data
 	}
 
-	// Build one-line text by priority.
-	var line string
-	switch {
-	case savedTokens > 0:
-		line = fmt.Sprintf("吸T神功 · 本次省%s Token", formatTokenCount(savedTokens))
-	default:
-		line = antigravityStatusLineFallback
-	}
-
-	verdictStr := ""
-	if report != nil {
-		verdictStr = report.Verdict
-	}
 	data := map[string]interface{}{
-		"line":                line,
-		"color":               "gold",
-		"hit_rate":            hitRatePct,
-		"saved_tokens_recent": savedTokens,
-		"has_recent_events":   hasRecentEvents,
-		"verdict":             verdictStr,
+		"line":           line,
+		"color":          "gold",
+		"source":         source,
+		"autostate_path": autoPath,
+	}
+	if autoState != nil {
+		data["autostate_status"] = autoState.Status
+		data["autostate_saved_bytes"] = autoState.SavedBytes
 	}
 	return line, data
 }

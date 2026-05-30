@@ -1,90 +1,96 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 380" width="800" height="380">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 390" width="800" height="390">
   <defs>
-    <linearGradient id="bg2" x1="0" y1="0" x2="1" y2="1">
+    <linearGradient id="babg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0%" stop-color="#0d1117"/>
       <stop offset="100%" stop-color="#161b22"/>
     </linearGradient>
   </defs>
 
-  <rect width="800" height="380" fill="url(#bg2)"/>
+  <rect width="800" height="390" fill="url(#babg)"/>
 
   <!-- Title -->
-  <text x="400" y="38" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="18" font-weight="700" fill="#e6edf3" text-anchor="middle">Before / After</text>
+  <text x="400" y="36" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="17" font-weight="700" fill="#e6edf3" text-anchor="middle">Before vs After</text>
 
   <!-- LEFT: Before panel -->
-  <rect x="32" y="56" width="320" height="292" rx="10" fill="#161b22" stroke="#30363d" stroke-width="1.5"/>
+  <rect x="28" y="54" width="318" height="304" rx="10" fill="#161b22" stroke="#f85149" stroke-width="1.5"/>
 
-  <!-- Before header -->
-  <rect x="32" y="56" width="320" height="36" rx="10" fill="#21262d"/>
-  <rect x="32" y="76" width="320" height="16" fill="#21262d"/>
-  <text x="192" y="78" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#f85149" text-anchor="middle" font-weight="600">✗  BEFORE  —  Raw output</text>
+  <!-- Header -->
+  <rect x="28" y="54" width="318" height="36" rx="10" fill="#2d1b1b"/>
+  <rect x="28" y="74" width="318" height="16" fill="#2d1b1b"/>
+  <text x="187" y="76" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#f85149" text-anchor="middle" font-weight="600">✗  BEFORE  —  Raw output</text>
 
-  <!-- Before content -->
-  <text x="52" y="114" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#6e7681">$ go test -v ./...</text>
-  <text x="52" y="132" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#6e7681">=== RUN   TestAutoShim</text>
-  <text x="52" y="148" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#6e7681">--- PASS: TestAutoShim (0.00s)</text>
-  <text x="52" y="164" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#6e7681">=== RUN   TestPolicy</text>
-  <text x="52" y="180" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#6e7681">--- PASS: TestPolicy (0.00s)</text>
-  <text x="52" y="196" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#6e7681">=== RUN   TestHistory</text>
-  <text x="52" y="212" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#6e7681">--- PASS: TestHistory (0.01s)</text>
-  <text x="52" y="228" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#6e7681">=== RUN   TestSession</text>
-  <text x="52" y="244" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#6e7681">--- PASS: TestSession (0.00s)</text>
-  <text x="52" y="260" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#6e7681">    ... 400+ more lines ...</text>
-  <text x="52" y="276" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#6e7681">ok  github.com/.../filters  2.1s</text>
-  <text x="52" y="292" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#6e7681">ok  github.com/.../session  0.8s</text>
+  <!-- Command -->
+  <text x="48" y="110" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11.5" fill="#8b949e">$ go test -v ./...</text>
 
-  <!-- Before size badge -->
-  <rect x="52" y="314" width="96" height="20" rx="4" fill="#2d1b1b"/>
-  <text x="100" y="328" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#f85149" text-anchor="middle">36,000 bytes</text>
+  <!-- Noisy content -->
+  <text x="48" y="130" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#6e7681">=== RUN   TestAutoShim/Policy_classify</text>
+  <text x="48" y="147" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#6e7681">--- PASS: TestAutoShim/Policy_classify (0.00s)</text>
+  <text x="48" y="164" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#6e7681">=== RUN   TestShim</text>
+  <text x="48" y="181" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#6e7681">--- PASS: TestShim (0.00s)</text>
+  <text x="48" y="198" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#6e7681">=== RUN   TestSession_basic</text>
+  <text x="48" y="215" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#6e7681">--- PASS: TestSession_basic (0.23s)</text>
+  <text x="48" y="232" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#6e7681">=== RUN   TestHistory_append</text>
+  <text x="48" y="249" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#6e7681">--- PASS: TestHistory_append (0.00s)</text>
+  <text x="48" y="266" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#484f58">    ··· 400+ more lines ···</text>
+  <text x="48" y="283" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#6e7681">ok  github.com/.../autoshim  0.33s</text>
+  <text x="48" y="300" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#6e7681">ok  github.com/.../session   0.81s</text>
 
-  <rect x="158" y="314" width="80" height="20" rx="4" fill="#2d1b1b"/>
-  <text x="198" y="328" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#f85149" text-anchor="middle">~9k tokens</text>
+  <!-- Size badges -->
+  <rect x="48" y="318" width="96" height="22" rx="4" fill="#2d1b1b"/>
+  <text x="96" y="332" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#f85149" text-anchor="middle">35,629 bytes</text>
 
-  <!-- ARROW in middle -->
-  <text x="400" y="168" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="13" fill="#56f5a3" text-anchor="middle" font-weight="600">xit auto</text>
-  <!-- Arrow shaft -->
-  <line x1="360" y1="200" x2="440" y2="200" stroke="#56f5a3" stroke-width="2.5"/>
-  <!-- Arrowhead -->
-  <polygon points="440,194 452,200 440,206" fill="#56f5a3"/>
-  <!-- Left tail -->
-  <polygon points="360,194 348,200 360,206" fill="#56f5a3"/>
+  <rect x="154" y="318" width="80" height="22" rx="4" fill="#2d1b1b"/>
+  <text x="194" y="332" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#f85149" text-anchor="middle">~8,907 tokens</text>
 
-  <text x="400" y="230" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#8b949e" text-anchor="middle">99% reduction</text>
-  <text x="400" y="248" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#8b949e" text-anchor="middle">~9000 tokens saved</text>
-  <text x="400" y="264" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="9.5" fill="#6e7681" text-anchor="middle">(saved_bytes / 4 est.)</text>
+  <!-- MIDDLE arrow -->
+  <text x="400" y="164" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="13" fill="#56f5a3" text-anchor="middle" font-weight="700">xit auto</text>
+  <line x1="358" y1="195" x2="442" y2="195" stroke="#56f5a3" stroke-width="2.5"/>
+  <polygon points="442,189 455,195 442,201" fill="#56f5a3"/>
+  <polygon points="358,189 345,195 358,201" fill="#56f5a3"/>
+  <text x="400" y="222" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#56f5a3" text-anchor="middle" font-weight="700">99%</text>
+  <text x="400" y="240" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#8b949e" text-anchor="middle">reduction</text>
+  <text x="400" y="260" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10" fill="#6e7681" text-anchor="middle">saved_bytes / 4 est.</text>
 
   <!-- RIGHT: After panel -->
-  <rect x="448" y="56" width="320" height="292" rx="10" fill="#161b22" stroke="#56f5a3" stroke-width="1.5"/>
+  <rect x="454" y="54" width="318" height="304" rx="10" fill="#161b22" stroke="#56f5a3" stroke-width="1.5"/>
 
-  <!-- After header -->
-  <rect x="448" y="56" width="320" height="36" rx="10" fill="#132a1e"/>
-  <rect x="448" y="76" width="320" height="16" fill="#132a1e"/>
-  <text x="608" y="78" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#56f5a3" text-anchor="middle" font-weight="600">✓  AFTER  —  XiT Summary</text>
+  <!-- Header -->
+  <rect x="454" y="54" width="318" height="36" rx="10" fill="#132a1e"/>
+  <rect x="454" y="74" width="318" height="16" fill="#132a1e"/>
+  <text x="613" y="76" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#56f5a3" text-anchor="middle" font-weight="600">✓  AFTER  —  XiT Summary</text>
 
-  <!-- After content -->
-  <text x="468" y="114" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#6e7681">$ xit auto go test -v ./...</text>
+  <!-- Command -->
+  <text x="474" y="110" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11.5" fill="#8b949e">$ xit auto go test -v ./...</text>
 
-  <text x="468" y="136" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#56f5a3" font-weight="600">XiT Auto Summary</text>
-  <text x="468" y="156" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#8b949e">command:   </text>
-  <text x="556" y="156" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#e6edf3">go test -v ./...</text>
-  <text x="468" y="174" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#8b949e">exit_code: </text>
-  <text x="556" y="174" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#56f5a3">0</text>
-  <text x="468" y="192" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#8b949e">reduction: </text>
-  <text x="556" y="192" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#56f5a3">99%</text>
-  <text x="468" y="210" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#8b949e">raw_log:   </text>
-  <text x="556" y="210" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#79c0ff">.xit/runs/…raw.log</text>
+  <!-- Summary output -->
+  <text x="474" y="134" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#56f5a3" font-weight="bold">XiT Auto Summary</text>
 
-  <line x1="468" y1="224" x2="752" y2="224" stroke="#30363d" stroke-width="1"/>
+  <text x="474" y="156" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#6e7681">command:   </text>
+  <text x="566" y="156" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#e6edf3">go test -v ./...</text>
 
-  <text x="468" y="244" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#8b949e">Key facts:</text>
-  <text x="468" y="262" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#e6edf3">· All tests passed</text>
-  <text x="468" y="278" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#e6edf3">· No panic / bounds error</text>
-  <text x="468" y="294" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#e6edf3">· 19 packages checked</text>
+  <text x="474" y="175" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#6e7681">exit_code: </text>
+  <text x="566" y="175" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#56f5a3">0</text>
 
-  <!-- After size badge -->
-  <rect x="468" y="314" width="80" height="20" rx="4" fill="#132a1e"/>
-  <text x="508" y="328" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#56f5a3" text-anchor="middle">467 bytes</text>
+  <text x="474" y="194" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#6e7681">reduction: </text>
+  <text x="566" y="194" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#56f5a3">99%</text>
 
-  <rect x="558" y="314" width="76" height="20" rx="4" fill="#132a1e"/>
-  <text x="596" y="328" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#56f5a3" text-anchor="middle">~117 tokens</text>
+  <text x="474" y="213" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#6e7681">raw_log:   </text>
+  <text x="566" y="213" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#79c0ff">.xit/runs/…raw.log ←local</text>
+
+  <line x1="474" y1="226" x2="752" y2="226" stroke="#30363d" stroke-width="1"/>
+
+  <text x="474" y="246" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#6e7681">Key facts:</text>
+  <text x="474" y="264" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#e6edf3">· All tests passed · no panic</text>
+  <text x="474" y="281" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#e6edf3">· 19 packages · 0 failures</text>
+  <text x="474" y="298" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#e6edf3">· Full raw output preserved</text>
+
+  <!-- Size badges -->
+  <rect x="474" y="318" width="72" height="22" rx="4" fill="#132a1e"/>
+  <text x="510" y="332" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#56f5a3" text-anchor="middle">318 bytes</text>
+
+  <rect x="556" y="318" width="96" height="22" rx="4" fill="#132a1e"/>
+  <text x="604" y="332" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#56f5a3" text-anchor="middle">~80 tokens</text>
+
+  <!-- Bottom note -->
+  <text x="400" y="376" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11.5" fill="#6e7681" text-anchor="middle">Real dogfood: 35,629 bytes → 318 bytes · ~8,907 tokens saved · saved_bytes / 4 estimate</text>
 </svg>

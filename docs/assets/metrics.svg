@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 220" width="800" height="220">
+  <defs>
+    <linearGradient id="mbg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0d1117"/>
+      <stop offset="100%" stop-color="#161b22"/>
+    </linearGradient>
+    <linearGradient id="cardGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#132a1e"/>
+      <stop offset="100%" stop-color="#0d1f15"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="800" height="220" fill="url(#mbg)"/>
+
+  <!-- Title -->
+  <text x="400" y="30" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="14" font-weight="600" fill="#8b949e" text-anchor="middle">Real dogfood metrics · local XiT runs · saved_tokens = saved_bytes / 4</text>
+
+  <!-- Card 1: Lifetime reduction -->
+  <rect x="20" y="48" width="175" height="148" rx="10" fill="url(#cardGrad)" stroke="#1e4a30" stroke-width="1.5"/>
+  <text x="107" y="90" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="44" font-weight="800" fill="#56f5a3" text-anchor="middle">91.8%</text>
+  <line x1="40" y1="108" x2="175" y2="108" stroke="#1e4a30" stroke-width="1"/>
+  <text x="107" y="130" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" fill="#8b949e" text-anchor="middle">Lifetime output</text>
+  <text x="107" y="148" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" fill="#8b949e" text-anchor="middle">reduction</text>
+  <text x="107" y="178" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#6e7681" text-anchor="middle">120 commands</text>
+
+  <!-- Card 2: Session reduction -->
+  <rect x="208" y="48" width="175" height="148" rx="10" fill="url(#cardGrad)" stroke="#1e4a30" stroke-width="1.5"/>
+  <text x="295" y="90" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="44" font-weight="800" fill="#56f5a3" text-anchor="middle">98.7%</text>
+  <line x1="228" y1="108" x2="363" y2="108" stroke="#1e4a30" stroke-width="1"/>
+  <text x="295" y="130" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" fill="#8b949e" text-anchor="middle">Session output</text>
+  <text x="295" y="148" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" fill="#8b949e" text-anchor="middle">reduction</text>
+  <text x="295" y="178" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#6e7681" text-anchor="middle">6 commands, 2h</text>
+
+  <!-- Card 3: Tokens saved -->
+  <rect x="396" y="48" width="175" height="148" rx="10" fill="url(#cardGrad)" stroke="#1e4a30" stroke-width="1.5"/>
+  <text x="483" y="90" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="40" font-weight="800" fill="#56f5a3" text-anchor="middle">~359k</text>
+  <line x1="416" y1="108" x2="551" y2="108" stroke="#1e4a30" stroke-width="1"/>
+  <text x="483" y="130" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" fill="#8b949e" text-anchor="middle">Estimated tokens</text>
+  <text x="483" y="148" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" fill="#8b949e" text-anchor="middle">saved (lifetime)</text>
+  <text x="483" y="178" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#6e7681" text-anchor="middle">saved_bytes / 4 est.</text>
+
+  <!-- Card 4: Latest turn -->
+  <rect x="584" y="48" width="196" height="148" rx="10" fill="url(#cardGrad)" stroke="#1e4a30" stroke-width="1.5"/>
+  <text x="682" y="90" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="44" font-weight="800" fill="#56f5a3" text-anchor="middle">~9k</text>
+  <line x1="604" y1="108" x2="760" y2="108" stroke="#1e4a30" stroke-width="1"/>
+  <text x="682" y="130" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" fill="#8b949e" text-anchor="middle">Tokens saved in</text>
+  <text x="682" y="148" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" fill="#8b949e" text-anchor="middle">latest turn</text>
+  <text x="682" y="178" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="10.5" fill="#6e7681" text-anchor="middle">go test -v ./...</text>
+</svg>

@@ -381,6 +381,11 @@ Usage:
   xit kimi rules dogfood                             Print copy-paste prompt to verify rules are active
   xit session [--no-auto-shims] <cmd...>             Launch session with auto command shims
   xit kimi [--unsafe-pty] [--no-auto-shims]          Launch Kimi with XiT wrapper (unsafe)
+  xit claude statusline                              Output one-line Claude Code status bar text
+  xit claude statusline --json                       Output status bar data as JSON
+  xit claude statusline install --scope project-local --yes  Install statusLine into .claude/settings.local.json
+  xit claude statusline status                       Show Claude statusLine config status
+  xit claude statusline uninstall --yes              Remove XiT statusLine from .claude/settings.local.json
   xit claude                                         Launch Claude with XiT wrapper
   xit codex                                          Launch Codex with XiT wrapper
   xit gain                                           Show saved token statistics
@@ -1263,6 +1268,10 @@ func cmdWrapper(target string, args []string, globalMode string) int {
 	}
 	if target == "kimi" && len(args) > 0 && args[0] == "turn-diagnose" {
 		return cmdKimiTurnDiagnose(args[1:])
+	}
+
+	if target == "claude" && len(args) > 0 && args[0] == "statusline" {
+		return cmdClaudeStatusline(args[1:])
 	}
 
 	home := userXiTHome()
@@ -2439,6 +2448,342 @@ func cmdBenchCompression(args []string) int {
 	_ = g
 	return 0
 }
+
+// ---------- Claude StatusLine ----------
+
+const (
+	statusLineGoldColor = "\033[38;5;178m"
+	statusLineReset     = "\033[0m"
+	statusLineFallback  = "吸T神功 · Claude observe · 待观测"
+	statusLineReady     = "吸T神功 · Claude observe · 准备就绪"
+)
+
+func cmdClaudeStatusline(args []string) int {
+	if len(args) > 0 {
+		switch args[0] {
+		case "install":
+			return cmdClaudeStatuslineInstall(args[1:])
+		case "status":
+			return cmdClaudeStatuslineStatus()
+		case "uninstall":
+			return cmdClaudeStatuslineUninstall(args[1:])
+		}
+	}
+
+	useJSON := false
+	for _, a := range args {
+		if a == "--json" {
+			useJSON = true
+		}
+	}
+
+	line, data := computeClaudeStatuslineText()
+
+	if useJSON {
+		out, _ := json.MarshalIndent(data, "", "  ")
+		fmt.Println(string(out))
+		return 0
+	}
+
+	noColor := os.Getenv("NO_COLOR") != ""
+	if noColor {
+		fmt.Println(line)
+	} else {
+		fmt.Printf("%s%s%s\n", statusLineGoldColor, line, statusLineReset)
+	}
+	return 0
+}
+
+func computeClaudeStatuslineText() (string, map[string]interface{}) {
+	// fail-open: any panic returns fallback
+	defer func() { recover() }() //nolint
+
+	homeDir := os.Getenv("HOME")
+	if homeDir == "" {
+		if h, err := os.UserHomeDir(); err == nil {
+			homeDir = h
+		}
+	}
+	if homeDir == "" {
+		return statusLineFallback, map[string]interface{}{"line": statusLineFallback, "source": "no_home"}
+	}
+	userXiT := filepath.Join(homeDir, ".xit")
+	projectHome := xitHome()
+	window := 10 * time.Minute
+
+	// Check hook installed (project scope only, observe mode).
+	hookInstalled := false
+	if st, err := claudehook.Status(claudehook.ProjectSettingsPath(), userXiT); err == nil {
+		hookInstalled = st.Installed
+	}
+
+	// Recent hitrate (10 min window).
+	report, _ := hitrate.ComputeReportForAdapter("claude", userXiT, projectHome, window)
+	hasRecentEvents := report != nil && report.ShellCommandsSeen > 0
+	hitRatePct := 0.0
+	verdictPass := false
+	if report != nil && (report.ShouldCompress.Total+report.ShouldPassthrough.Total) > 0 {
+		total := report.ShouldCompress.Total + report.ShouldPassthrough.Total
+		correct := report.ShouldCompress.CorrectlyWrapped + report.ShouldPassthrough.CorrectlyPassthrough
+		hitRatePct = float64(correct) / float64(total) * 100
+		verdictPass = report.Verdict == "pass"
+	}
+
+	// Recent token savings from xit auto history (10 min).
+	savedTokens := 0
+	if m, err := history.ComputeSessionMetrics(projectHome, window); err == nil && m != nil {
+		if m.CurrentSession.SavedBytes > 0 {
+			savedTokens = m.CurrentSession.SavedBytes / 4
+		}
+	}
+	if savedTokens == 0 {
+		if m, err := history.ComputeSessionMetrics(userXiT, window); err == nil && m != nil {
+			if m.CurrentSession.SavedBytes > 0 {
+				savedTokens = m.CurrentSession.SavedBytes / 4
+			}
+		}
+	}
+
+	// Build one-line text by priority.
+	var line string
+	switch {
+	case hasRecentEvents && verdictPass && savedTokens > 0:
+		line = fmt.Sprintf("吸T神功 · 本次省%s · 命中率%.0f%%", formatTokenCount(savedTokens), hitRatePct)
+	case hasRecentEvents && verdictPass:
+		line = fmt.Sprintf("吸T神功 · Claude observe · 命中率%.0f%%", hitRatePct)
+	case savedTokens > 0 && hasRecentEvents:
+		line = fmt.Sprintf("吸T神功 · 本次省%s · 命中率%.0f%%", formatTokenCount(savedTokens), hitRatePct)
+	case savedTokens > 0:
+		line = fmt.Sprintf("吸T神功 · 本次省%s Token · 待观测", formatTokenCount(savedTokens))
+	case hookInstalled:
+		line = statusLineReady
+	default:
+		line = statusLineFallback
+	}
+
+	verdictStr := ""
+	if report != nil {
+		verdictStr = report.Verdict
+	}
+	data := map[string]interface{}{
+		"line":                line,
+		"color":               "gold",
+		"hit_rate":            hitRatePct,
+		"saved_tokens_recent": savedTokens,
+		"hook_installed":      hookInstalled,
+		"has_recent_events":   hasRecentEvents,
+		"verdict":             verdictStr,
+	}
+	return line, data
+}
+
+func formatTokenCount(n int) string {
+	if n >= 1000 {
+		return fmt.Sprintf("%.0fk", float64(n)/1000)
+	}
+	return fmt.Sprintf("%d", n)
+}
+
+// claudeLocalSettingsPath returns the project-local Claude settings path.
+func claudeLocalSettingsPath() string {
+	return filepath.Join(".claude", "settings.local.json")
+}
+
+// readRawSettings reads a Claude settings file as a generic map to preserve all fields.
+func readRawSettings(path string) (map[string]json.RawMessage, error) {
+	m := make(map[string]json.RawMessage)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return m, nil
+		}
+		return nil, err
+	}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, fmt.Errorf("invalid JSON in %s: %w", path, err)
+	}
+	return m, nil
+}
+
+// writeRawSettings writes a generic map back to a Claude settings file.
+func writeRawSettings(path string, m map[string]json.RawMessage) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(data, '\n'), 0644)
+}
+
+func cmdClaudeStatuslineInstall(args []string) int {
+	scope := "project-local"
+	yes := false
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--yes":
+			yes = true
+		case args[i] == "--scope" && i+1 < len(args):
+			scope = args[i+1]
+			i++
+		case strings.HasPrefix(args[i], "--scope="):
+			scope = strings.TrimPrefix(args[i], "--scope=")
+		}
+	}
+
+	if scope != "project-local" {
+		fmt.Fprintf(os.Stderr, "xit claude statusline install: only --scope project-local is supported\n")
+		return 1
+	}
+
+	settingsPath := claudeLocalSettingsPath()
+	m, err := readRawSettings(settingsPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error reading %s: %v\n", settingsPath, err)
+		return 1
+	}
+
+	// Check if already installed.
+	if _, exists := m["statusLine"]; exists && !yes {
+		fmt.Printf("XiT Claude StatusLine already present in %s\n", settingsPath)
+		fmt.Println("Use --yes to overwrite.")
+		return 1
+	}
+
+	// Backup if file exists.
+	if _, statErr := os.Stat(settingsPath); statErr == nil {
+		if backupPath, backupErr := claudehook.BackupSettings(settingsPath); backupErr == nil && backupPath != "" {
+			fmt.Printf("backup: %s\n", backupPath)
+		}
+	}
+
+	// Build statusLine value.
+	statusLineVal := map[string]interface{}{
+		"type":    "command",
+		"command": "xit claude statusline",
+		"padding": 0,
+	}
+	slData, _ := json.Marshal(statusLineVal)
+	m["statusLine"] = json.RawMessage(slData)
+
+	if err := writeRawSettings(settingsPath, m); err != nil {
+		fmt.Fprintf(os.Stderr, "error writing %s: %v\n", settingsPath, err)
+		return 1
+	}
+
+	fmt.Println("XiT Claude StatusLine installed.")
+	fmt.Println()
+	fmt.Printf("scope:    project-local\n")
+	fmt.Printf("settings: %s\n", settingsPath)
+	fmt.Printf("command:  xit claude statusline\n")
+	fmt.Println()
+	fmt.Println("Restart Claude Code to activate the status line.")
+	fmt.Println("Use 'xit claude statusline status' to verify.")
+	return 0
+}
+
+func cmdClaudeStatuslineStatus() int {
+	settingsPath := claudeLocalSettingsPath()
+	m, err := readRawSettings(settingsPath)
+	installed := false
+	command := ""
+	if err == nil {
+		if slRaw, exists := m["statusLine"]; exists {
+			installed = true
+			var sl map[string]interface{}
+			if json.Unmarshal(slRaw, &sl) == nil {
+				if cmd, ok := sl["command"].(string); ok {
+					command = cmd
+				}
+			}
+		}
+	}
+
+	userXiT := ""
+	if homeDir := os.Getenv("HOME"); homeDir != "" {
+		userXiT = filepath.Join(homeDir, ".xit")
+	} else if h, err2 := os.UserHomeDir(); err2 == nil {
+		userXiT = filepath.Join(h, ".xit")
+	}
+
+	hookMode := "unknown"
+	reroute := "unknown"
+	if userXiT != "" {
+		if st, stErr := claudehook.Status(claudehook.ProjectSettingsPath(), userXiT); stErr == nil {
+			if st.Installed {
+				hookMode = st.Mode
+			} else {
+				hookMode = "not installed"
+			}
+			if st.Reroute {
+				reroute = "enabled"
+			} else {
+				reroute = "disabled"
+			}
+		}
+	}
+
+	fmt.Println("XiT Claude StatusLine")
+	fmt.Println()
+	fmt.Printf("scope:      project-local\n")
+	fmt.Printf("settings:   %s\n", settingsPath)
+	if installed {
+		fmt.Printf("installed:  yes\n")
+		if command != "" {
+			fmt.Printf("command:    %s\n", command)
+		}
+	} else {
+		fmt.Printf("installed:  no\n")
+		fmt.Printf("\nTo install: xit claude statusline install --scope project-local --yes\n")
+	}
+	fmt.Printf("color:      gold\n")
+	fmt.Printf("official_api: yes\n")
+	fmt.Printf("hook_mode:  %s\n", hookMode)
+	fmt.Printf("reroute:    %s\n", reroute)
+	fmt.Printf("strict:     disabled\n")
+	return 0
+}
+
+func cmdClaudeStatuslineUninstall(args []string) int {
+	yes := false
+	for _, a := range args {
+		if a == "--yes" {
+			yes = true
+		}
+	}
+	if !yes {
+		fmt.Fprintln(os.Stderr, "error: uninstall requires --yes")
+		return 1
+	}
+
+	settingsPath := claudeLocalSettingsPath()
+	m, err := readRawSettings(settingsPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error reading %s: %v\n", settingsPath, err)
+		return 1
+	}
+	if _, exists := m["statusLine"]; !exists {
+		fmt.Printf("statusLine not found in %s\n", settingsPath)
+		return 0
+	}
+
+	if backupPath, backupErr := claudehook.BackupSettings(settingsPath); backupErr == nil && backupPath != "" {
+		fmt.Printf("backup: %s\n", backupPath)
+	}
+
+	delete(m, "statusLine")
+	if err := writeRawSettings(settingsPath, m); err != nil {
+		fmt.Fprintf(os.Stderr, "error writing %s: %v\n", settingsPath, err)
+		return 1
+	}
+
+	fmt.Println("XiT Claude StatusLine uninstalled.")
+	fmt.Printf("settings: %s\n", settingsPath)
+	return 0
+}
+
+// ---------- End Claude StatusLine ----------
 
 func cmdClaudeHitrate(args []string) int {
 	window := 2 * time.Hour

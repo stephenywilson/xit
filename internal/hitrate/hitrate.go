@@ -218,7 +218,11 @@ func ComputeReportForAdapter(adapter, userHome, projectHome string, window time.
 		return r.MissedHighNoiseTop[i].Count > r.MissedHighNoiseTop[j].Count
 	})
 
-	// Summary fidelity from history records.
+	// Summary fidelity from history records (Kimi only; other adapters share history and the
+	// panic scan produces misleading results for unrelated raw logs).
+	if adapter != "kimi" {
+		historyRecs = nil
+	}
 	panicPatterns := []string{"panic:", "slice bounds out of range", "runtime error:", "index out of range"}
 	for _, rec := range historyRecs {
 		r.SummaryFidelity.XitAutoRuns++
@@ -525,21 +529,23 @@ func FormatReport(r *Report, verbose bool) string {
 	b.WriteString(fmt.Sprintf("  correctly_passthrough: %d\n", r.ShouldPassthrough.CorrectlyPassthrough))
 	b.WriteString(fmt.Sprintf("  false_positive: %d\n", r.ShouldPassthrough.FalsePositive))
 	b.WriteString(fmt.Sprintf("  passthrough_precision: %.1f%%\n", r.ShouldPassthrough.PassthroughPrecision))
-	b.WriteString("\n")
-	b.WriteString("summary_fidelity:\n")
-	b.WriteString(fmt.Sprintf("  xit_auto_runs: %d\n", r.SummaryFidelity.XitAutoRuns))
-	b.WriteString(fmt.Sprintf("  raw_log_present: %d/%d\n", r.SummaryFidelity.RawLogPresent, r.SummaryFidelity.XitAutoRuns))
-	b.WriteString(fmt.Sprintf("  exit_code_present: %d/%d\n", r.SummaryFidelity.ExitCodePresent, r.SummaryFidelity.XitAutoRuns))
-	b.WriteString(fmt.Sprintf("  reduction_present: %d/%d\n", r.SummaryFidelity.ReductionPresent, r.SummaryFidelity.XitAutoRuns))
-	b.WriteString(fmt.Sprintf("  failure_signal_present: %d/%d\n", r.SummaryFidelity.FailureSignalPresent, r.SummaryFidelity.XitAutoRuns))
-	b.WriteString(fmt.Sprintf("  command_specific_signal: %d/%d\n", r.SummaryFidelity.CommandSpecificSignal, r.SummaryFidelity.XitAutoRuns))
-	panicStr := "yes"
-	if !r.SummaryFidelity.PanicFree {
-		panicStr = "no"
+	if r.Adapter == "" || r.Adapter == "kimi" {
+		b.WriteString("\n")
+		b.WriteString("summary_fidelity:\n")
+		b.WriteString(fmt.Sprintf("  xit_auto_runs: %d\n", r.SummaryFidelity.XitAutoRuns))
+		b.WriteString(fmt.Sprintf("  raw_log_present: %d/%d\n", r.SummaryFidelity.RawLogPresent, r.SummaryFidelity.XitAutoRuns))
+		b.WriteString(fmt.Sprintf("  exit_code_present: %d/%d\n", r.SummaryFidelity.ExitCodePresent, r.SummaryFidelity.XitAutoRuns))
+		b.WriteString(fmt.Sprintf("  reduction_present: %d/%d\n", r.SummaryFidelity.ReductionPresent, r.SummaryFidelity.XitAutoRuns))
+		b.WriteString(fmt.Sprintf("  failure_signal_present: %d/%d\n", r.SummaryFidelity.FailureSignalPresent, r.SummaryFidelity.XitAutoRuns))
+		b.WriteString(fmt.Sprintf("  command_specific_signal: %d/%d\n", r.SummaryFidelity.CommandSpecificSignal, r.SummaryFidelity.XitAutoRuns))
+		panicStr := "yes"
+		if !r.SummaryFidelity.PanicFree {
+			panicStr = "no"
+		}
+		b.WriteString(fmt.Sprintf("  panic_free: %s\n", panicStr))
+		b.WriteString(fmt.Sprintf("  basic_fidelity: %.1f%%\n", r.SummaryFidelity.BasicFidelity))
+		b.WriteString("\n")
 	}
-	b.WriteString(fmt.Sprintf("  panic_free: %s\n", panicStr))
-	b.WriteString(fmt.Sprintf("  basic_fidelity: %.1f%%\n", r.SummaryFidelity.BasicFidelity))
-	b.WriteString("\n")
 
 	overallTotal := r.ShouldCompress.Total + r.ShouldPassthrough.Total
 	overallCorrect := r.ShouldCompress.CorrectlyWrapped + r.ShouldPassthrough.CorrectlyPassthrough

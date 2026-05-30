@@ -448,6 +448,42 @@ func min(a, b int) int {
 	return b
 }
 
+func TestClaudeReportNoPanicFree(t *testing.T) {
+	tmp := t.TempDir()
+	projectHome := filepath.Join(tmp, "project")
+	userXiTHome := filepath.Join(tmp, "xit")
+	_ = os.MkdirAll(filepath.Join(userXiTHome, "claude-hooks"), 0755)
+	_ = os.MkdirAll(projectHome, 0755)
+
+	// Write history with a raw_log containing "panic:" — should NOT affect Claude output.
+	rawLogPath := filepath.Join(projectHome, "fake.raw.log")
+	_ = os.WriteFile(rawLogPath, []byte("panic: runtime error: index out of range\n"), 0644)
+	histPath := filepath.Join(projectHome, "history.jsonl")
+	rec := `{"timestamp":"` + time.Now().Format(time.RFC3339) + `","command":"go test","exit_code":2,"raw_bytes":100,"summary_bytes":50,"estimated_reduction":0.5,"duration_ms":10,"filter":"test","confidence":"high","policy":"should_compress","raw_log":"` + rawLogPath + `"}` + "\n"
+	_ = os.WriteFile(histPath, []byte(rec), 0644)
+
+	now := time.Now().Format(time.RFC3339)
+	events := `{"time":"` + now + `","original_command":"xit auto go test -v ./...","action":"observe"}` + "\n"
+	_ = os.WriteFile(filepath.Join(userXiTHome, "claude-hooks", "events.jsonl"), []byte(events), 0644)
+
+	report, err := ComputeReportForAdapter("claude", userXiTHome, projectHome, 2*time.Hour)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Fidelity must not be computed for Claude.
+	if report.SummaryFidelity.XitAutoRuns != 0 {
+		t.Errorf("XitAutoRuns = %d, want 0 (fidelity skipped for claude)", report.SummaryFidelity.XitAutoRuns)
+	}
+	// Formatted output must not mention panic_free.
+	out := FormatReport(report, false)
+	if strings.Contains(out, "panic_free") {
+		t.Errorf("claude report must not contain panic_free, got:\n%s", out)
+	}
+	if strings.Contains(out, "summary_fidelity:\n") {
+		t.Errorf("claude report must not contain summary_fidelity section, got:\n%s", out)
+	}
+}
+
 func TestVerdictPass(t *testing.T) {
 	r := &Report{
 		Mode: "hook_events_plus_history",

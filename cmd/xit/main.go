@@ -341,6 +341,9 @@ Usage:
   xit hook enable-reroute claude --yes               Enable Claude safe reroute
   xit hook disable-reroute claude --yes              Disable Claude safe reroute
   xit hook stats claude                              Show Claude hook statistics
+  xit hook hitrate claude                            Show Claude routing hit rate audit
+  xit hook hitrate claude --json                     Show Claude routing hit rate as JSON
+  xit hook hitrate claude --last 2h                  Show hit rate for last 2 hours
   xit hook enable-reroute kimi --yes                 Enable Kimi safe reroute
   xit hook disable-reroute kimi --yes                Disable Kimi safe reroute
   xit hook status-style kimi compact --yes           Set Kimi inline status to compact
@@ -2437,6 +2440,56 @@ func cmdBenchCompression(args []string) int {
 	return 0
 }
 
+func cmdClaudeHitrate(args []string) int {
+	window := 2 * time.Hour
+	useJSON := false
+
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--json":
+			useJSON = true
+		case strings.HasPrefix(a, "--last"):
+			var val string
+			if strings.Contains(a, "=") {
+				val = strings.SplitN(a, "=", 2)[1]
+			} else if i+1 < len(args) {
+				i++
+				val = args[i]
+			}
+			if d, err := time.ParseDuration(val); err == nil {
+				window = d
+			}
+		}
+	}
+
+	projectHome := xitHome()
+	actualUserHomeDir := os.Getenv("HOME")
+	if actualUserHomeDir == "" {
+		var err error
+		actualUserHomeDir, err = os.UserHomeDir()
+		if err != nil {
+			actualUserHomeDir = "."
+		}
+	}
+	userHome := filepath.Join(actualUserHomeDir, ".xit")
+
+	report, err := hitrate.ComputeReportForAdapter("claude", userHome, projectHome, window)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	if useJSON {
+		data, _ := json.MarshalIndent(report, "", "  ")
+		fmt.Println(string(data))
+		return 0
+	}
+
+	fmt.Print(hitrate.FormatReport(report, false))
+	return 0
+}
+
 func cmdClaudeHook(args []string) error {
 	if len(args) < 1 {
 		return fmt.Errorf("usage: xit claude-hook pretooluse-bash")
@@ -2536,7 +2589,7 @@ func cmdKimiTurnDiagnose(args []string) int {
 
 func cmdHook(args []string) error {
 	if len(args) < 2 {
-		return fmt.Errorf("usage: xit hook status|enable-reroute|disable-reroute|stats <target>")
+		return fmt.Errorf("usage: xit hook status|enable-reroute|disable-reroute|stats|hitrate <target>")
 	}
 	sub := args[0]
 	target := args[1]
@@ -2620,6 +2673,9 @@ func cmdHook(args []string) error {
 					fmt.Printf("- %-30s rerouted %d\n", tc.Command, tc.Count)
 				}
 			}
+			return nil
+		case "hitrate":
+			os.Exit(cmdClaudeHitrate(args[2:]))
 			return nil
 		default:
 			return fmt.Errorf("unknown hook command: %s", sub)

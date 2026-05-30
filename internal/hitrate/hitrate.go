@@ -14,13 +14,14 @@ import (
 
 // Target thresholds for acceptance.
 const (
-	TargetCompressRecall      = 90.0
+	TargetCompressRecall       = 90.0
 	TargetPassthroughPrecision = 98.0
-	TargetSummaryFidelity     = 95.0
+	TargetSummaryFidelity      = 95.0
 )
 
-// Report contains the full hit-rate and fidelity audit for Kimi routing.
+// Report contains the full hit-rate and fidelity audit for a CLI adapter's routing.
 type Report struct {
+	Adapter            string                 `json:"adapter,omitempty"`
 	Window             string                 `json:"window"`
 	Mode               string                 `json:"mode"`
 	ShellCommandsSeen  int                    `json:"shell_commands_seen"`
@@ -68,9 +69,9 @@ type SummaryFidelityStats struct {
 
 // TargetStats holds the acceptance thresholds.
 type TargetStats struct {
-	CompressRecallTarget      string `json:"compress_recall_target"`
+	CompressRecallTarget       string `json:"compress_recall_target"`
 	PassthroughPrecisionTarget string `json:"passthrough_precision_target"`
-	SummaryFidelityTarget     string `json:"summary_fidelity_target"`
+	SummaryFidelityTarget      string `json:"summary_fidelity_target"`
 }
 
 // FreshnessInfo tracks event time range.
@@ -92,9 +93,32 @@ type NeedsReviewItem struct {
 	Reason  string `json:"reason"`
 }
 
-// ComputeReport builds a hit-rate report from hook events and history records.
+// adapterDisplayName returns a human-readable name for the adapter.
+func adapterDisplayName(adapter string) string {
+	switch adapter {
+	case "claude":
+		return "Claude Code"
+	case "kimi":
+		return "Kimi"
+	default:
+		if adapter == "" {
+			return "Kimi"
+		}
+		return adapter
+	}
+}
+
+// ComputeReport builds a hit-rate report for Kimi (backward-compatible wrapper).
 func ComputeReport(userHome, projectHome string, window time.Duration) (*Report, error) {
+	return ComputeReportForAdapter("kimi", userHome, projectHome, window)
+}
+
+// ComputeReportForAdapter builds a hit-rate report from hook events and history records
+// for the specified adapter (e.g. "claude", "kimi").
+func ComputeReportForAdapter(adapter, userHome, projectHome string, window time.Duration) (*Report, error) {
+	display := adapterDisplayName(adapter)
 	r := &Report{
+		Adapter:         adapter,
 		Window:          fmt.Sprintf("last %s", window),
 		NeedsReview:     []NeedsReviewItem{},
 		MissedHighNoise: []string{},
@@ -113,7 +137,7 @@ func ComputeReport(userHome, projectHome string, window time.Duration) (*Report,
 
 	cutoff := time.Now().Add(-window)
 
-	events, malformed := readHookEvents(userHome, cutoff)
+	events, malformed := readHookEventsForAdapter(userHome, adapter, cutoff)
 	r.MalformedEvents = malformed
 	historyRecs := readHistory(projectHome, userHome, cutoff)
 
@@ -144,7 +168,7 @@ func ComputeReport(userHome, projectHome string, window time.Duration) (*Report,
 	if !oldestTime.IsZero() {
 		r.Freshness.OldestEvent = oldestTime.Format(time.RFC3339)
 	}
-	r.Freshness.RuleVersionKnown = false // We don't have rule install timestamp yet
+	r.Freshness.RuleVersionKnown = false
 
 	// Routing accuracy from hook events.
 	missedCounts := make(map[string]int)
@@ -218,7 +242,6 @@ func ComputeReport(userHome, projectHome string, window time.Duration) (*Report,
 			r.SummaryFidelity.ReductionPresent++
 		}
 
-		// Failure signal: if exit_code != 0, check if raw_log or summary contains failure indicators.
 		if rec.ExitCode != 0 {
 			failureKeywords := []string{"FAIL", "fail", "Error", "error", "panic", "timeout", "broken"}
 			if rec.RawLog != "" {
@@ -232,11 +255,9 @@ func ComputeReport(userHome, projectHome string, window time.Duration) (*Report,
 				}
 			}
 		} else {
-			// For success, count as present for denominator fairness.
 			r.SummaryFidelity.FailureSignalPresent++
 		}
 
-		// Command-specific signal.
 		norm, _ := normalizeCommand(rec.Command)
 		parts := strings.Fields(norm)
 		if len(parts) > 0 {
@@ -271,7 +292,6 @@ func ComputeReport(userHome, projectHome string, window time.Duration) (*Report,
 					}
 				}
 			default:
-				// For other commands, assume signal present if raw_log exists.
 				hasSignal = rec.RawLog != ""
 			}
 			if hasSignal {
@@ -339,7 +359,7 @@ func ComputeReport(userHome, projectHome string, window time.Duration) (*Report,
 			case "eslint":
 				r.Recommendations = append(r.Recommendations, "strengthen eslint rule")
 			default:
-				r.Recommendations = append(r.Recommendations, fmt.Sprintf("strengthen Kimi rules for %s commands", ct))
+				r.Recommendations = append(r.Recommendations, fmt.Sprintf("strengthen %s rules for %s commands", display, ct))
 			}
 		}
 		sort.Strings(r.Recommendations)
@@ -348,7 +368,7 @@ func ComputeReport(userHome, projectHome string, window time.Duration) (*Report,
 		r.Recommendations = append(r.Recommendations, "strengthen passthrough rule for short/structured commands")
 	}
 	if r.Mode == "history_only" {
-		r.Recommendations = append([]string{"Kimi shell command events unavailable; install hook for miss audit"}, r.Recommendations...)
+		r.Recommendations = append([]string{fmt.Sprintf("%s shell command events unavailable; install hook for miss audit", display)}, r.Recommendations...)
 	}
 
 	return r, nil
@@ -361,10 +381,11 @@ type hookEvent struct {
 	Action             string `json:"action"`
 }
 
-func readHookEvents(home string, cutoff time.Time) ([]hookEvent, int) {
+// readHookEventsForAdapter reads events from <home>/<adapter>-hooks/events.jsonl.
+func readHookEventsForAdapter(home, adapter string, cutoff time.Time) ([]hookEvent, int) {
 	var events []hookEvent
 	malformed := 0
-	path := filepath.Join(home, "kimi-hooks", "events.jsonl")
+	path := filepath.Join(home, adapter+"-hooks", "events.jsonl")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return events, 0
@@ -389,6 +410,11 @@ func readHookEvents(home string, cutoff time.Time) ([]hookEvent, int) {
 		events = append(events, ev)
 	}
 	return events, malformed
+}
+
+// readHookEvents reads Kimi hook events (backward-compatible wrapper).
+func readHookEvents(home string, cutoff time.Time) ([]hookEvent, int) {
+	return readHookEventsForAdapter(home, "kimi", cutoff)
 }
 
 type historyRecord struct {
@@ -479,8 +505,9 @@ func normalizeCommand(cmd string) (string, bool) {
 
 // FormatReport renders a Report as human-readable text.
 func FormatReport(r *Report, verbose bool) string {
+	display := adapterDisplayName(r.Adapter)
 	var b strings.Builder
-	b.WriteString("XiT Kimi Routing Hit Rate\n")
+	b.WriteString(fmt.Sprintf("XiT %s Routing Hit Rate\n", display))
 	b.WriteString("\n")
 	b.WriteString(fmt.Sprintf("window: %s\n", r.Window))
 	b.WriteString(fmt.Sprintf("mode: %s\n", r.Mode))
@@ -571,7 +598,7 @@ func FormatReport(r *Report, verbose bool) string {
 	}
 	if r.Mode == "history_only" {
 		b.WriteString("\n")
-		b.WriteString("warning: Kimi shell command events unavailable; miss audit limited.\n")
+		b.WriteString(fmt.Sprintf("warning: %s shell command events unavailable; miss audit limited.\n", display))
 	}
 	if r.Freshness.OldestEvent != "" {
 		b.WriteString("\n")

@@ -2879,7 +2879,7 @@ func cmdClaudeStatuslineUninstall(args []string) int {
 // ---------- Antigravity StatusLine ----------
 
 const (
-	antigravityStatusLineFallback = "吸T神功 · Antigravity · 待观测"
+	antigravityStatusLineFallback = "吸T神功 · Antigravity · 准备就绪"
 	antigravityStatusLineReady    = "吸T神功 · Antigravity · 准备就绪"
 )
 
@@ -2950,12 +2950,10 @@ func computeAntigravityStatuslineText() (string, map[string]interface{}) {
 	report, _ := hitrate.ComputeReportForAdapter("antigravity", userXiT, projectHome, window)
 	hasRecentEvents := report != nil && report.ShellCommandsSeen > 0
 	hitRatePct := 0.0
-	verdictPass := false
 	if report != nil && (report.ShouldCompress.Total+report.ShouldPassthrough.Total) > 0 {
 		total := report.ShouldCompress.Total + report.ShouldPassthrough.Total
 		correct := report.ShouldCompress.CorrectlyWrapped + report.ShouldPassthrough.CorrectlyPassthrough
 		hitRatePct = float64(correct) / float64(total) * 100
-		verdictPass = report.Verdict == "pass"
 	}
 
 	// Recent token savings from xit auto history (10 min).
@@ -2976,16 +2974,8 @@ func computeAntigravityStatuslineText() (string, map[string]interface{}) {
 	// Build one-line text by priority.
 	var line string
 	switch {
-	case hasRecentEvents && verdictPass && savedTokens > 0:
-		line = fmt.Sprintf("吸T神功 · 本次省%s · 命中率%.0f%%", formatTokenCount(savedTokens), hitRatePct)
-	case hasRecentEvents && verdictPass:
-		line = fmt.Sprintf("吸T神功 · Antigravity · 命中率%.0f%%", hitRatePct)
-	case savedTokens > 0 && hasRecentEvents:
-		line = fmt.Sprintf("吸T神功 · 本次省%s · 命中率%.0f%%", formatTokenCount(savedTokens), hitRatePct)
 	case savedTokens > 0:
-		line = fmt.Sprintf("吸T神功 · 本次省%s Token · 待观测", formatTokenCount(savedTokens))
-	case hasRecentEvents:
-		line = antigravityStatusLineReady
+		line = fmt.Sprintf("吸T神功 · 本次省%s Token", formatTokenCount(savedTokens))
 	default:
 		line = antigravityStatusLineFallback
 	}

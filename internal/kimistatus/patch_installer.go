@@ -366,7 +366,7 @@ func applyPatch(content, xitHome string) (string, error) {
 		}
 		xitBlock = fragIndent + PatchBeginMarker + "\n"
 		xitBlock += fragIndent + "if _xit_status_text:\n"
-		xitBlock += fragIndent + "    fragments.append((\"fg:#56f5a3 bold\", _xit_status_text))\n"
+		xitBlock += fragIndent + "    fragments.append((\"fg:#D4A017 bold\", _xit_status_text))\n"
 		xitBlock += fragIndent + "    fragments.append((\"\", \"  \"))\n"
 		xitBlock += fragIndent + "    left_width += _xit_status_width + 2\n"
 		xitBlock += fragIndent + PatchEndMarker
@@ -403,7 +403,7 @@ func applyPatch(content, xitHome string) (string, error) {
 		}
 		xitBlock = fragIndent + PatchBeginMarker + "\n"
 		xitBlock += fragIndent + "if _xit_status_text:\n"
-		xitBlock += fragIndent + "    fragments.append((\"fg:#56f5a3 bold\", _xit_status_text))\n"
+		xitBlock += fragIndent + "    fragments.append((\"fg:#D4A017 bold\", _xit_status_text))\n"
 		xitBlock += fragIndent + PatchEndMarker
 		insertIdx = firstFragIdx
 	}
@@ -780,7 +780,7 @@ func ComputeToolbarPreview(xitHome string) *ToolbarPreview {
 	base := ToolbarPreview{
 		Language:              "zh_only",
 		Mode:                  "turn_scoped_visual_state_machine",
-		Style:                 "fg:#56f5a3 bold",
+		Style:                 "fg:#D4A017 bold",
 		PowerState:            "",
 		Position:              "second_line_left",
 		RotationEnabled:       false,

@@ -172,8 +172,8 @@ func TestDryRunPatch(t *testing.T) {
 	if !strings.Contains(diff, "_xit_status_width") {
 		t.Errorf("expected _xit_status_width in diff, got:\n%s", diff)
 	}
-	if !strings.Contains(diff, "fg:#56f5a3 bold") {
-		t.Errorf("expected styled fragment fg:#56f5a3 bold in diff, got:\n%s", diff)
+	if !strings.Contains(diff, "fg:#D4A017 bold") {
+		t.Errorf("expected styled fragment fg:#D4A017 bold in diff, got:\n%s", diff)
 	}
 	if strings.Contains(diff, `right_text = right_text + "  " + _xit_status_text`) {
 		t.Error("diff should not contain old right_text concat pattern")
@@ -363,8 +363,8 @@ func TestComputeToolbarPreview(t *testing.T) {
 	if preview.Mode != "turn_scoped_visual_state_machine" {
 		t.Errorf("expected mode turn_scoped_visual_state_machine, got %s", preview.Mode)
 	}
-	if preview.Style != "fg:#56f5a3 bold" {
-		t.Errorf("expected style fg:#56f5a3 bold, got %s", preview.Style)
+	if preview.Style != "fg:#D4A017 bold" {
+		t.Errorf("expected style fg:#D4A017 bold, got %s", preview.Style)
 	}
 	if preview.Position != "second_line_left" {
 		t.Errorf("expected position second_line_left, got %s", preview.Position)
@@ -474,8 +474,8 @@ func TestHelperContainsStyledFragment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("applyPatch failed: %v", err)
 	}
-	if !strings.Contains(patched, "fg:#56f5a3 bold") {
-		t.Error("expected styled fragment fg:#56f5a3 bold in patched output")
+	if !strings.Contains(patched, "fg:#D4A017 bold") {
+		t.Error("expected styled fragment fg:#D4A017 bold in patched output")
 	}
 }
 
@@ -544,7 +544,7 @@ func TestPatchLeftFragmentPlacement(t *testing.T) {
 	lines := strings.Split(patched, "\n")
 	var xitFragIdx, rightFragIdx int
 	for i, line := range lines {
-		if strings.Contains(line, `fragments.append(("fg:#56f5a3 bold", _xit_status_text))`) {
+		if strings.Contains(line, `fragments.append(("fg:#D4A017 bold", _xit_status_text))`) {
 			xitFragIdx = i
 		}
 		if strings.Contains(line, `fragments.append(("", right_text))`) {
@@ -580,7 +580,7 @@ func TestPatchPreservesLeftToast(t *testing.T) {
 		t.Fatalf("applyPatch failed: %v", err)
 	}
 	// XiT fragment should be before left_toast (first fragments.append)
-	if !strings.Contains(patched, `fragments.append(("fg:#56f5a3 bold", _xit_status_text))`) {
+	if !strings.Contains(patched, `fragments.append(("fg:#D4A017 bold", _xit_status_text))`) {
 		t.Error("expected XiT styled fragment in patched output")
 	}
 	// Original left_toast fragment append should still exist
@@ -631,7 +631,7 @@ func TestPatchSecondLineLeftPlacement(t *testing.T) {
 		t.Fatalf("applyPatch failed: %v", err)
 	}
 	// XiT fragment should be before spacer (second-line left)
-	if !strings.Contains(patched, `fragments.append(("fg:#56f5a3 bold", _xit_status_text))`) {
+	if !strings.Contains(patched, `fragments.append(("fg:#D4A017 bold", _xit_status_text))`) {
 		t.Error("expected XiT styled fragment in patched output")
 	}
 	// Should adjust left_width to account for XiT width
@@ -646,7 +646,7 @@ func TestPatchSecondLineLeftPlacement(t *testing.T) {
 	lines := strings.Split(patched, "\n")
 	var xitIdx, spacerIdx int
 	for i, line := range lines {
-		if strings.Contains(line, `fragments.append(("fg:#56f5a3 bold", _xit_status_text))`) {
+		if strings.Contains(line, `fragments.append(("fg:#D4A017 bold", _xit_status_text))`) {
 			xitIdx = i
 		}
 		if strings.Contains(line, `fragments.append(("", " " * max(0, columns - left_width - right_width))`) {
@@ -726,7 +726,7 @@ func TestPatchPreservesFirstLineMode(t *testing.T) {
 		if strings.Contains(line, `"agent (model)  "`) {
 			modeIdx = i
 		}
-		if strings.Contains(line, `fragments.append(("fg:#56f5a3 bold", _xit_status_text))`) {
+		if strings.Contains(line, `fragments.append(("fg:#D4A017 bold", _xit_status_text))`) {
 			xitIdx = i
 		}
 	}

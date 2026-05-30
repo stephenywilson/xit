@@ -22,7 +22,7 @@
 
   <!-- Card 1 -->
   <rect x="20" y="42" width="175" height="152" rx="10" fill="url(#cardGrad)" stroke="#1e3a24" stroke-width="1.5"/>
-  <text x="107" y="92" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="44" font-weight="800" fill="#56f5a3" text-anchor="middle">91.8%</text>
+  <text x="107" y="92" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="44" font-weight="800" fill="#56f5a3" text-anchor="middle">91.5%</text>
   <line x1="40" y1="108" x2="175" y2="108" stroke="#1e3a24" stroke-width="1"/>
   <text x="107" y="130" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#6b7280" text-anchor="middle">历史输出</text>
   <text x="107" y="148" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#6b7280" text-anchor="middle">压缩率</text>
@@ -38,7 +38,7 @@
 
   <!-- Card 3 -->
   <rect x="396" y="42" width="175" height="152" rx="10" fill="url(#cardGrad)" stroke="#1e3a24" stroke-width="1.5"/>
-  <text x="483" y="92" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="38" font-weight="800" fill="#56f5a3" text-anchor="middle">~359k</text>
+  <text x="483" y="92" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="38" font-weight="800" fill="#56f5a3" text-anchor="middle">~340k</text>
   <line x1="416" y1="108" x2="551" y2="108" stroke="#1e3a24" stroke-width="1"/>
   <text x="483" y="130" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#6b7280" text-anchor="middle">估算已省</text>
   <text x="483" y="148" font-family="'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" fill="#6b7280" text-anchor="middle">Token（历史）</text>

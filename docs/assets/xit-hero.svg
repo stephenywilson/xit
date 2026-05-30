@@ -89,7 +89,7 @@
   <line x1="68" y1="335" x2="736" y2="335" stroke="#1e2530" stroke-width="1"/>
 
   <!-- Lifetime stats -->
-  <text x="68" y="357" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#374151">历史战绩：120 条命令 · 91.8% 压缩率 · 已省 ~359k Token（估算）</text>
+  <text x="68" y="357" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#374151">历史战绩：120 条命令 · 91.5% 压缩率 · 已省 ~340k Token（估算）</text>
 
   <!-- Bottom badges -->
   <rect x="44" y="400" width="712" height="40" rx="0" fill="#0a0c0f"/>

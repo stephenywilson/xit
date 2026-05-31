@@ -23,6 +23,7 @@ import (
 	"github.com/stephenywilson/xit/internal/hitrate"
 	"github.com/stephenywilson/xit/internal/impact"
 	"github.com/stephenywilson/xit/internal/integrations"
+	"github.com/stephenywilson/xit/internal/aiderrulesinstall"
 	"github.com/stephenywilson/xit/internal/kimihook"
 	"github.com/stephenywilson/xit/internal/kimirulesinstall"
 	"github.com/stephenywilson/xit/internal/kimistatus"
@@ -100,7 +101,7 @@ func main() {
 			os.Exit(1)
 		}
 		os.Exit(0)
-	case "kimi", "claude", "codex", "gemini", "cursor", "antigravity":
+	case "kimi", "claude", "codex", "gemini", "cursor", "antigravity", "aider":
 		os.Exit(cmdWrapper(arg, rest[1:], mode))
 	case "claude-hook":
 		if err := cmdClaudeHook(rest[1:]); err != nil {
@@ -388,6 +389,11 @@ Usage:
   xit kimi rules status --scope user                 Check if XiT skill is installed
   xit kimi rules uninstall --scope user --yes        Remove XiT skill from Kimi
   xit kimi rules dogfood                             Print copy-paste prompt to verify rules are active
+  xit aider rules                                    Show Aider rules mode overview
+  xit aider rules preview                            Preview the rules content that would be installed
+  xit aider rules install --scope project --yes      Install XiT rules into Aider (project scope)
+  xit aider rules status --scope project             Check if XiT Aider rules are installed
+  xit aider rules uninstall --scope project --yes    Remove XiT Aider rules
   xit session [--no-auto-shims] <cmd...>             Launch session with auto command shims
   xit kimi [--unsafe-pty] [--no-auto-shims]          Launch Kimi with XiT wrapper (unsafe)
   xit claude statusline                              Output one-line Claude Code status bar text
@@ -1286,6 +1292,23 @@ func cmdWrapper(target string, args []string, globalMode string) int {
 	if target == "antigravity" && len(args) > 0 && args[0] == "statusline" {
 		return cmdAntigravityStatusline(args[1:])
 	}
+	if target == "aider" && len(args) > 0 && args[0] == "rules" {
+		if len(args) > 1 {
+			return cmdAiderRulesSub(args[1:])
+		}
+		cmdAiderRules()
+		return 0
+	}
+	if target == "aider" {
+		fmt.Println("XiT Aider adapter is rules-only.")
+		fmt.Println()
+		fmt.Println("Install rules into current project:")
+		fmt.Println("  xit aider rules install --scope project --yes")
+		fmt.Println()
+		fmt.Println("Preview rules:")
+		fmt.Println("  xit aider rules preview")
+		return 0
+	}
 
 	home := userXiTHome()
 	if !config.Exists(home) {
@@ -2157,6 +2180,99 @@ func cmdKimiRulesDogfood() {
 	fmt.Println("If Kimi runs the bare commands instead, the skill is not loaded.")
 	fmt.Println("Check: xit kimi rules status --scope user")
 	fmt.Println("Then:  restart Kimi (skill injection happens at startup).")
+}
+
+func cmdAiderRules() {
+	fmt.Println("XiT Aider Rules Mode")
+	fmt.Println()
+	fmt.Println("Aider adapter is rules-only. XiT installs a rules file and configures")
+	fmt.Println("Aider to read it via .aider.conf.yml.")
+	fmt.Println()
+	fmt.Println("Install (project scope only):")
+	fmt.Println("  xit aider rules install --scope project --yes")
+	fmt.Println()
+	fmt.Println("Check status:")
+	fmt.Println("  xit aider rules status --scope project")
+	fmt.Println()
+	fmt.Println("Remove:")
+	fmt.Println("  xit aider rules uninstall --scope project --yes")
+	fmt.Println()
+	fmt.Println("Preview rules content:")
+	fmt.Println("  xit aider rules preview")
+	fmt.Println()
+	fmt.Println("Note: Aider does not support hooks or command-backed statusLine.")
+	fmt.Println("      XiT Aider integration is rules-only.")
+}
+
+func cmdAiderRulesSub(args []string) int {
+	if len(args) < 1 {
+		cmdAiderRules()
+		return 0
+	}
+	sub := args[0]
+	scope, _ := extractScopeFlag(args[1:])
+	if scope != "project" {
+		fmt.Fprintln(os.Stderr, "only project scope is supported for Aider rules in this version")
+		return 1
+	}
+
+	switch sub {
+	case "install":
+		if !hasYesFlag(args[1:]) {
+			fmt.Fprintln(os.Stderr, "xit aider rules install requires --yes to confirm")
+			return 1
+		}
+		if err := aiderrulesinstall.InstallProject(""); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return 1
+		}
+		fmt.Println("XiT Aider rules installed (project scope).")
+		fmt.Printf("rules: %s\n", aiderrulesinstall.RulesPath(""))
+		fmt.Printf("config: %s\n", aiderrulesinstall.ConfigPath(""))
+		fmt.Println()
+		fmt.Println("Run aider in this project to load the rules.")
+		return 0
+
+	case "status":
+		st, err := aiderrulesinstall.StatusProject("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return 1
+		}
+		fmt.Println("XiT Aider Rules Status")
+		fmt.Println()
+		fmt.Printf("scope:            %s\n", st.Scope)
+		fmt.Printf("rules_path:       %s\n", st.RulesPath)
+		fmt.Printf("rules_exists:     %v\n", st.RulesExists)
+		fmt.Printf("config_path:      %s\n", st.ConfigPath)
+		fmt.Printf("config_exists:    %v\n", st.ConfigExists)
+		fmt.Printf("installed:        %v\n", st.Installed)
+		fmt.Printf("read_configured:  %v\n", st.ReadConfigured)
+		return 0
+
+	case "uninstall":
+		if !hasYesFlag(args[1:]) {
+			fmt.Fprintln(os.Stderr, "xit aider rules uninstall requires --yes to confirm")
+			return 1
+		}
+		if err := aiderrulesinstall.UninstallProject(""); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return 1
+		}
+		fmt.Println("XiT Aider rules uninstalled (project scope).")
+		return 0
+
+	case "preview":
+		fmt.Println("Aider rules content preview:")
+		fmt.Println()
+		fmt.Println(aiderrulesinstall.Preview())
+		return 0
+
+	default:
+		fmt.Fprintf(os.Stderr, "unknown subcommand: xit aider rules %s\n", sub)
+		fmt.Fprintln(os.Stderr, "usage: xit aider rules [install|status|uninstall|preview] [--scope project] [--yes]")
+		return 1
+	}
 }
 
 func cmdKimiHitrate(args []string) int {

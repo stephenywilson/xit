@@ -1,9 +1,12 @@
 import * as vscode from 'vscode';
 import { fetchStatus, openLatestRawLog, showOutput, writeTerminalEvent } from './xit';
 import { showDashboard, updateDashboardIfOpen } from './dashboard';
+import { promptRunCommand, promptRunWithAutoCompression, openXiTTerminal, handleTerminalHighOutput, refreshAfterRun } from './runner';
 
 let statusBarItem: vscode.StatusBarItem | undefined;
 let refreshTimer: NodeJS.Timeout | undefined;
+let liveState: 'idle' | 'running' | 'success' | 'missed' | 'no-binary' = 'idle';
+let liveStateTimer: NodeJS.Timeout | undefined;
 
 function getRefreshIntervalMs(): number {
   const cfg = vscode.workspace.getConfiguration('xit');
@@ -20,6 +23,12 @@ async function updateStatusBar(): Promise<void> {
   if (!statusBarItem) {
     return;
   }
+
+  // Live transient states take priority over periodic refresh
+  if (liveState === 'running' || liveState === 'missed') {
+    return;
+  }
+
   const status = await fetchStatus();
 
   if (!status.available) {
@@ -47,7 +56,7 @@ async function updateStatusBar(): Promise<void> {
     const display = gain.saved_tokens_display || `~${Math.round(gain.saved_tokens / 1000)}k`;
     statusBarItem.text = `吸T神功 · 省${display}`;
   } else {
-    statusBarItem.text = 'XiT · no data';
+    statusBarItem.text = '吸T神功';
   }
 
   const lines = [
@@ -86,6 +95,62 @@ function stopRefresh(): void {
   }
 }
 
+function setLiveState(state: typeof liveState, durationMs = 5000): void {
+  liveState = state;
+  updateStatusBarLive();
+  if (liveStateTimer) {
+    clearTimeout(liveStateTimer);
+  }
+  if (state !== 'idle' && state !== 'no-binary') {
+    liveStateTimer = setTimeout(() => {
+      liveState = 'idle';
+      updateStatusBarLive();
+    }, durationMs);
+  }
+}
+
+async function updateStatusBarLive(): Promise<void> {
+  if (!statusBarItem) {
+    return;
+  }
+  if (liveState === 'no-binary') {
+    statusBarItem.text = 'XiT · binary not found';
+    return;
+  }
+  if (liveState === 'running') {
+    statusBarItem.text = '吸T神功 · running';
+    return;
+  }
+  if (liveState === 'missed') {
+    statusBarItem.text = '吸T神功 · missed command';
+    return;
+  }
+  if (liveState === 'success') {
+    const latest = (await import('./xit')).readLatestRun();
+    if (latest) {
+      const saved = latest.raw_bytes - latest.summary_bytes;
+      const display = saved >= 1000 ? `~${Math.round(saved / 1000)}k` : `${saved}`;
+      statusBarItem.text = `吸T神功 · 省${display}`;
+    } else {
+      statusBarItem.text = '吸T神功';
+    }
+    return;
+  }
+  // idle fallback to gain-based display
+  const status = await fetchStatus();
+  if (!status.available) {
+    statusBarItem.text = 'XiT · no data';
+    return;
+  }
+  const gain = status.gain!;
+  if (gain.total_commands_condensed > 0) {
+    const display = gain.saved_tokens_display || `~${Math.round(gain.saved_tokens / 1000)}k`;
+    statusBarItem.text = `吸T神功 · 省${display}`;
+  } else {
+    statusBarItem.text = '吸T神功';
+  }
+}
+
 function isTerminalListenerEnabled(): boolean {
   const cfg = vscode.workspace.getConfiguration('xit');
   return cfg.get<boolean>('enableTerminalListener', false);
@@ -107,6 +172,12 @@ function registerTerminalListeners(context: vscode.ExtensionContext): void {
         return;
       }
       writeTerminalEvent({ commandLine, confidence, terminalName, cwd });
+
+      // High-output detection notification
+      (async () => {
+        await handleTerminalHighOutput(commandLine);
+        setLiveState('missed', 4000);
+      })();
     });
     if (startDisposable) {
       context.subscriptions.push(startDisposable);
@@ -165,6 +236,30 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     vscode.commands.registerCommand('xit.showOutput', showOutput)
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('xit.runCommand', async () => {
+      setLiveState('running', 5000);
+      await promptRunCommand();
+      await refreshAfterRun();
+      setLiveState('success', 5000);
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('xit.runWithAutoCompression', async () => {
+      setLiveState('running', 5000);
+      await promptRunWithAutoCompression();
+      await refreshAfterRun();
+      setLiveState('success', 5000);
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('xit.openXiTTerminal', () => {
+      openXiTTerminal();
+    })
   );
 
   context.subscriptions.push(

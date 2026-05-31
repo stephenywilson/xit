@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
-import type { AdapterEvent, GlobalActivity, XiTStatus } from './types';
-import { readRecentEvents, readWorkspaceHistory, readTerminalEvents } from './xit';
+import type { AdapterEvent, GlobalActivity, XiTStatus, LatestRun } from './types';
+import { readRecentEvents, readWorkspaceHistory, readTerminalEvents, readLatestRun } from './xit';
 
 let panel: vscode.WebviewPanel | undefined;
 let panelContext: vscode.ExtensionContext | undefined;
@@ -75,12 +75,28 @@ function buildDashboardHtml(
   status: XiTStatus,
   events: AdapterEvent[],
   terminalEvents: { time: string; commandLine: string; terminalName: string; cwd?: string }[],
+  latestRun: LatestRun | undefined,
   cspSource: string
 ): string {
   const gain = status.gain;
   const hasWorkspaceGain = gain && gain.total_commands_condensed > 0;
   const activity = status.activity || computeActivityFromEvents(events);
   const hasGlobalActivity = activity.eventCount > 0;
+
+  // Latest XiT Run section
+  const hasLatestRun = latestRun !== undefined;
+  const latestSavedBytes = hasLatestRun ? (latestRun.raw_bytes - latestRun.summary_bytes) : 0;
+  const latestRunSection = hasLatestRun ? `
+    <div class="latest-run">
+      <div class="ga-row"><span class="ga-label">Command</span><span class="ga-value ga-cmd">${escapeHtml(latestRun.command)}</span></div>
+      <div class="ga-row"><span class="ga-label">Executed</span><span class="ga-value">xit auto ${escapeHtml(latestRun.command)}</span></div>
+      <div class="ga-row"><span class="ga-label">Exit code</span><span class="ga-value">${latestRun.exit_code}</span></div>
+      <div class="ga-row"><span class="ga-label">Reduction</span><span class="ga-value">${formatReduction(latestRun.estimated_reduction)}</span></div>
+      <div class="ga-row"><span class="ga-label">Saved bytes</span><span class="ga-value">${formatBytes(latestSavedBytes)}</span></div>
+      <div class="ga-row"><span class="ga-label">Duration</span><span class="ga-value">${(latestRun.duration_ms / 1000).toFixed(1)}s</span></div>
+      <div class="ga-row"><span class="ga-label">Raw log</span><span class="ga-value ga-cmd">${escapeHtml(latestRun.raw_log)}</span></div>
+    </div>
+  ` : '<p class="empty">No recent XiT run found. Use <strong>XiT: Run Command</strong> or run <code>xit auto</code> in terminal.</p>';
 
   // Diagnostic section (binary missing / JSON error)
   const hardErrors: string[] = [];
@@ -372,6 +388,9 @@ ${hardErrors.length > 0 ? `<div class="diagnostic">${escapeHtml(hardErrors.join(
   For native panel support, enable terminal mode or wait for a future bridge.
 </div>
 
+<h2>Latest XiT Run</h2>
+${latestRunSection}
+
 <h2>Workspace Gain</h2>
 ${workspaceGainSection}
 
@@ -440,7 +459,8 @@ export function showDashboard(context: vscode.ExtensionContext, status: XiTStatu
 
   const events = gatherAllEvents();
   const terminalEvents = readTerminalEvents(20);
-  panel.webview.html = buildDashboardHtml(status, events, terminalEvents, panel.webview.cspSource);
+  const latestRun = readLatestRun();
+  panel.webview.html = buildDashboardHtml(status, events, terminalEvents, latestRun, panel.webview.cspSource);
 }
 
 export function updateDashboardIfOpen(status: XiTStatus): void {
@@ -449,5 +469,6 @@ export function updateDashboardIfOpen(status: XiTStatus): void {
   }
   const events = gatherAllEvents();
   const terminalEvents = readTerminalEvents(20);
-  panel.webview.html = buildDashboardHtml(status, events, terminalEvents, panel.webview.cspSource);
+  const latestRun = readLatestRun();
+  panel.webview.html = buildDashboardHtml(status, events, terminalEvents, latestRun, panel.webview.cspSource);
 }

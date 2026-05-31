@@ -1,14 +1,16 @@
 # XiT Status
 
-Local XiT status, saved tokens, hitrate, and raw logs for VS Code and Cursor.
+Active XiT command runner, status dashboard, and terminal listener for VS Code and Cursor.
 
 ## What it does
 
-XiT Status is a companion extension for the [XiT](https://github.com/stephenywilson/xit) CLI. It shows:
+XiT Status is a companion extension for the [XiT](https://github.com/stephenywilson/xit) CLI. It helps you:
 
-- **Status bar**: saved tokens, estimated reduction, and condensed command count
-- **Dashboard**: top commands, adapter activity, recent events
-- **Quick access**: open latest raw log, refresh status
+- **Run commands with compression**: `XiT: Run Command` detects high-output commands and runs them with `xit auto`
+- **Status bar**: live states (idle / running / saved / missed), saved tokens, estimated reduction
+- **Dashboard**: latest run, workspace gain, adapter activity, recent events
+- **Terminal listener** (opt-in): detects high-output commands in VS Code terminal and suggests `xit auto`
+- **Quick access**: open XiT Terminal, latest raw log, refresh status
 
 All data stays local. No telemetry, no network requests.
 
@@ -32,6 +34,9 @@ Then in VS Code / Cursor:
 
 | Command | Title |
 |---------|-------|
+| `XiT: Run Command` | Detect high-output and run with `xit auto` |
+| `XiT: Run with Auto Compression` | Always run with `xit auto` |
+| `XiT: Open XiT Terminal` | Open a dedicated XiT terminal |
 | `XiT: Open Dashboard` | Open XiT Dashboard |
 | `XiT: Refresh` | Refresh status bar |
 | `XiT: Show Gain` | Show gain summary |
@@ -46,6 +51,7 @@ Then in VS Code / Cursor:
 | `xit.home` | `""` | XiT home directory. Defaults to `~/.xit`. |
 | `xit.refreshInterval` | `10` | Status bar refresh interval in seconds. |
 | `xit.enableStatusBar` | `true` | Show XiT status bar item. |
+| `xit.enableTerminalListener` | `false` | Listen to VS Code terminal shell executions and suggest `xit auto` for high-output commands. |
 
 ## Privacy
 

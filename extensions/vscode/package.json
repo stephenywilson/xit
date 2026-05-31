@@ -1,7 +1,7 @@
 {
   "name": "xit-vscode",
   "displayName": "XiT Status",
-  "description": "Local XiT status, saved tokens, hitrate, and raw logs for VS Code and Cursor.",
+  "description": "Active XiT command runner, status dashboard, and terminal listener for VS Code and Cursor.",
   "version": "0.0.2",
   "publisher": "xit",
   "license": "MIT",
@@ -29,7 +29,10 @@
     "onCommand:xit.openDashboard",
     "onCommand:xit.refresh",
     "onCommand:xit.showGain",
-    "onCommand:xit.openLatestRawLog"
+    "onCommand:xit.openLatestRawLog",
+    "onCommand:xit.runCommand",
+    "onCommand:xit.runWithAutoCompression",
+    "onCommand:xit.openXiTTerminal"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -57,6 +60,21 @@
       {
         "command": "xit.showOutput",
         "title": "Show Output Channel",
+        "category": "XiT"
+      },
+      {
+        "command": "xit.runCommand",
+        "title": "Run Command",
+        "category": "XiT"
+      },
+      {
+        "command": "xit.runWithAutoCompression",
+        "title": "Run with Auto Compression",
+        "category": "XiT"
+      },
+      {
+        "command": "xit.openXiTTerminal",
+        "title": "Open XiT Terminal",
         "category": "XiT"
       }
     ],

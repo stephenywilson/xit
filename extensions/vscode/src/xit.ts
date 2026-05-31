@@ -3,7 +3,7 @@ import * as child_process from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
-import type { GainData, AdapterEvent, GlobalActivity, XiTStatus } from './types';
+import type { GainData, AdapterEvent, GlobalActivity, XiTStatus, LatestRun } from './types';
 
 const OUTPUT_CHANNEL = vscode.window.createOutputChannel('XiT Status');
 
@@ -415,6 +415,95 @@ export function readTerminalEvents(maxLines = 20): { time: string; commandLine: 
     return events.reverse();
   } catch {
     return [];
+  }
+}
+
+export function isHighOutputCommand(cmd: string): boolean {
+  const trimmed = cmd.trim().toLowerCase();
+  if (!trimmed) {
+    return false;
+  }
+
+  // Explicit passthrough flags
+  if (/\b(--json|--porcelain|-q|--quiet)\b/.test(trimmed)) {
+    return false;
+  }
+
+  // Explicit passthrough commands (short output)
+  const passthroughPatterns = [
+    /^git\s+status(\s|$)/,
+    /^git\s+branch(\s|$)/,
+    /^git\s+log\s+--oneline/,
+    /^git\s+show\s+--stat/,
+    /^pwd(\s|$)/,
+    /^whoami(\s|$)/,
+    /^go\s+version(\s|$)/,
+    /^node\s+--version(\s|$)/,
+    /^npm\s+--version(\s|$)/,
+    /^ls(\s|$)/,
+    /^cat\s+\S+$/,
+  ];
+  for (const p of passthroughPatterns) {
+    if (p.test(trimmed)) {
+      return false;
+    }
+  }
+
+  // High-output commands
+  const highOutputPatterns = [
+    /^go\s+test/,
+    /^npm\s+test/,
+    /^pnpm\s+test/,
+    /^yarn\s+test/,
+    /^pytest/,
+    /^cargo\s+test/,
+    /^git\s+diff/,
+    /^git\s+log\s+--stat/,
+    /^git\s+log\s+-p/,
+    /^(grep|rg|find|tree)\s/,
+    /^docker\s+logs/,
+    /^kubectl\s+logs/,
+    /^tsc(\s|$)/,
+    /^eslint/,
+    /^webpack/,
+    /^vite\s+build/,
+    /^npm\s+run\s+build/,
+    /^npm\s+run\s+lint/,
+    /^pnpm\s+run\s+build/,
+    /^yarn\s+run\s+build/,
+    /^docker\s+build/,
+    /^docker\s+compose\s+up/,
+    /^make(\s|$)/,
+    /^cmake\s+--build/,
+  ];
+  for (const p of highOutputPatterns) {
+    if (p.test(trimmed)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+export function readLatestRun(): LatestRun | undefined {
+  const folders = vscode.workspace.workspaceFolders;
+  if (!folders || folders.length === 0) {
+    return undefined;
+  }
+  const historyPath = path.join(folders[0].uri.fsPath, '.xit', 'history.jsonl');
+  try {
+    if (!fs.existsSync(historyPath)) {
+      return undefined;
+    }
+    const content = fs.readFileSync(historyPath, 'utf-8');
+    const lines = content.split('\n').filter((l) => l.trim().length > 0);
+    if (lines.length === 0) {
+      return undefined;
+    }
+    const latest = JSON.parse(lines[lines.length - 1]) as LatestRun;
+    return latest;
+  } catch {
+    return undefined;
   }
 }
 

@@ -50,18 +50,13 @@ async function updateStatusBar(): Promise<void> {
     return;
   }
 
+  // Idle: never show historical gain in status bar text
+  statusBarItem.text = '吸T神功 · 准备就绪';
+
   const gain = status.gain!;
-
-  if (gain.total_commands_condensed > 0) {
-    const display = gain.saved_tokens_display || `~${Math.round(gain.saved_tokens / 1000)}k`;
-    statusBarItem.text = `吸T神功 · 省${display}`;
-  } else {
-    statusBarItem.text = '吸T神功';
-  }
-
   const lines = [
     gain.total_commands_condensed > 0
-      ? `Saved tokens: ${gain.saved_tokens_display}`
+      ? `历史累计省: ${gain.saved_tokens_display}`
       : 'No XiT gain data for this workspace yet.',
     gain.total_commands_condensed > 0 ? `Estimated reduction: ${(gain.estimated_reduction * 100).toFixed(1)}%` : '',
     gain.total_commands_condensed > 0 ? `Commands condensed: ${gain.total_commands_condensed}` : '',
@@ -130,25 +125,14 @@ async function updateStatusBarLive(): Promise<void> {
     if (latest) {
       const saved = latest.raw_bytes - latest.summary_bytes;
       const display = saved >= 1000 ? `~${Math.round(saved / 1000)}k` : `${saved}`;
-      statusBarItem.text = `吸T神功 · 省${display}`;
+      statusBarItem.text = `吸T神功 · 本次省${display}`;
     } else {
-      statusBarItem.text = '吸T神功';
+      statusBarItem.text = '吸T神功 · 准备就绪';
     }
     return;
   }
-  // idle fallback to gain-based display
-  const status = await fetchStatus();
-  if (!status.available) {
-    statusBarItem.text = 'XiT · no data';
-    return;
-  }
-  const gain = status.gain!;
-  if (gain.total_commands_condensed > 0) {
-    const display = gain.saved_tokens_display || `~${Math.round(gain.saved_tokens / 1000)}k`;
-    statusBarItem.text = `吸T神功 · 省${display}`;
-  } else {
-    statusBarItem.text = '吸T神功';
-  }
+  // idle: never show historical gain in status bar text
+  statusBarItem.text = '吸T神功 · 准备就绪';
 }
 
 function isTerminalListenerEnabled(): boolean {

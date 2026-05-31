@@ -2,9 +2,14 @@
   "name": "xit-vscode",
   "displayName": "XiT Status",
   "description": "Local XiT status, saved tokens, hitrate, and raw logs for VS Code and Cursor.",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "publisher": "xit",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/stephenywilson/xit.git",
+    "directory": "extensions/vscode"
+  },
   "engines": {
     "vscode": "^1.120.0"
   },

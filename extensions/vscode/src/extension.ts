@@ -117,14 +117,14 @@ async function updateStatusBarLive(): Promise<void> {
     return;
   }
   if (liveState === 'missed') {
-    statusBarItem.text = '吸T神功 · missed command';
+    statusBarItem.text = '吸T神功 · 本次未触发压缩';
     return;
   }
   if (liveState === 'success') {
     const latest = (await import('./xit')).readLatestRun();
     if (latest) {
       const saved = latest.raw_bytes - latest.summary_bytes;
-      const display = saved >= 1000 ? `~${Math.round(saved / 1000)}k` : `${saved}`;
+      const display = saved >= 1000 ? `~${Math.round(saved / 1000)}KB` : `${saved}B`;
       statusBarItem.text = `吸T神功 · 本次省${display}`;
     } else {
       statusBarItem.text = '吸T神功 · 准备就绪';

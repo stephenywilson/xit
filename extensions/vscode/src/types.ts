@@ -53,6 +53,20 @@ export interface TerminalEvent {
   cwd?: string;
 }
 
+export interface LatestRun {
+  timestamp: string;
+  command: string;
+  exit_code: number;
+  raw_bytes: number;
+  summary_bytes: number;
+  estimated_reduction: number;
+  duration_ms: number;
+  filter: string;
+  confidence: string;
+  policy: string;
+  raw_log: string;
+}
+
 export interface XiTStatus {
   available: boolean;
   state: 'ok' | 'binary-not-found' | 'gain-json-failed' | 'no-data';

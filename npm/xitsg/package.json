@@ -1,6 +1,6 @@
 {
   "name": "xitsg",
-  "version": "0.2.42",
+  "version": "0.2.43",
   "description": "XiT / 吸T神功: AI CLI command-output compression, raw_log evidence, and Kimi integration.",
   "bin": {
     "xit": "bin/xit.js"

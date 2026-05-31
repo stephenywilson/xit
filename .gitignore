@@ -64,3 +64,9 @@ build/
 # OS
 .DS_Store
 Thumbs.db
+.env
+
+# Aider local runtime
+.aider.chat.history.md
+.aider.input.history
+.aider.tags.cache.v4

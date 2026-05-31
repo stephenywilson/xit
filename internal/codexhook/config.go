@@ -12,19 +12,20 @@ const xitHookMarker = ".xit/hooks/codex-pretooluse-bash.sh"
 
 // HooksConfig is the project-level .codex/hooks.json format.
 type HooksConfig struct {
-	Handlers []HookHandler `json:"handlers"`
+	Hooks map[string][]HookGroup `json:"hooks"`
 }
 
-// HookHandler defines a single hook handler entry.
-type HookHandler struct {
-	Event   string      `json:"event"`
-	Matcher HookMatcher `json:"matcher,omitempty"`
-	Command string      `json:"command"`
+// HookGroup groups hooks by matcher under an event.
+type HookGroup struct {
+	Matcher string        `json:"matcher,omitempty"`
+	Hooks   []HookCommand `json:"hooks"`
 }
 
-// HookMatcher filters which events trigger the handler.
-type HookMatcher struct {
-	Tool string `json:"tool,omitempty"`
+// HookCommand is a single command handler inside a group.
+type HookCommand struct {
+	Type    string `json:"type"`
+	Command string `json:"command"`
+	Timeout int    `json:"timeout,omitempty"`
 }
 
 // ReadHooksConfig reads .codex/hooks.json from the given project path.
@@ -33,13 +34,16 @@ func ReadHooksConfig(projectPath string) (*HooksConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return &HooksConfig{Handlers: []HookHandler{}}, nil
+			return &HooksConfig{Hooks: map[string][]HookGroup{}}, nil
 		}
 		return nil, err
 	}
 	var cfg HooksConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("invalid hooks.json: %w", err)
+	}
+	if cfg.Hooks == nil {
+		cfg.Hooks = map[string][]HookGroup{}
 	}
 	return &cfg, nil
 }
@@ -60,35 +64,58 @@ func WriteHooksConfig(projectPath string, cfg *HooksConfig) error {
 
 // HasXiTHook returns true if the XiT PreToolUse Bash hook is installed.
 func HasXiTHook(cfg *HooksConfig) bool {
-	for _, h := range cfg.Handlers {
-		if h.Event == "pre_tool_use" && strings.Contains(h.Command, xitHookMarker) {
-			return true
+	for _, group := range cfg.Hooks["PreToolUse"] {
+		if group.Matcher != "Bash" {
+			continue
+		}
+		for _, h := range group.Hooks {
+			if h.Type == "command" && strings.Contains(h.Command, xitHookMarker) {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-// AddXiTHook adds the XiT PreToolUse Bash handler, preserving existing handlers.
+// AddXiTHook adds the XiT PreToolUse Bash handler, preserving existing hooks.
 func AddXiTHook(cfg *HooksConfig, scriptPath string) {
 	// Remove any existing XiT handler to avoid duplicates.
 	RemoveXiTHook(cfg)
-	cfg.Handlers = append(cfg.Handlers, HookHandler{
-		Event: "pre_tool_use",
-		Matcher: HookMatcher{
-			Tool: "Bash",
+	group := HookGroup{
+		Matcher: "Bash",
+		Hooks: []HookCommand{
+			{Type: "command", Command: scriptPath, Timeout: 30},
 		},
-		Command: scriptPath,
-	})
+	}
+	cfg.Hooks["PreToolUse"] = append(cfg.Hooks["PreToolUse"], group)
 }
 
 // RemoveXiTHook removes the XiT PreToolUse Bash handler, preserving others.
 func RemoveXiTHook(cfg *HooksConfig) {
-	filtered := make([]HookHandler, 0, len(cfg.Handlers))
-	for _, h := range cfg.Handlers {
-		if h.Event == "pre_tool_use" && strings.Contains(h.Command, xitHookMarker) {
+	groups, ok := cfg.Hooks["PreToolUse"]
+	if !ok {
+		return
+	}
+	var filtered []HookGroup
+	for _, g := range groups {
+		if g.Matcher != "Bash" {
+			filtered = append(filtered, g)
 			continue
 		}
-		filtered = append(filtered, h)
+		var cmds []HookCommand
+		for _, h := range g.Hooks {
+			if h.Type == "command" && strings.Contains(h.Command, xitHookMarker) {
+				continue
+			}
+			cmds = append(cmds, h)
+		}
+		if len(cmds) > 0 {
+			filtered = append(filtered, HookGroup{Matcher: g.Matcher, Hooks: cmds})
+		}
 	}
-	cfg.Handlers = filtered
+	if len(filtered) > 0 {
+		cfg.Hooks["PreToolUse"] = filtered
+	} else {
+		delete(cfg.Hooks, "PreToolUse")
+	}
 }

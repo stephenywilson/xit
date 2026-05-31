@@ -3711,6 +3711,15 @@ func cmdHook(args []string) error {
 			}
 			fmt.Printf("hooks:   %s\n", res.HooksPath)
 			fmt.Printf("script:  %s\n", res.ScriptPath)
+			fmt.Println()
+			fmt.Println("Next steps:")
+			fmt.Println("  1. Launch Codex with hooks enabled:")
+			fmt.Println("     codex --enable hooks")
+			fmt.Println("  2. On first launch, approve/trust the hook if Codex prompts.")
+			fmt.Println("  3. Verify: xit hook stats codex")
+			fmt.Println()
+			fmt.Println("Note: Codex does not support command-backed bottom statusLine.")
+			fmt.Println("      This hook provides observe/hitrate only (no reroute).")
 			return nil
 		case "uninstall":
 			if !hasYesFlag(restArgs) {

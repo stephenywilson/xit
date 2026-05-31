@@ -32,7 +32,7 @@ import (
 	"os/exec"
 )
 
-const version = "0.2.41"
+const version = "0.2.42"
 
 func main() {
 	mode, rest := parseArgs(os.Args[1:])
@@ -1060,11 +1060,17 @@ func cmdAuto(args []string) error {
 		return nil
 	}
 
+	savedBytes := rawBytes - len([]byte(summary.Render("human")))
+	if savedBytes < 0 {
+		savedBytes = 0
+	}
+
 	// Render auto summary.
 	fmt.Println("XiT Auto Summary")
 	fmt.Printf("command: %s %s\n", tool, strings.Join(toolArgs, " "))
 	fmt.Printf("exit_code: %d\n", res.ExitCode)
 	fmt.Printf("estimated_reduction: %.0f%%\n", summary.EstimatedReduction*100)
+	fmt.Printf("saved_tokens: ~%s\n", formatTokenCount(savedBytes/4))
 	fmt.Printf("raw_log: %s\n", res.RawLogPath)
 	fmt.Println()
 	fmt.Print(summary.Render("agent"))
@@ -1073,11 +1079,6 @@ func cmdAuto(args []string) error {
 	_ = disp.WriteHistory(home, actualArgs, res, summary)
 	if sessionDir := os.Getenv("XIT_SESSION_DIR"); sessionDir != "" {
 		_ = disp.WriteHistory(sessionDir, actualArgs, res, summary)
-	}
-
-	savedBytes := rawBytes - len([]byte(summary.Render("human")))
-	if savedBytes < 0 {
-		savedBytes = 0
 	}
 	writeAutoState(statePath, map[string]interface{}{
 		"status":       "completed",

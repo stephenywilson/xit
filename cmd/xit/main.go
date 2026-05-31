@@ -58,7 +58,7 @@ func main() {
 		printHelp()
 		os.Exit(0)
 	case "gain":
-		if err := cmdGain(); err != nil {
+		if err := cmdGain(rest[1:]); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
@@ -222,7 +222,7 @@ func showMainMenu(mode string) {
 		case "7":
 			showInitMenu(home, cfg)
 		case "8":
-			cmdGain()
+			cmdGain(nil)
 		}
 	}
 }
@@ -411,6 +411,7 @@ Usage:
   xit claude                                         Launch Claude with XiT wrapper
   xit codex                                          Launch Codex with XiT wrapper
   xit gain                                           Show saved token statistics
+  xit gain --json                                    Show saved token statistics as JSON
   xit raw <run-id>                                   Display a saved raw log
   xit --version                                      Show version
   xit --help                                         Show this help
@@ -491,13 +492,78 @@ func run(args []string, mode string) int {
 	return res.ExitCode
 }
 
-func cmdGain() error {
-	g, err := history.ComputeGain(xitHome())
+func cmdGain(args []string) error {
+	useJSON := false
+	for _, a := range args {
+		if a == "--json" {
+			useJSON = true
+		}
+	}
+	g, warnings, err := history.ComputeGain(xitHome())
 	if err != nil {
 		return err
 	}
+	if useJSON {
+		data, err := buildGainJSON(g, warnings)
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(data))
+		return nil
+	}
 	fmt.Print(history.FormatGain(g))
 	return nil
+}
+
+func buildGainJSON(g *history.Gain, warnings []string) ([]byte, error) {
+	type cmdJSON struct {
+		Command            string  `json:"command"`
+		Runs               int     `json:"runs"`
+		RawBytes           int     `json:"raw_bytes"`
+		SummaryBytes       int     `json:"summary_bytes"`
+		SavedBytes         int     `json:"saved_bytes"`
+		SavedTokens        int     `json:"saved_tokens"`
+		SavedTokensDisplay string  `json:"saved_tokens_display"`
+	}
+	out := struct {
+		TotalCommandsCondensed int       `json:"total_commands_condensed"`
+		RawBytes               int       `json:"raw_bytes"`
+		SummaryBytes           int       `json:"summary_bytes"`
+		SavedBytes             int       `json:"saved_bytes"`
+		EstimatedReduction     float64   `json:"estimated_reduction"`
+		SavedTokens            int       `json:"saved_tokens"`
+		SavedTokensDisplay     string    `json:"saved_tokens_display"`
+		TopCommands            []cmdJSON `json:"top_commands"`
+		Warnings               []string  `json:"warnings,omitempty"`
+		Sources                struct {
+			HistoryPath string `json:"history_path"`
+			RunsDir     string `json:"runs_dir"`
+		} `json:"sources"`
+	}{
+		TotalCommandsCondensed: g.TotalCommands,
+		RawBytes:               g.TotalRawBytes,
+		SummaryBytes:           g.TotalSummaryBytes,
+		SavedBytes:             g.EstimatedSavedBytes,
+		EstimatedReduction:     g.EstimatedReduction,
+		SavedTokens:            g.EstimatedSavedBytes / 4,
+		SavedTokensDisplay:     "~" + formatTokenCount(g.EstimatedSavedBytes/4),
+		Warnings:               warnings,
+	}
+	out.Sources.HistoryPath = filepath.Join(xitHome(), "history.jsonl")
+	out.Sources.RunsDir = filepath.Join(xitHome(), "runs")
+	for _, c := range g.TopCommands {
+		savedTokens := c.Saved / 4
+		out.TopCommands = append(out.TopCommands, cmdJSON{
+			Command:            c.Command,
+			Runs:               c.Count,
+			RawBytes:           c.RawBytes,
+			SummaryBytes:       c.SummaryBytes,
+			SavedBytes:         c.Saved,
+			SavedTokens:        savedTokens,
+			SavedTokensDisplay: "~" + formatTokenCount(savedTokens),
+		})
+	}
+	return json.MarshalIndent(out, "", "  ")
 }
 
 func cmdRaw(runID string) error {
@@ -720,7 +786,7 @@ func cmdDoctorKimiDeep(home string, cfg *config.Config) string {
 	b.WriteString("\n")
 
 	// Compression
-	g, _ := history.ComputeGain(home)
+	g, _, _ := history.ComputeGain(home)
 	b.WriteString("Compression:\n")
 	b.WriteString(fmt.Sprintf("  commands_condensed:   %d\n", g.TotalCommands))
 	b.WriteString(fmt.Sprintf("  total_raw_bytes:      %d\n", g.TotalRawBytes))
@@ -2424,7 +2490,7 @@ func cmdKimiBenchmark(args []string) int {
 	}
 
 	home, source := resolveHistoryHome()
-	g, _ := history.ComputeGain(home)
+	g, _, _ := history.ComputeGain(home)
 
 	fmt.Println("XiT Kimi Benchmark")
 	fmt.Println()
@@ -2510,7 +2576,7 @@ func cmdBenchCompression(args []string) int {
 
 	home, source := resolveHistoryHome()
 	br, _ := history.ComputeBenchReport(home)
-	g, _ := history.ComputeGain(home)
+	g, _, _ := history.ComputeGain(home)
 
 	fmt.Println("XiT Compression Benchmark")
 	fmt.Println()

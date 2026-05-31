@@ -39,9 +39,12 @@ func TestAppendAndGain(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	g, err := ComputeGain(dir)
+	g, warnings, err := ComputeGain(dir)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(warnings) != 0 {
+		t.Errorf("unexpected warnings: %v", warnings)
 	}
 	if g.TotalCommands != 2 {
 		t.Errorf("commands = %d, want 2", g.TotalCommands)

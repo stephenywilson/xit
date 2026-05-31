@@ -168,7 +168,7 @@ hook 脚本内容：
 exec xit codex-hook pretooluse-bash
 ```
 
-XiT 处理器读取 Codex 发来的 JSON payload，使用 `filters.ClassifyPolicy()` 分类命令，记录事件后返回 `{"decision": "allow"}`（fail-open）。
+XiT 处理器读取 Codex 发来的 JSON payload，使用 `filters.ClassifyPolicy()` 分类命令，记录事件后以 exit code 0 静默返回（fail-open），不输出任何 JSON 到 stdout。
 
 隐私说明：所有事件只写入本地 `~/.xit/codex-hooks/events.jsonl`，不上传云端。
 

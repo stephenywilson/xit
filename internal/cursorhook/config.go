@@ -60,6 +60,54 @@ func WriteHooksConfig(path string, cfg *HooksConfig) error {
 // XiTHookMarker is the substring we look for to identify XiT-managed hook entries.
 const XiTHookMarker = "cursor-before-shell-exec"
 
+// HookConfig is the XiT Cursor hook mode configuration stored at ~/.xit/cursor-hooks/config.json.
+type HookConfig struct {
+	Mode string `json:"mode"`
+}
+
+// DefaultHookConfig returns the default observe-mode config.
+func DefaultHookConfig() *HookConfig {
+	return &HookConfig{Mode: "observe"}
+}
+
+// HookConfigPath returns the path to the XiT Cursor hook config file.
+func HookConfigPath(home string) string {
+	return filepath.Join(home, "cursor-hooks", "config.json")
+}
+
+// ReadHookConfig reads the XiT Cursor hook config, returning defaults if missing.
+func ReadHookConfig(home string) (*HookConfig, error) {
+	path := HookConfigPath(home)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return DefaultHookConfig(), nil
+		}
+		return nil, err
+	}
+	var cfg HookConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parse hook config: %w", err)
+	}
+	if cfg.Mode == "" {
+		cfg.Mode = "observe"
+	}
+	return &cfg, nil
+}
+
+// WriteHookConfig writes the XiT Cursor hook config atomically.
+func WriteHookConfig(home string, cfg *HookConfig) error {
+	path := HookConfigPath(home)
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
+}
+
 // HasXiTHook checks whether the XiT hook is already installed in the config.
 func HasXiTHook(cfg *HooksConfig) bool {
 	for _, entries := range cfg.Hooks {

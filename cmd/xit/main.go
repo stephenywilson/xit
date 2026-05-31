@@ -3942,10 +3942,22 @@ func cmdHook(args []string) error {
 			return fmt.Errorf("unknown hook command for codex: %s", sub)
 		}
 	case "cursor":
-		scope, restArgs := extractScopeFlag(args[2:])
+		rawArgs := args[2:]
+		scope, restArgs := extractScopeFlag(rawArgs)
 		hooksPath := cursorhook.UserHooksPath()
+		// Cursor hooks are user-level only; default scope should be user
 		if scope == "project" {
-			return fmt.Errorf("cursor hooks only support user scope in this version")
+			explicit := false
+			for i := 0; i < len(rawArgs); i++ {
+				if rawArgs[i] == "--scope" && i+1 < len(rawArgs) && rawArgs[i+1] == "project" {
+					explicit = true
+					break
+				}
+			}
+			if explicit {
+				return fmt.Errorf("cursor hooks only support user scope")
+			}
+			scope = "user"
 		}
 		switch sub {
 		case "status":
@@ -3955,7 +3967,7 @@ func cmdHook(args []string) error {
 			}
 			fmt.Println("XiT Cursor Hook Status")
 			fmt.Println()
-			fmt.Printf("scope:      user\n")
+			fmt.Printf("scope:      %s\n", scope)
 			fmt.Printf("hooks:      %s\n", status.HooksPath)
 			if status.Installed {
 				fmt.Printf("installed:  yes\n")
@@ -3965,6 +3977,11 @@ func cmdHook(args []string) error {
 				fmt.Printf("installed:  no\n")
 			}
 			fmt.Printf("mode:       %s\n", status.Mode)
+			if status.Mode == "strict" {
+				fmt.Printf("strict:     enabled (GUI ask for missed compress)\n")
+			} else {
+				fmt.Printf("strict:     disabled\n")
+			}
 			fmt.Printf("reroute:    disabled\n")
 			fmt.Printf("rewrite:    disabled\n")
 			fmt.Printf("fail_open:  yes\n")
@@ -3993,8 +4010,8 @@ func cmdHook(args []string) error {
 			fmt.Println("  2. On first shell command, approve/trust the hook if Cursor prompts.")
 			fmt.Println("  3. Verify: xit hook stats cursor")
 			fmt.Println()
-			fmt.Println("Note: Cursor does not support command-backed statusLine.")
-			fmt.Println("      This hook provides observe/hitrate only (no reroute).")
+			fmt.Println("Optional: enable strict mode for GUI feedback on missed compress:")
+			fmt.Println("  xit hook enable-strict cursor --yes")
 			return nil
 		case "uninstall":
 			if !hasYesFlag(restArgs) {
@@ -4004,6 +4021,27 @@ func cmdHook(args []string) error {
 				return err
 			}
 			fmt.Println("XiT Cursor hook uninstalled.")
+			return nil
+		case "enable-strict":
+			if !hasYesFlag(restArgs) {
+				return fmt.Errorf("enable-strict requires --yes to confirm")
+			}
+			if err := cursorhook.EnableStrict(home); err != nil {
+				return err
+			}
+			fmt.Println("XiT Cursor strict mode enabled.")
+			fmt.Println()
+			fmt.Println("Cursor will now show a GUI prompt when high-output commands are not wrapped with xit auto.")
+			fmt.Println("The prompt includes the recommended 'xit auto <command>' wrapper.")
+			return nil
+		case "disable-strict":
+			if !hasYesFlag(restArgs) {
+				return fmt.Errorf("disable-strict requires --yes to confirm")
+			}
+			if err := cursorhook.DisableStrict(home); err != nil {
+				return err
+			}
+			fmt.Println("XiT Cursor strict mode disabled. Back to observe mode.")
 			return nil
 		case "stats":
 			stats, err := cursorhook.Stats(home)

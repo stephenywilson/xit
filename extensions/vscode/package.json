@@ -1,0 +1,114 @@
+{
+  "name": "xit-vscode",
+  "displayName": "XiT Status",
+  "description": "Local XiT status, saved tokens, hitrate, and raw logs for VS Code and Cursor.",
+  "version": "0.0.1",
+  "publisher": "xit",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.120.0"
+  },
+  "categories": [
+    "Other",
+    "Visualization"
+  ],
+  "keywords": [
+    "xit",
+    "ai",
+    "cli",
+    "terminal",
+    "compression"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:xit.openDashboard",
+    "onCommand:xit.refresh",
+    "onCommand:xit.showGain",
+    "onCommand:xit.openLatestRawLog"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "xit.openDashboard",
+        "title": "Open Dashboard",
+        "category": "XiT"
+      },
+      {
+        "command": "xit.refresh",
+        "title": "Refresh",
+        "category": "XiT"
+      },
+      {
+        "command": "xit.showGain",
+        "title": "Show Gain",
+        "category": "XiT"
+      },
+      {
+        "command": "xit.openLatestRawLog",
+        "title": "Open Latest Raw Log",
+        "category": "XiT"
+      },
+      {
+        "command": "xit.showOutput",
+        "title": "Show Output Channel",
+        "category": "XiT"
+      }
+    ],
+    "configuration": {
+      "title": "XiT",
+      "properties": {
+        "xit.binaryPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the xit binary. If empty, XiT Status tries PATH, ~/.local/bin/xit, then workspace ./xit."
+        },
+        "xit.home": {
+          "type": "string",
+          "default": "",
+          "description": "Path to XiT home. Defaults to ~/.xit."
+        },
+        "xit.refreshInterval": {
+          "type": "number",
+          "default": 10,
+          "description": "Status bar refresh interval in seconds."
+        },
+        "xit.enableStatusBar": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show XiT status bar item."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "xit",
+          "title": "XiT",
+          "icon": "$(pulse)"
+        }
+      ]
+    },
+    "views": {
+      "xit": [
+        {
+          "id": "xit.dashboard",
+          "name": "Dashboard",
+          "type": "webview"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.19",
+    "@types/vscode": "^1.120.0",
+    "@vscode/vsce": "^3.9.1",
+    "typescript": "^5.9.3"
+  }
+}

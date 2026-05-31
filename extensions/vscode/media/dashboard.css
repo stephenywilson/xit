@@ -1,0 +1,97 @@
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
+  padding: 16px;
+  line-height: 1.5;
+}
+
+h1 {
+  font-size: 1.4rem;
+  margin-bottom: 8px;
+}
+
+h2 {
+  font-size: 1.1rem;
+  margin-top: 24px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  padding-bottom: 4px;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.stat {
+  background: var(--vscode-editor-inactiveSelectionBackground);
+  border-radius: 6px;
+  padding: 12px;
+}
+
+.stat .value {
+  font-size: 1.3rem;
+  font-weight: 600;
+}
+
+.stat .label {
+  font-size: 0.8rem;
+  opacity: 0.8;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+th, td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+}
+
+th {
+  opacity: 0.7;
+  font-weight: 500;
+}
+
+.adapters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.card {
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.card.adapter.active {
+  background: var(--vscode-testing-iconPassed);
+  color: var(--vscode-editor-background);
+}
+
+.card.adapter.inactive {
+  background: var(--vscode-editor-inactiveSelectionBackground);
+  opacity: 0.6;
+}
+
+.privacy {
+  margin-top: 24px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--vscode-inputValidation-infoBackground);
+  font-size: 0.8rem;
+}
+
+.empty {
+  opacity: 0.6;
+  font-size: 0.9rem;
+}

@@ -244,11 +244,13 @@ xit auto --help     # 查看帮助
 
 **近期**
 
+- VS Code / Cursor Extension MVP（local VSIX，本地 dashboard + status bar）
 - DeepSeek 系 AI CLI 调研与适配
 - 更多高噪音命令过滤器
 
 **后续**
 
+- VS Code Marketplace 发布
 - 可选 tokenizer 估算增强
 - 更多 AI Coding CLI 接入
 

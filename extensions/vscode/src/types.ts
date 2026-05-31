@@ -35,10 +35,20 @@ export interface AdapterEvent {
   reason?: string;
 }
 
+export interface GlobalActivity {
+  latestAdapter?: string;
+  latestTime?: string;
+  latestCommand?: string;
+  latestPolicy?: string;
+  eventCount: number;
+  adapterCounts: Record<string, number>;
+}
+
 export interface XiTStatus {
   available: boolean;
   state: 'ok' | 'binary-not-found' | 'gain-json-failed' | 'no-data';
   gain?: GainData;
+  activity?: GlobalActivity;
   error?: string;
   binary?: string;
   cwd?: string;

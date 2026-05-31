@@ -3,7 +3,7 @@ import * as child_process from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
-import type { GainData, AdapterEvent, XiTStatus } from './types';
+import type { GainData, AdapterEvent, GlobalActivity, XiTStatus } from './types';
 
 const OUTPUT_CHANNEL = vscode.window.createOutputChannel('XiT Status');
 
@@ -145,6 +145,41 @@ function previewText(text: string, max = 500): string {
   return trimmed.slice(0, max) + '...';
 }
 
+export function readGlobalActivity(): GlobalActivity {
+  const adapters = ['cursor', 'codex', 'claude', 'kimi'];
+  const adapterCounts: Record<string, number> = {};
+  let latestAdapter: string | undefined;
+  let latestTime = '';
+  let latestCommand: string | undefined;
+  let latestPolicy: string | undefined;
+  let eventCount = 0;
+
+  for (const adapter of adapters) {
+    const events = readRecentEvents(adapter, 50);
+    if (events.length > 0) {
+      adapterCounts[adapter] = events.length;
+      eventCount += events.length;
+      // events[0] is most recent (readRecentEvents reverses)
+      const latest = events[0];
+      if (!latestTime || (latest.time && latest.time > latestTime)) {
+        latestTime = latest.time || '';
+        latestAdapter = adapter;
+        latestCommand = latest.original_command;
+        latestPolicy = latest.policy;
+      }
+    }
+  }
+
+  return {
+    latestAdapter,
+    latestTime: latestTime || undefined,
+    latestCommand,
+    latestPolicy,
+    eventCount,
+    adapterCounts,
+  };
+}
+
 export async function fetchStatus(): Promise<XiTStatus> {
   const cwd = resolveWorkspaceCwd();
   const candidates = resolveBinaryCandidates();
@@ -177,8 +212,10 @@ export async function fetchStatus(): Promise<XiTStatus> {
       }
       try {
         const data = JSON.parse(stdout) as GainData;
+        const activity = readGlobalActivity();
         const state = data.total_commands_condensed > 0 ? 'ok' : 'no-data';
-        return { available: true, state, gain: data, binary, cwd, attempts, refreshedAt: new Date() };
+        log(`activity: eventCount=${activity.eventCount} latestAdapter=${activity.latestAdapter || 'none'}`);
+        return { available: true, state, gain: data, activity, binary, cwd, attempts, refreshedAt: new Date() };
       } catch (parseErr) {
         lastError = `${binary}: JSON parse error: ${parseErr}; stdout=${previewText(stdout)}`;
         log(lastError);
@@ -196,10 +233,13 @@ export async function fetchStatus(): Promise<XiTStatus> {
     }
   }
 
+  const activity = readGlobalActivity();
+
   if (!sawRunnableBinary) {
     return {
       available: false,
       state: 'binary-not-found',
+      activity,
       error: `XiT binary not found. Attempted: ${attempts.join(', ')}`,
       cwd,
       attempts,
@@ -210,6 +250,7 @@ export async function fetchStatus(): Promise<XiTStatus> {
   return {
     available: false,
     state: 'gain-json-failed',
+    activity,
     error: lastError || 'xit gain --json failed for all binary candidates',
     cwd,
     attempts,

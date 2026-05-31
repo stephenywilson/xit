@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { fetchStatus, openLatestRawLog, showOutput } from './xit';
-import { showDashboard } from './dashboard';
+import { showDashboard, updateDashboardIfOpen } from './dashboard';
 
 let statusBarItem: vscode.StatusBarItem | undefined;
 let refreshTimer: NodeJS.Timeout | undefined;
@@ -21,6 +21,7 @@ async function updateStatusBar(): Promise<void> {
     return;
   }
   const status = await fetchStatus();
+
   if (!status.available) {
     if (status.state === 'binary-not-found') {
       statusBarItem.text = 'XiT · binary not found';
@@ -30,22 +31,43 @@ async function updateStatusBar(): Promise<void> {
     statusBarItem.tooltip = [
       status.error || 'XiT status unavailable.',
       status.cwd ? `cwd: ${status.cwd}` : '',
-      status.attempts && status.attempts.length > 0 ? `attempted: ${status.attempts.join(', ')}` : '',
+      status.attempts && status.attempts.length > 0 ? `Attempted: ${status.attempts.join(', ')}` : '',
       'Click to open XiT Dashboard',
     ].filter(Boolean).join('\n');
+    updateDashboardIfOpen(status);
     return;
   }
+
   const gain = status.gain!;
-  if (status.state === 'no-data') {
-    statusBarItem.text = 'XiT · no data';
-  } else {
+  const activity = status.activity;
+
+  if (gain.total_commands_condensed > 0) {
     const display = gain.saved_tokens_display || `~${Math.round(gain.saved_tokens / 1000)}k`;
     statusBarItem.text = `吸T神功 · 省${display}`;
+  } else if (activity && activity.eventCount > 0) {
+    if (activity.latestAdapter) {
+      statusBarItem.text = `XiT · latest: ${activity.latestAdapter}`;
+    } else {
+      statusBarItem.text = `XiT · ${activity.eventCount} events`;
+    }
+  } else {
+    statusBarItem.text = 'XiT · no data';
   }
+
+  const adapterSummary = activity && Object.keys(activity.adapterCounts).length > 0
+    ? Object.entries(activity.adapterCounts).map(([k, v]) => `${k}:${v}`).join(', ')
+    : '';
+
   const lines = [
-    `Saved tokens: ${gain.saved_tokens_display}`,
-    `Estimated reduction: ${(gain.estimated_reduction * 100).toFixed(1)}%`,
-    `Total commands condensed: ${gain.total_commands_condensed}`,
+    gain.total_commands_condensed > 0
+      ? `Saved tokens: ${gain.saved_tokens_display}`
+      : activity && activity.eventCount > 0
+        ? `Global events: ${activity.eventCount}${adapterSummary ? ` (${adapterSummary})` : ''}`
+        : 'No workspace history yet.',
+    gain.total_commands_condensed > 0 ? `Estimated reduction: ${(gain.estimated_reduction * 100).toFixed(1)}%` : '',
+    gain.total_commands_condensed > 0 ? `Commands condensed: ${gain.total_commands_condensed}` : '',
+    activity?.latestAdapter ? `Latest adapter: ${activity.latestAdapter}` : '',
+    activity?.latestTime ? `Last event: ${activity.latestTime}` : '',
     status.binary ? `Binary: ${status.binary}` : '',
     status.cwd ? `cwd: ${status.cwd}` : '',
     gain.warnings && gain.warnings.length > 0 ? `Warnings: ${gain.warnings.join('; ')}` : '',
@@ -53,6 +75,8 @@ async function updateStatusBar(): Promise<void> {
     'Click to open XiT Dashboard',
   ].filter(Boolean);
   statusBarItem.tooltip = lines.join('\n');
+
+  updateDashboardIfOpen(status);
 }
 
 function startRefresh(): void {

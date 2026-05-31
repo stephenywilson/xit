@@ -1,10 +1,12 @@
 package kimistatus
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRunAuditProducesResult(t *testing.T) {
@@ -848,8 +850,10 @@ func TestComputeToolbarPreviewAutoCompletedShowsTokens(t *testing.T) {
 	tmp := t.TempDir()
 	stateDir := filepath.Join(tmp, "state")
 	os.MkdirAll(stateDir, 0755)
+	now := time.Now().UTC()
 	// 36035 bytes -> 9008 tokens -> 省9k Token
-	os.WriteFile(filepath.Join(stateDir, "current.json"), []byte(`{"status":"completed","started_at":"","finished_at":"2026-05-30T23:59:59Z","saved_bytes":36035}`), 0644)
+	state := fmt.Sprintf(`{"status":"completed","started_at":"","finished_at":"%s","saved_bytes":36035}`, now.Add(-5*time.Second).Format(time.RFC3339))
+	os.WriteFile(filepath.Join(stateDir, "current.json"), []byte(state), 0644)
 
 	preview := ComputeToolbarPreview(tmp)
 	if preview.Preview != "吸T完成 · 本次省9k Token" {

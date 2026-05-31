@@ -2,10 +2,12 @@ package kimihook
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRunTurnHookCommandUserPromptSubmit(t *testing.T) {
@@ -290,6 +292,8 @@ func TestComputeToolbarTextStateMachine(t *testing.T) {
 	tmp := t.TempDir()
 	home := filepath.Join(tmp, ".xit")
 
+	now := time.Now().UTC()
+
 	// Ready state: no turn, no auto, no history.
 	turn := TurnState{}
 	auto := AutoState{}
@@ -299,42 +303,42 @@ func TestComputeToolbarTextStateMachine(t *testing.T) {
 	}
 
 	// Turn thinking state.
-	turn = TurnState{Status: "thinking", Event: "UserPromptSubmit", StartedAt: "2026-05-30T00:00:00Z"}
+	turn = TurnState{Status: "thinking", Event: "UserPromptSubmit", StartedAt: now.Add(-5 * time.Minute).Format(time.RFC3339)}
 	text = ComputeToolbarText(home, turn, auto)
 	if text != "吸T神功 · 守护你的T" {
 		t.Errorf("thinking state: expected 吸T神功 · 守护你的T, got %s", text)
 	}
 
 	// Turn active state should also show 守护你的T.
-	turn = TurnState{Status: "active", Event: "", StartedAt: "2026-05-30T00:00:00Z"}
+	turn = TurnState{Status: "active", Event: "", StartedAt: now.Add(-5 * time.Minute).Format(time.RFC3339)}
 	text = ComputeToolbarText(home, turn, auto)
 	if text != "吸T神功 · 守护你的T" {
 		t.Errorf("active state: expected 吸T神功 · 守护你的T, got %s", text)
 	}
 
 	// SessionStart state should show 准备就绪, not 守护你的T.
-	turn = TurnState{Status: "session_started", Event: "SessionStart", StartedAt: "2026-05-30T00:00:00Z"}
+	turn = TurnState{Status: "session_started", Event: "SessionStart", StartedAt: now.Add(-5 * time.Minute).Format(time.RFC3339)}
 	text = ComputeToolbarText(home, turn, auto)
 	if text != "吸T神功 · 准备就绪" {
 		t.Errorf("session_started state: expected 吸T神功 · 准备就绪, got %s", text)
 	}
 
 	// Auto running overrides turn thinking.
-	auto = AutoState{Status: "running", StartedAt: "2026-05-30T23:59:59Z", Command: "go test"}
+	auto = AutoState{Status: "running", StartedAt: now.Add(-5 * time.Minute).Format(time.RFC3339), Command: "go test"}
 	text = ComputeToolbarText(home, turn, auto)
 	if text != "吸T神功 · 正在吸T中" {
 		t.Errorf("auto running: expected 吸T神功 · 正在吸T中, got %s", text)
 	}
 
 	// Auto completed overrides turn thinking.
-	auto = AutoState{Status: "completed", FinishedAt: "2026-05-30T23:59:59Z", SavedBytes: 10240}
+	auto = AutoState{Status: "completed", FinishedAt: now.Add(-5 * time.Second).Format(time.RFC3339), SavedBytes: 10240}
 	text = ComputeToolbarText(home, turn, auto)
 	if !strings.Contains(text, "吸T完成") {
 		t.Errorf("auto completed: expected contains 吸T完成, got %s", text)
 	}
 
 	// Turn completed without auto records: should not show 未触发吸T.
-	turn = TurnState{Status: "turn_completed", FinishedAt: "2026-05-30T23:59:59Z"}
+	turn = TurnState{Status: "turn_completed", FinishedAt: now.Add(-5 * time.Second).Format(time.RFC3339)}
 	auto = AutoState{}
 	text = ComputeToolbarText(home, turn, auto)
 	if strings.Contains(text, "未触发吸T") {
@@ -368,17 +372,18 @@ func TestFormatSavedTokens(t *testing.T) {
 func TestComputeToolbarTextAutoCompletedShowsTokens(t *testing.T) {
 	tmp := t.TempDir()
 	home := filepath.Join(tmp, ".xit")
+	now := time.Now().UTC()
 
 	// Auto completed with 36035 bytes -> 9008 tokens -> 省9k Token
-	turn := TurnState{Status: "thinking", Event: "UserPromptSubmit", StartedAt: "2026-05-30T00:00:00Z"}
-	auto := AutoState{Status: "completed", FinishedAt: "2026-05-30T23:59:59Z", SavedBytes: 36035}
+	turn := TurnState{Status: "thinking", Event: "UserPromptSubmit", StartedAt: now.Add(-5 * time.Minute).Format(time.RFC3339)}
+	auto := AutoState{Status: "completed", FinishedAt: now.Add(-5 * time.Second).Format(time.RFC3339), SavedBytes: 36035}
 	text := ComputeToolbarText(home, turn, auto)
 	if text != "吸T完成 · 本次省9k Token" {
 		t.Errorf("auto completed: expected 吸T完成 · 本次省9k Token, got %s", text)
 	}
 
 	// Auto completed with 900 bytes -> 225 tokens -> 省225 Token
-	auto = AutoState{Status: "completed", FinishedAt: "2026-05-30T23:59:59Z", SavedBytes: 900}
+	auto = AutoState{Status: "completed", FinishedAt: now.Add(-5 * time.Second).Format(time.RFC3339), SavedBytes: 900}
 	text = ComputeToolbarText(home, turn, auto)
 	if text != "吸T完成 · 本次省225 Token" {
 		t.Errorf("auto completed small: expected 吸T完成 · 本次省225 Token, got %s", text)
@@ -390,14 +395,15 @@ func TestComputeToolbarTextTurnResultShowsTokens(t *testing.T) {
 	home := filepath.Join(tmp, ".xit")
 	stateDir := filepath.Join(home, "state")
 	_ = os.MkdirAll(stateDir, 0755)
+	now := time.Now().UTC()
 
 	// Write a history record with 65000 bytes saved -> 16250 tokens -> 16k Token
 	// within the turn time range
-	rec := `{"timestamp":"2026-05-30T12:00:00Z","raw_bytes":70000,"summary_bytes":5000,"action":"compress"}` + "\n"
+	rec := fmt.Sprintf(`{"timestamp":"%s","raw_bytes":70000,"summary_bytes":5000,"action":"compress"}`+"\n", now.Add(-30*time.Minute).Format(time.RFC3339))
 	_ = os.WriteFile(filepath.Join(home, "history.jsonl"), []byte(rec), 0644)
 
 	// With an active turn that includes this record
-	turn := TurnState{Status: "turn_completed", StartedAt: "2026-05-30T11:00:00Z", FinishedAt: "2026-05-30T23:59:59Z"}
+	turn := TurnState{Status: "turn_completed", StartedAt: now.Add(-1 * time.Hour).Format(time.RFC3339), FinishedAt: now.Add(-5 * time.Second).Format(time.RFC3339)}
 	auto := AutoState{}
 	text := ComputeToolbarText(home, turn, auto)
 	if text != "本次吸T1次 · 省16k Token" {

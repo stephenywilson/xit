@@ -50,32 +50,36 @@ type Gain struct {
 }
 
 type CommandSavings struct {
-	Command string
-	Count   int
-	Saved   int
+	Command      string
+	Count        int
+	Saved        int
+	RawBytes     int
+	SummaryBytes int
 }
 
-func ComputeGain(baseDir string) (*Gain, error) {
+func ComputeGain(baseDir string) (*Gain, []string, error) {
 	path := filepath.Join(baseDir, "history.jsonl")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return &Gain{}, nil
+			return &Gain{}, nil, nil
 		}
-		return nil, err
+		return nil, nil, err
 	}
 
 	g := &Gain{}
 	cmdSavings := make(map[string]*CommandSavings)
+	var warnings []string
 
 	lines := strings.Split(string(data), "\n")
-	for _, line := range lines {
+	for lineNum, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
 		var r Record
 		if err := json.Unmarshal([]byte(line), &r); err != nil {
+			warnings = append(warnings, fmt.Sprintf("line %d: invalid JSON", lineNum+1))
 			continue
 		}
 		g.TotalCommands++
@@ -94,6 +98,8 @@ func ComputeGain(baseDir string) (*Gain, error) {
 		}
 		cs.Count++
 		cs.Saved += saved
+		cs.RawBytes += r.RawBytes
+		cs.SummaryBytes += r.SummaryBytes
 	}
 
 	if g.TotalRawBytes > 0 {
@@ -110,7 +116,7 @@ func ComputeGain(baseDir string) (*Gain, error) {
 		g.TopCommands = g.TopCommands[:5]
 	}
 
-	return g, nil
+	return g, warnings, nil
 }
 
 type SessionMetrics struct {

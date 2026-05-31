@@ -2684,3 +2684,142 @@ func TestClaudeStatuslineAutostateCompleted(t *testing.T) {
 		t.Errorf("expected source autostate_completed, got %v", data["source"])
 	}
 }
+
+func TestGainTextOutput(t *testing.T) {
+	bin := buildXit(t)
+	tmpHome := t.TempDir()
+
+	historyPath := filepath.Join(tmpHome, "history.jsonl")
+	lines := []string{
+		`{"timestamp":"2026-01-01T00:00:00Z","command":"go test -v ./...","exit_code":0,"raw_bytes":10000,"summary_bytes":500,"estimated_reduction":0.95,"duration_ms":100,"filter":"test","confidence":"high","raw_log":".xit/runs/1.raw.log"}`,
+		`{"timestamp":"2026-01-01T00:01:00Z","command":"git status","exit_code":0,"raw_bytes":200,"summary_bytes":180,"estimated_reduction":0.1,"duration_ms":10,"filter":"git","confidence":"high","raw_log":".xit/runs/2.raw.log"}`,
+	}
+	_ = os.WriteFile(historyPath, []byte(strings.Join(lines, "\n")+"\n"), 0644)
+
+	cmd := exec.Command(bin, "gain")
+	cmd.Env = append(os.Environ(), "XIT_HOME="+tmpHome, "XIT_NONINTERACTIVE=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("xit gain failed: %v\n%s", err, out)
+	}
+	s := string(out)
+	if !strings.Contains(s, "XiT Gain Report") {
+		t.Errorf("expected XiT Gain Report, got:\n%s", s)
+	}
+	if !strings.Contains(s, "Total commands condensed: 2") {
+		t.Errorf("expected Total commands condensed: 2, got:\n%s", s)
+	}
+}
+
+func TestGainJSONOutput(t *testing.T) {
+	bin := buildXit(t)
+	tmpHome := t.TempDir()
+
+	historyPath := filepath.Join(tmpHome, "history.jsonl")
+	lines := []string{
+		`{"timestamp":"2026-01-01T00:00:00Z","command":"go test -v ./...","exit_code":0,"raw_bytes":10000,"summary_bytes":500,"estimated_reduction":0.95,"duration_ms":100,"filter":"test","confidence":"high","raw_log":".xit/runs/1.raw.log"}`,
+		`{"timestamp":"2026-01-01T00:01:00Z","command":"git status","exit_code":0,"raw_bytes":200,"summary_bytes":180,"estimated_reduction":0.1,"duration_ms":10,"filter":"git","confidence":"high","raw_log":".xit/runs/2.raw.log"}`,
+	}
+	_ = os.WriteFile(historyPath, []byte(strings.Join(lines, "\n")+"\n"), 0644)
+
+	cmd := exec.Command(bin, "gain", "--json")
+	cmd.Env = append(os.Environ(), "XIT_HOME="+tmpHome, "XIT_NONINTERACTIVE=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("xit gain --json failed: %v\n%s", err, out)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(out, &data); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, out)
+	}
+
+	if data["total_commands_condensed"] != float64(2) {
+		t.Errorf("expected total_commands_condensed=2, got %v", data["total_commands_condensed"])
+	}
+	if data["raw_bytes"] != float64(10200) {
+		t.Errorf("expected raw_bytes=10200, got %v", data["raw_bytes"])
+	}
+	if data["summary_bytes"] != float64(680) {
+		t.Errorf("expected summary_bytes=680, got %v", data["summary_bytes"])
+	}
+	if data["saved_bytes"] != float64(9520) {
+		t.Errorf("expected saved_bytes=9520, got %v", data["saved_bytes"])
+	}
+	if data["saved_tokens"] != float64(2380) {
+		t.Errorf("expected saved_tokens=2380, got %v", data["saved_tokens"])
+	}
+	if data["estimated_reduction"] == nil {
+		t.Error("expected estimated_reduction")
+	}
+
+	top, ok := data["top_commands"].([]interface{})
+	if !ok || len(top) == 0 {
+		t.Fatalf("expected top_commands, got %v", data["top_commands"])
+	}
+	first := top[0].(map[string]interface{})
+	if first["command"] != "go test -v ./..." {
+		t.Errorf("expected top command go test -v ./..., got %v", first["command"])
+	}
+	if first["runs"] != float64(1) {
+		t.Errorf("expected runs=1, got %v", first["runs"])
+	}
+
+	s := string(out)
+	if strings.Contains(s, "\x1b[") {
+		t.Errorf("JSON output should not contain ANSI escape codes")
+	}
+}
+
+func TestGainJSONNoHistory(t *testing.T) {
+	bin := buildXit(t)
+	tmpHome := t.TempDir()
+
+	cmd := exec.Command(bin, "gain", "--json")
+	cmd.Env = append(os.Environ(), "XIT_HOME="+tmpHome, "XIT_NONINTERACTIVE=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("xit gain --json with no history failed: %v\n%s", err, out)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(out, &data); err != nil {
+		t.Fatalf("invalid JSON for empty history: %v\n%s", err, out)
+	}
+	if data["total_commands_condensed"] != float64(0) {
+		t.Errorf("expected 0 commands for empty history, got %v", data["total_commands_condensed"])
+	}
+	if data["raw_bytes"] != float64(0) {
+		t.Errorf("expected 0 raw_bytes for empty history, got %v", data["raw_bytes"])
+	}
+}
+
+func TestGainJSONMalformedLine(t *testing.T) {
+	bin := buildXit(t)
+	tmpHome := t.TempDir()
+
+	historyPath := filepath.Join(tmpHome, "history.jsonl")
+	content := "not json at all\n" +
+		`{"timestamp":"2026-01-01T00:00:00Z","command":"go test -v ./...","exit_code":0,"raw_bytes":1000,"summary_bytes":100,"estimated_reduction":0.9,"duration_ms":10,"filter":"test","confidence":"high","raw_log":".xit/runs/1.raw.log"}` +
+		"\n"
+	_ = os.WriteFile(historyPath, []byte(content), 0644)
+
+	cmd := exec.Command(bin, "gain", "--json")
+	cmd.Env = append(os.Environ(), "XIT_HOME="+tmpHome, "XIT_NONINTERACTIVE=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("xit gain --json with malformed line failed: %v\n%s", err, out)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(out, &data); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, out)
+	}
+	if data["total_commands_condensed"] != float64(1) {
+		t.Errorf("expected 1 valid command, got %v", data["total_commands_condensed"])
+	}
+	warnings, ok := data["warnings"].([]interface{})
+	if !ok || len(warnings) == 0 {
+		t.Errorf("expected warnings for malformed line, got %v", data["warnings"])
+	}
+}

@@ -116,6 +116,7 @@ xit kimi doctor
 ```bash
 xit kimi benchmark
 xit gain
+xit gain --json   # JSON output for local dashboards / editor integrations
 ```
 
 ## 完整卸载

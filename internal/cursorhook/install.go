@@ -148,11 +148,13 @@ func DisableStrict(home string) error {
 }
 
 type StatsResult struct {
-	Events      int
-	Observed    int
-	Passthrough int
-	Errors      int
-	HasEvents   bool
+	Events          int
+	Observed        int
+	Passthrough     int
+	Errors          int
+	StrictPrompts   int
+	VisibleFeedback int
+	HasEvents       bool
 }
 
 // Stats reads cursor-hooks/events.jsonl and returns aggregated counts.
@@ -189,6 +191,12 @@ func Stats(home string) (*StatsResult, error) {
 			result.Errors++
 		default:
 			result.Observed++
+		}
+		if action == "ask" {
+			result.StrictPrompts++
+		}
+		if vf, ok := rec["visible_feedback"].(bool); ok && vf {
+			result.VisibleFeedback++
 		}
 	}
 	return result, nil

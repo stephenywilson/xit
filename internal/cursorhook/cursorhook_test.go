@@ -277,14 +277,23 @@ func TestRunHookCommandStrictAsk(t *testing.T) {
 	if !strings.Contains(outStr, `"user_message"`) {
 		t.Errorf("expected user_message in strict mode, got: %s", outStr)
 	}
-	if !strings.Contains(outStr, `xit auto go test -v ./...`) {
-		t.Errorf("expected recommended command in user_message, got: %s", outStr)
+	if !strings.Contains(outStr, `XiT: high-output command detected. Use: xit auto go test -v ./...`) {
+		t.Errorf("expected shortened user_message, got: %s", outStr)
 	}
 
 	eventsPath := filepath.Join(tmp, "cursor-hooks", "events.jsonl")
 	data, _ := os.ReadFile(eventsPath)
 	if !strings.Contains(string(data), `"action":"ask"`) {
 		t.Errorf("expected ask action in events, got: %s", string(data))
+	}
+	if !strings.Contains(string(data), `"strict":true`) {
+		t.Errorf("expected strict=true in event, got: %s", string(data))
+	}
+	if !strings.Contains(string(data), `"prompted":true`) {
+		t.Errorf("expected prompted=true in event, got: %s", string(data))
+	}
+	if !strings.Contains(string(data), `"visible_feedback":true`) {
+		t.Errorf("expected visible_feedback=true in event, got: %s", string(data))
 	}
 }
 
@@ -351,5 +360,28 @@ func TestRunHookCommandStrictPassthroughQuiet(t *testing.T) {
 	}
 	if strings.Contains(outStr, `"user_message"`) {
 		t.Errorf("expected no user_message for passthrough command, got: %s", outStr)
+	}
+}
+
+func TestStatsStrictPrompts(t *testing.T) {
+	tmp := t.TempDir()
+	os.MkdirAll(filepath.Join(tmp, "cursor-hooks"), 0755)
+	data := `{"time":"2026-01-01T00:00:00Z","action":"ask","strict":true,"prompted":true,"visible_feedback":true}
+{"time":"2026-01-01T00:00:01Z","action":"observe","strict":true,"prompted":false}
+{"time":"2026-01-01T00:00:02Z","action":"passthrough"}
+`
+	os.WriteFile(filepath.Join(tmp, "cursor-hooks", "events.jsonl"), []byte(data), 0644)
+	stats, err := Stats(tmp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if stats.Events != 3 {
+		t.Errorf("expected 3 events, got %d", stats.Events)
+	}
+	if stats.StrictPrompts != 1 {
+		t.Errorf("expected 1 strict_prompt, got %d", stats.StrictPrompts)
+	}
+	if stats.VisibleFeedback != 1 {
+		t.Errorf("expected 1 visible_feedback, got %d", stats.VisibleFeedback)
 	}
 }

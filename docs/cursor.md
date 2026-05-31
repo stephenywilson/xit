@@ -45,7 +45,7 @@ In strict mode, when Cursor tries to run a command like `go test -v ./...` witho
 ```json
 {
   "permission": "ask",
-  "user_message": "XiT: This command usually produces long output. Use 'xit auto go test -v ./...' to compress and save tokens.",
+  "user_message": "XiT: high-output command detected. Use: xit auto go test -v ./...",
   "agent_message": "Consider using xit auto go test -v ./... to reduce context noise."
 }
 ```
@@ -79,6 +79,19 @@ XiT classifies the command, logs an event to `~/.xit/cursor-hooks/events.jsonl`,
 - **observe mode**: `{"permission": "allow"}`
 - **strict mode + missed compress**: `{"permission": "ask", "user_message": "..."}`
 - **strict mode + already wrapped or passthrough**: `{"permission": "allow"}`
+
+Strict ask events include metadata fields:
+
+```json
+{
+  "action": "ask",
+  "strict": true,
+  "prompted": true,
+  "visible_feedback": true
+}
+```
+
+These fields power `strict_prompts` and `visible_feedback` counters in `xit hook stats cursor` and `xit hook hitrate cursor`.
 
 XiT never permanently blocks, never rewrites commands, and never uploads data.
 

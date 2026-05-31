@@ -90,7 +90,7 @@ func RunHookCommand(home string) error {
 				action = "ask"
 				reason = "strict mode: high-output command not wrapped"
 				permission = "ask"
-				userMsg = fmt.Sprintf("XiT: This command usually produces long output. Use '%s' to compress and save tokens.", recommended)
+				userMsg = fmt.Sprintf("XiT: high-output command detected. Use: %s", recommended)
 				agentMsg = fmt.Sprintf("Consider using %s to reduce context noise.", recommended)
 			} else {
 				action = "observe"
@@ -108,7 +108,9 @@ func RunHookCommand(home string) error {
 		permission = "allow"
 	}
 
-	logEventFull(f, ts, orig, recommended, action, reason, cwd, sessionID, policy)
+	strict := mode == "strict"
+	prompted := permission == "ask"
+	logEventFull(f, ts, orig, recommended, action, reason, cwd, sessionID, policy, strict, prompted)
 	outputResult(permission, userMsg, agentMsg)
 	return nil
 }
@@ -124,10 +126,10 @@ func outputResult(permission, userMsg, agentMsg string) {
 }
 
 func logEvent(f *os.File, ts, original, recommended, action, reason, cwd string) {
-	logEventFull(f, ts, original, recommended, action, reason, cwd, "", "")
+	logEventFull(f, ts, original, recommended, action, reason, cwd, "", "", false, false)
 }
 
-func logEventFull(f *os.File, ts, original, recommended, action, reason, cwd, sessionID, policy string) {
+func logEventFull(f *os.File, ts, original, recommended, action, reason, cwd, sessionID, policy string, strict, prompted bool) {
 	rec := map[string]interface{}{
 		"time":                ts,
 		"adapter":             "cursor",
@@ -141,6 +143,13 @@ func logEventFull(f *os.File, ts, original, recommended, action, reason, cwd, se
 	}
 	if sessionID != "" {
 		rec["session_id"] = sessionID
+	}
+	if strict {
+		rec["strict"] = true
+		rec["prompted"] = prompted
+		if prompted {
+			rec["visible_feedback"] = true
+		}
 	}
 	data, _ := json.Marshal(rec)
 	f.WriteString(string(data) + "\n")

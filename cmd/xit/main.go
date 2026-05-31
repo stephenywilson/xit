@@ -4059,6 +4059,10 @@ func cmdHook(args []string) error {
 			fmt.Printf("observed:    %d\n", stats.Observed)
 			fmt.Printf("passthrough: %d\n", stats.Passthrough)
 			fmt.Printf("errors:      %d\n", stats.Errors)
+			if stats.StrictPrompts > 0 {
+				fmt.Printf("strict_prompts:   %d\n", stats.StrictPrompts)
+				fmt.Printf("visible_feedback: %d\n", stats.VisibleFeedback)
+			}
 			return nil
 		case "hitrate":
 			os.Exit(cmdCursorHitrate(args[2:]))

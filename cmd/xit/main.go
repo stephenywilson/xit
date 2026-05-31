@@ -16,6 +16,7 @@ import (
 	"github.com/stephenywilson/xit/internal/autostate"
 	"github.com/stephenywilson/xit/internal/claudehook"
 	"github.com/stephenywilson/xit/internal/codexhook"
+	"github.com/stephenywilson/xit/internal/cursorhook"
 	"github.com/stephenywilson/xit/internal/config"
 	"github.com/stephenywilson/xit/internal/doctor"
 	"github.com/stephenywilson/xit/internal/filters"
@@ -117,6 +118,12 @@ func main() {
 		os.Exit(0)
 	case "codex-hook":
 		if err := cmdCodexHook(rest[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	case "cursor-hook":
+		if err := cmdCursorHook(rest[1:]); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
@@ -3469,6 +3476,70 @@ func cmdCodexHook(args []string) error {
 	}
 }
 
+func cmdCursorHook(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: xit cursor-hook before-shell-exec")
+	}
+	sub := args[0]
+	switch sub {
+	case "before-shell-exec":
+		home := userXiTHome()
+		return cursorhook.RunHookCommand(home)
+	default:
+		return fmt.Errorf("unknown cursor-hook command: %s", sub)
+	}
+}
+
+func cmdCursorHitrate(args []string) int {
+	window := 2 * time.Hour
+	useJSON := false
+
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--json":
+			useJSON = true
+		case strings.HasPrefix(a, "--last"):
+			var val string
+			if strings.Contains(a, "=") {
+				val = strings.SplitN(a, "=", 2)[1]
+			} else if i+1 < len(args) {
+				i++
+				val = args[i]
+			}
+			if d, err := time.ParseDuration(val); err == nil {
+				window = d
+			}
+		}
+	}
+
+	projectHome := xitHome()
+	actualUserHomeDir := os.Getenv("HOME")
+	if actualUserHomeDir == "" {
+		var err error
+		actualUserHomeDir, err = os.UserHomeDir()
+		if err != nil {
+			actualUserHomeDir = "."
+		}
+	}
+	userHome := filepath.Join(actualUserHomeDir, ".xit")
+
+	report, err := hitrate.ComputeReportForAdapter("cursor", userHome, projectHome, window)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	if useJSON {
+		data, _ := json.MarshalIndent(report, "", "  ")
+		fmt.Println(string(data))
+		return 0
+	}
+
+	fmt.Print(hitrate.FormatReport(report, false))
+	return 0
+}
+
 func cmdKimiTurnStatus(args []string) int {
 	useJSON := false
 	for _, a := range args {
@@ -3870,8 +3941,95 @@ func cmdHook(args []string) error {
 		default:
 			return fmt.Errorf("unknown hook command for codex: %s", sub)
 		}
+	case "cursor":
+		scope, restArgs := extractScopeFlag(args[2:])
+		hooksPath := cursorhook.UserHooksPath()
+		if scope == "project" {
+			return fmt.Errorf("cursor hooks only support user scope in this version")
+		}
+		switch sub {
+		case "status":
+			status, err := cursorhook.Status(hooksPath, home)
+			if err != nil {
+				return err
+			}
+			fmt.Println("XiT Cursor Hook Status")
+			fmt.Println()
+			fmt.Printf("scope:      user\n")
+			fmt.Printf("hooks:      %s\n", status.HooksPath)
+			if status.Installed {
+				fmt.Printf("installed:  yes\n")
+				fmt.Printf("hook:       beforeShellExecution\n")
+				fmt.Printf("script:     %s\n", status.ScriptPath)
+			} else {
+				fmt.Printf("installed:  no\n")
+			}
+			fmt.Printf("mode:       %s\n", status.Mode)
+			fmt.Printf("reroute:    disabled\n")
+			fmt.Printf("rewrite:    disabled\n")
+			fmt.Printf("fail_open:  yes\n")
+			if status.HasEvents {
+				fmt.Printf("events:     %s\n", filepath.Join(home, "cursor-hooks", "events.jsonl"))
+			}
+			return nil
+		case "install":
+			if !hasYesFlag(restArgs) {
+				return fmt.Errorf("install requires --yes to confirm")
+			}
+			res, err := cursorhook.Install(hooksPath, home, false)
+			if err != nil {
+				return err
+			}
+			if res.AlreadyInstalled {
+				fmt.Println("XiT Cursor hook already installed.")
+			} else {
+				fmt.Println("XiT Cursor hook installed.")
+			}
+			fmt.Printf("hooks:   %s\n", res.HooksPath)
+			fmt.Printf("script:  %s\n", res.ScriptPath)
+			fmt.Println()
+			fmt.Println("Next steps:")
+			fmt.Println("  1. Restart Cursor IDE / agent for hooks to take effect.")
+			fmt.Println("  2. On first shell command, approve/trust the hook if Cursor prompts.")
+			fmt.Println("  3. Verify: xit hook stats cursor")
+			fmt.Println()
+			fmt.Println("Note: Cursor does not support command-backed statusLine.")
+			fmt.Println("      This hook provides observe/hitrate only (no reroute).")
+			return nil
+		case "uninstall":
+			if !hasYesFlag(restArgs) {
+				return fmt.Errorf("uninstall requires --yes to confirm")
+			}
+			if err := cursorhook.Uninstall(hooksPath, home); err != nil {
+				return err
+			}
+			fmt.Println("XiT Cursor hook uninstalled.")
+			return nil
+		case "stats":
+			stats, err := cursorhook.Stats(home)
+			if err != nil {
+				return err
+			}
+			fmt.Println("XiT Cursor Hook Stats")
+			fmt.Println()
+			if !stats.HasEvents {
+				fmt.Println("No hook events recorded yet.")
+				fmt.Println("Events are logged to .xit/cursor-hooks/events.jsonl when Cursor runs shell commands.")
+				return nil
+			}
+			fmt.Printf("events:      %d\n", stats.Events)
+			fmt.Printf("observed:    %d\n", stats.Observed)
+			fmt.Printf("passthrough: %d\n", stats.Passthrough)
+			fmt.Printf("errors:      %d\n", stats.Errors)
+			return nil
+		case "hitrate":
+			os.Exit(cmdCursorHitrate(args[2:]))
+			return nil
+		default:
+			return fmt.Errorf("unknown hook command for cursor: %s", sub)
+		}
 	default:
-		return fmt.Errorf("hook commands only supported for claude, kimi, and codex")
+		return fmt.Errorf("hook commands only supported for claude, kimi, codex, and cursor")
 	}
 }
 

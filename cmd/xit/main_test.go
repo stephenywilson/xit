@@ -101,6 +101,53 @@ func TestNoNetworkCalls(t *testing.T) {
 	}
 }
 
+func TestGainJSONWithoutHistory(t *testing.T) {
+	bin := buildXit(t)
+	cwd := t.TempDir()
+
+	cmd := exec.Command(bin, "gain", "--json")
+	cmd.Dir = cwd
+	cleanEnv(cmd)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("xit gain --json failed: %v\n%s", err, out)
+	}
+
+	var data struct {
+		TotalCommandsCondensed int      `json:"total_commands_condensed"`
+		RawBytes               int      `json:"raw_bytes"`
+		SummaryBytes           int      `json:"summary_bytes"`
+		SavedBytes             int      `json:"saved_bytes"`
+		EstimatedReduction     float64  `json:"estimated_reduction"`
+		SavedTokens            int      `json:"saved_tokens"`
+		SavedTokensDisplay     string   `json:"saved_tokens_display"`
+		TopCommands            []any    `json:"top_commands"`
+		Warnings               []string `json:"warnings"`
+		Sources                struct {
+			HistoryPath string `json:"history_path"`
+			RunsDir     string `json:"runs_dir"`
+		} `json:"sources"`
+	}
+	if err := json.Unmarshal(out, &data); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, out)
+	}
+	if data.TotalCommandsCondensed != 0 || data.RawBytes != 0 || data.SummaryBytes != 0 || data.SavedBytes != 0 || data.EstimatedReduction != 0 || data.SavedTokens != 0 {
+		t.Fatalf("expected zero gain data, got %+v", data)
+	}
+	if data.SavedTokensDisplay != "0" {
+		t.Fatalf("saved_tokens_display = %q, want 0", data.SavedTokensDisplay)
+	}
+	if data.TopCommands == nil || len(data.TopCommands) != 0 {
+		t.Fatalf("top_commands = %#v, want empty array", data.TopCommands)
+	}
+	if len(data.Warnings) != 1 || data.Warnings[0] != "history not found" {
+		t.Fatalf("warnings = %#v, want history not found", data.Warnings)
+	}
+	if data.Sources.HistoryPath != "" || data.Sources.RunsDir != "" {
+		t.Fatalf("sources = %+v, want empty paths", data.Sources)
+	}
+}
+
 func TestSessionNoArgs(t *testing.T) {
 	bin := buildXit(t)
 
@@ -2443,7 +2490,7 @@ func TestKimiImpactJSON(t *testing.T) {
 		t.Fatalf("kimi impact --json failed: %v\n%s", err, out)
 	}
 	var result struct {
-		KimContextTokens int    `json:"kimi_context_tokens"`
+		KimContextTokens int `json:"kimi_context_tokens"`
 		Impact           struct {
 			Verdict string `json:"verdict"`
 		} `json:"impact"`
@@ -2493,7 +2540,6 @@ func TestKimiTurnStatusUserPromptSubmitShowsGuarding(t *testing.T) {
 		t.Errorf("expected toolbar 守护你的T for UserPromptSubmit state, got:\n%s", out)
 	}
 }
-
 
 func TestKimiStatusPatchPreviewShowsRotationInterval(t *testing.T) {
 	bin := buildXit(t)

@@ -62,7 +62,7 @@ func ComputeGain(baseDir string) (*Gain, []string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return &Gain{}, nil, nil
+			return &Gain{}, []string{"history not found"}, nil
 		}
 		return nil, nil, err
 	}

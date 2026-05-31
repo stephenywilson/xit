@@ -19,6 +19,14 @@ function showOutput(): void {
   OUTPUT_CHANNEL.show(true);
 }
 
+function resolveWorkspaceCwd(): string {
+  const folders = vscode.workspace.workspaceFolders;
+  if (folders && folders.length > 0) {
+    return folders[0].uri.fsPath;
+  }
+  return os.homedir();
+}
+
 function resolveXiTHome(): string {
   const cfg = getConfig();
   const configured = cfg.get<string>('home', '');
@@ -28,35 +36,47 @@ function resolveXiTHome(): string {
   return path.join(os.homedir(), '.xit');
 }
 
-function resolveBinary(): string {
-  const cfg = getConfig();
-  const configured = cfg.get<string>('binaryPath', '');
-  if (configured) {
-    return configured;
+function expandHome(p: string): string {
+  if (p === '~') {
+    return os.homedir();
   }
+  if (p.startsWith('~/')) {
+    return path.join(os.homedir(), p.slice(2));
+  }
+  return p;
+}
+
+function addCandidate(candidates: string[], candidate: string | undefined): void {
+  if (!candidate) {
+    return;
+  }
+  const normalized = expandHome(candidate);
+  if (!candidates.includes(normalized)) {
+    candidates.push(normalized);
+  }
+}
+
+function resolveBinaryCandidates(): string[] {
+  const cfg = getConfig();
+  const candidates: string[] = [];
+  const configured = cfg.get<string>('binaryPath', '');
+  addCandidate(candidates, configured);
 
   // Try PATH
-  const fromPath = tryWhich('xit');
-  if (fromPath) {
-    return fromPath;
-  }
+  addCandidate(candidates, tryWhich('xit'));
 
   // Try ~/.local/bin/xit
-  const localBin = path.join(os.homedir(), '.local', 'bin', 'xit');
-  if (fs.existsSync(localBin)) {
-    return localBin;
-  }
+  addCandidate(candidates, '~/.local/bin/xit');
+  addCandidate(candidates, '/Users/dongjiayang/.local/bin/xit');
 
   // Try workspace ./xit
   const workspaceFolders = vscode.workspace.workspaceFolders;
   if (workspaceFolders && workspaceFolders.length > 0) {
-    const workspaceBin = path.join(workspaceFolders[0].uri.fsPath, 'xit');
-    if (fs.existsSync(workspaceBin)) {
-      return workspaceBin;
-    }
+    addCandidate(candidates, path.join(workspaceFolders[0].uri.fsPath, 'xit'));
   }
 
-  return 'xit';
+  addCandidate(candidates, 'xit');
+  return candidates;
 }
 
 function tryWhich(command: string): string | undefined {
@@ -84,16 +104,20 @@ function tryWhich(command: string): string | undefined {
 function execFilePromise(
   file: string,
   args: string[],
+  cwd: string,
   timeoutMs = 5000
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const child = child_process.execFile(
+    child_process.execFile(
       file,
       args,
-      { timeout: timeoutMs, encoding: 'utf-8' },
+      { cwd, timeout: timeoutMs, encoding: 'utf-8' },
       (error, stdout, stderr) => {
         if (error) {
-          reject(error);
+          const wrapped = error as Error & { stderr?: string; stdout?: string };
+          wrapped.stderr = stderr as string;
+          wrapped.stdout = stdout as string;
+          reject(wrapped);
         } else {
           resolve({ stdout: stdout as string, stderr: stderr as string });
         }
@@ -102,24 +126,95 @@ function execFilePromise(
   });
 }
 
-export async function fetchGain(): Promise<GainData | undefined> {
-  const binary = resolveBinary();
+function isExecutableCandidate(candidate: string): boolean {
+  if (candidate === 'xit') {
+    return true;
+  }
   try {
-    const { stdout } = await execFilePromise(binary, ['gain', '--json']);
-    const data = JSON.parse(stdout) as GainData;
-    return data;
-  } catch (err) {
-    log(`fetchGain failed: ${err}`);
-    return undefined;
+    return fs.existsSync(candidate);
+  } catch {
+    return false;
   }
 }
 
-export async function fetchStatus(): Promise<XiTStatus> {
-  const gain = await fetchGain();
-  if (!gain) {
-    return { available: false, refreshedAt: new Date() };
+function previewText(text: string, max = 500): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= max) {
+    return trimmed;
   }
-  return { available: true, gain, refreshedAt: new Date() };
+  return trimmed.slice(0, max) + '...';
+}
+
+export async function fetchStatus(): Promise<XiTStatus> {
+  const cwd = resolveWorkspaceCwd();
+  const candidates = resolveBinaryCandidates();
+  const attempts: string[] = [];
+  let sawRunnableBinary = false;
+  let lastError = '';
+
+  log(`[${new Date().toISOString()}] fetchStatus cwd=${cwd}`);
+  log(`binary candidates: ${candidates.join(', ')}`);
+
+  for (const binary of candidates) {
+    attempts.push(binary);
+    if (!isExecutableCandidate(binary)) {
+      const message = `not found: ${binary}`;
+      lastError = message;
+      log(message);
+      continue;
+    }
+
+    sawRunnableBinary = true;
+    try {
+      const { stdout, stderr } = await execFilePromise(binary, ['gain', '--json'], cwd);
+      if (stderr.trim()) {
+        log(`stderr from ${binary}: ${previewText(stderr)}`);
+      }
+      if (!stdout.trim()) {
+        lastError = `${binary}: empty stdout from gain --json`;
+        log(lastError);
+        continue;
+      }
+      try {
+        const data = JSON.parse(stdout) as GainData;
+        const state = data.total_commands_condensed > 0 ? 'ok' : 'no-data';
+        return { available: true, state, gain: data, binary, cwd, attempts, refreshedAt: new Date() };
+      } catch (parseErr) {
+        lastError = `${binary}: JSON parse error: ${parseErr}; stdout=${previewText(stdout)}`;
+        log(lastError);
+      }
+    } catch (err) {
+      const e = err as Error & { code?: string; stderr?: string; stdout?: string };
+      const details = [
+        `${binary}: execFile failed: ${e.message}`,
+        e.code ? `code=${e.code}` : '',
+        e.stderr ? `stderr=${previewText(e.stderr)}` : '',
+        e.stdout ? `stdout=${previewText(e.stdout)}` : '',
+      ].filter(Boolean).join(' | ');
+      lastError = details;
+      log(details);
+    }
+  }
+
+  if (!sawRunnableBinary) {
+    return {
+      available: false,
+      state: 'binary-not-found',
+      error: `XiT binary not found. Attempted: ${attempts.join(', ')}`,
+      cwd,
+      attempts,
+      refreshedAt: new Date(),
+    };
+  }
+
+  return {
+    available: false,
+    state: 'gain-json-failed',
+    error: lastError || 'xit gain --json failed for all binary candidates',
+    cwd,
+    attempts,
+    refreshedAt: new Date(),
+  };
 }
 
 export function readRecentEvents(adapter: string, maxLines = 20): AdapterEvent[] {

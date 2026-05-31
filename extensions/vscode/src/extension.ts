@@ -22,20 +22,36 @@ async function updateStatusBar(): Promise<void> {
   }
   const status = await fetchStatus();
   if (!status.available) {
-    statusBarItem.text = 'XiT · not found';
-    statusBarItem.tooltip = 'XiT binary not found. Install xitsg or set xit.binaryPath.';
+    if (status.state === 'binary-not-found') {
+      statusBarItem.text = 'XiT · binary not found';
+    } else {
+      statusBarItem.text = 'XiT · gain JSON failed';
+    }
+    statusBarItem.tooltip = [
+      status.error || 'XiT status unavailable.',
+      status.cwd ? `cwd: ${status.cwd}` : '',
+      status.attempts && status.attempts.length > 0 ? `attempted: ${status.attempts.join(', ')}` : '',
+      'Click to open XiT Dashboard',
+    ].filter(Boolean).join('\n');
     return;
   }
   const gain = status.gain!;
-  const display = gain.saved_tokens_display || `~${Math.round(gain.saved_tokens / 1000)}k`;
-  statusBarItem.text = `吸T神功 · 省${display}`;
+  if (status.state === 'no-data') {
+    statusBarItem.text = 'XiT · no data';
+  } else {
+    const display = gain.saved_tokens_display || `~${Math.round(gain.saved_tokens / 1000)}k`;
+    statusBarItem.text = `吸T神功 · 省${display}`;
+  }
   const lines = [
     `Saved tokens: ${gain.saved_tokens_display}`,
     `Estimated reduction: ${(gain.estimated_reduction * 100).toFixed(1)}%`,
     `Total commands condensed: ${gain.total_commands_condensed}`,
+    status.binary ? `Binary: ${status.binary}` : '',
+    status.cwd ? `cwd: ${status.cwd}` : '',
+    gain.warnings && gain.warnings.length > 0 ? `Warnings: ${gain.warnings.join('; ')}` : '',
     `Refreshed: ${status.refreshedAt.toLocaleTimeString()}`,
     'Click to open XiT Dashboard',
-  ];
+  ].filter(Boolean);
   statusBarItem.tooltip = lines.join('\n');
 }
 
@@ -71,7 +87,7 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand('xit.openDashboard', async () => {
       const status = await fetchStatus();
-      showDashboard(context, status.gain);
+      showDashboard(context, status);
     })
   );
 
@@ -86,7 +102,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('xit.showGain', async () => {
       const status = await fetchStatus();
       if (!status.available || !status.gain) {
-        vscode.window.showWarningMessage('XiT: No gain data available.');
+        vscode.window.showWarningMessage(`XiT: ${status.error || 'No gain data available.'}`);
         return;
       }
       const g = status.gain;

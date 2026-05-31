@@ -37,7 +37,11 @@ export interface AdapterEvent {
 
 export interface XiTStatus {
   available: boolean;
+  state: 'ok' | 'binary-not-found' | 'gain-json-failed' | 'no-data';
   gain?: GainData;
   error?: string;
+  binary?: string;
+  cwd?: string;
+  attempts?: string[];
   refreshedAt: Date;
 }

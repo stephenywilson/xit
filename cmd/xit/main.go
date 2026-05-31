@@ -499,12 +499,13 @@ func cmdGain(args []string) error {
 			useJSON = true
 		}
 	}
-	g, warnings, err := history.ComputeGain(xitHome())
+	home := xitHome()
+	g, warnings, err := history.ComputeGain(home)
 	if err != nil {
 		return err
 	}
 	if useJSON {
-		data, err := buildGainJSON(g, warnings)
+		data, err := buildGainJSON(home, g, warnings)
 		if err != nil {
 			return err
 		}
@@ -515,7 +516,7 @@ func cmdGain(args []string) error {
 	return nil
 }
 
-func buildGainJSON(g *history.Gain, warnings []string) ([]byte, error) {
+func buildGainJSON(home string, g *history.Gain, warnings []string) ([]byte, error) {
 	type cmdJSON struct {
 		Command            string  `json:"command"`
 		Runs               int     `json:"runs"`
@@ -546,11 +547,14 @@ func buildGainJSON(g *history.Gain, warnings []string) ([]byte, error) {
 		SavedBytes:             g.EstimatedSavedBytes,
 		EstimatedReduction:     g.EstimatedReduction,
 		SavedTokens:            g.EstimatedSavedBytes / 4,
-		SavedTokensDisplay:     "~" + formatTokenCount(g.EstimatedSavedBytes/4),
+		SavedTokensDisplay:     formatSavedTokensDisplay(g.EstimatedSavedBytes / 4),
+		TopCommands:            []cmdJSON{},
 		Warnings:               warnings,
 	}
-	out.Sources.HistoryPath = filepath.Join(xitHome(), "history.jsonl")
-	out.Sources.RunsDir = filepath.Join(xitHome(), "runs")
+	if _, err := os.Stat(filepath.Join(home, "history.jsonl")); err == nil {
+		out.Sources.HistoryPath = filepath.Join(home, "history.jsonl")
+		out.Sources.RunsDir = filepath.Join(home, "runs")
+	}
 	for _, c := range g.TopCommands {
 		savedTokens := c.Saved / 4
 		out.TopCommands = append(out.TopCommands, cmdJSON{
@@ -560,7 +564,7 @@ func buildGainJSON(g *history.Gain, warnings []string) ([]byte, error) {
 			SummaryBytes:       c.SummaryBytes,
 			SavedBytes:         c.Saved,
 			SavedTokens:        savedTokens,
-			SavedTokensDisplay: "~" + formatTokenCount(savedTokens),
+			SavedTokensDisplay: formatSavedTokensDisplay(savedTokens),
 		})
 	}
 	return json.MarshalIndent(out, "", "  ")
@@ -2810,6 +2814,13 @@ func formatTokenCount(n int) string {
 		return fmt.Sprintf("%.0fk", float64(n)/1000)
 	}
 	return fmt.Sprintf("%d", n)
+}
+
+func formatSavedTokensDisplay(n int) string {
+	if n <= 0 {
+		return "0"
+	}
+	return "~" + formatTokenCount(n)
 }
 
 // claudeLocalSettingsPath returns the project-local Claude settings path.

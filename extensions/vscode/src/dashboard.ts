@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import type { GainData, AdapterEvent } from './types';
+import type { AdapterEvent, XiTStatus } from './types';
 
 let panel: vscode.WebviewPanel | undefined;
 
@@ -27,10 +27,23 @@ function formatReduction(r: number): string {
 }
 
 function buildDashboardHtml(
-  gain: GainData | undefined,
+  status: XiTStatus,
   events: AdapterEvent[],
   cspSource: string
 ): string {
+  const gain = status.gain;
+  const errorDetails = status.state !== 'ok'
+    ? [
+        status.state === 'binary-not-found' ? 'XiT binary not found.' : '',
+        status.state === 'gain-json-failed' ? 'xit gain --json did not return valid JSON.' : '',
+        status.state === 'no-data' ? 'No XiT gain history found for this workspace yet.' : '',
+        status.error || '',
+        status.binary ? `Binary: ${status.binary}` : '',
+        status.cwd ? `cwd: ${status.cwd}` : '',
+        status.attempts && status.attempts.length > 0 ? `Attempted: ${status.attempts.join(', ')}` : '',
+        gain?.warnings && gain.warnings.length > 0 ? `Warnings: ${gain.warnings.join('; ')}` : '',
+      ].filter(Boolean)
+    : [];
   const topCommandsRows =
     gain?.top_commands
       .map(
@@ -164,10 +177,20 @@ th {
   opacity: 0.6;
   font-size: 0.9rem;
 }
+.diagnostic {
+  border: 1px solid var(--vscode-inputValidation-warningBorder, #b89500);
+  background: var(--vscode-inputValidation-warningBackground, #332b00);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 12px 0 16px;
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+}
 </style>
 </head>
 <body>
 <h1>XiT Dashboard</h1>
+${errorDetails.length > 0 ? `<div class="diagnostic">${escapeHtml(errorDetails.join('\n'))}</div>` : ''}
 
 <h2>Gain Summary</h2>
 <div class="grid">
@@ -226,7 +249,7 @@ ${events.length > 0 ? `
 `;
 }
 
-export function showDashboard(context: vscode.ExtensionContext, gain: GainData | undefined): void {
+export function showDashboard(context: vscode.ExtensionContext, status: XiTStatus): void {
   if (panel) {
     panel.reveal(vscode.ViewColumn.One);
   } else {
@@ -265,5 +288,5 @@ export function showDashboard(context: vscode.ExtensionContext, gain: GainData |
     return tb.localeCompare(ta);
   });
 
-  panel.webview.html = buildDashboardHtml(gain, allEvents, panel.webview.cspSource);
+  panel.webview.html = buildDashboardHtml(status, allEvents, panel.webview.cspSource);
 }

@@ -29,14 +29,21 @@ func TestInstallCreatesHooksJSON(t *testing.T) {
 	if !HasXiTHook(cfg) {
 		t.Error("expected XiT hook installed")
 	}
-	if len(cfg.Handlers) != 1 {
-		t.Fatalf("expected 1 handler, got %d", len(cfg.Handlers))
+	groups := cfg.Hooks["PreToolUse"]
+	if len(groups) != 1 {
+		t.Fatalf("expected 1 PreToolUse group, got %d", len(groups))
 	}
-	if cfg.Handlers[0].Event != "pre_tool_use" {
-		t.Errorf("expected event pre_tool_use, got %s", cfg.Handlers[0].Event)
+	if groups[0].Matcher != "Bash" {
+		t.Errorf("expected matcher Bash, got %s", groups[0].Matcher)
 	}
-	if cfg.Handlers[0].Matcher.Tool != "Bash" {
-		t.Errorf("expected matcher tool Bash, got %s", cfg.Handlers[0].Matcher.Tool)
+	if len(groups[0].Hooks) != 1 {
+		t.Fatalf("expected 1 hook, got %d", len(groups[0].Hooks))
+	}
+	if groups[0].Hooks[0].Type != "command" {
+		t.Errorf("expected type command, got %s", groups[0].Hooks[0].Type)
+	}
+	if groups[0].Hooks[0].Timeout != 30 {
+		t.Errorf("expected timeout 30, got %d", groups[0].Hooks[0].Timeout)
 	}
 
 	// Script should exist.
@@ -50,7 +57,7 @@ func TestInstallPreservesExistingHooks(t *testing.T) {
 	home := filepath.Join(tmp, ".xit")
 	project := filepath.Join(tmp, "project")
 	_ = os.MkdirAll(filepath.Join(project, ".codex"), 0755)
-	existing := `{"handlers":[{"event":"pre_tool_use","matcher":{"tool":"Bash"},"command":"/usr/bin/some-hook"}]}` + "\n"
+	existing := `{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"/usr/bin/some-hook"}]}]}}` + "\n"
 	_ = os.WriteFile(filepath.Join(project, ".codex", "hooks.json"), []byte(existing), 0644)
 
 	_, err := Install(project, home, false)
@@ -62,13 +69,15 @@ func TestInstallPreservesExistingHooks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read hooks.json failed: %v", err)
 	}
-	if len(cfg.Handlers) != 2 {
-		t.Fatalf("expected 2 handlers, got %d", len(cfg.Handlers))
+	if len(cfg.Hooks["PreToolUse"]) != 2 {
+		t.Fatalf("expected 2 PreToolUse groups, got %d", len(cfg.Hooks["PreToolUse"]))
 	}
 	found := false
-	for _, h := range cfg.Handlers {
-		if h.Command == "/usr/bin/some-hook" {
-			found = true
+	for _, g := range cfg.Hooks["PreToolUse"] {
+		for _, h := range g.Hooks {
+			if h.Command == "/usr/bin/some-hook" {
+				found = true
+			}
 		}
 	}
 	if !found {
@@ -81,7 +90,7 @@ func TestUninstallRemovesOnlyXiTHook(t *testing.T) {
 	home := filepath.Join(tmp, ".xit")
 	project := filepath.Join(tmp, "project")
 	_ = os.MkdirAll(filepath.Join(project, ".codex"), 0755)
-	existing := `{"handlers":[{"event":"pre_tool_use","matcher":{"tool":"Bash"},"command":"/usr/bin/some-hook"},{"event":"pre_tool_use","matcher":{"tool":"Bash"},"command":"` + filepath.Join(home, "hooks", "codex-pretooluse-bash.sh") + `"}]}` + "\n"
+	existing := `{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"/usr/bin/some-hook"}]},{"matcher":"Bash","hooks":[{"type":"command","command":"` + filepath.Join(home, "hooks", "codex-pretooluse-bash.sh") + `"}]}]}}` + "\n"
 	_ = os.WriteFile(filepath.Join(project, ".codex", "hooks.json"), []byte(existing), 0644)
 
 	if err := Uninstall(project); err != nil {
@@ -92,11 +101,11 @@ func TestUninstallRemovesOnlyXiTHook(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read hooks.json failed: %v", err)
 	}
-	if len(cfg.Handlers) != 1 {
-		t.Fatalf("expected 1 handler after uninstall, got %d", len(cfg.Handlers))
+	if len(cfg.Hooks["PreToolUse"]) != 1 {
+		t.Fatalf("expected 1 group after uninstall, got %d", len(cfg.Hooks["PreToolUse"]))
 	}
-	if cfg.Handlers[0].Command != "/usr/bin/some-hook" {
-		t.Errorf("wrong handler remained: %s", cfg.Handlers[0].Command)
+	if cfg.Hooks["PreToolUse"][0].Hooks[0].Command != "/usr/bin/some-hook" {
+		t.Errorf("wrong handler remained: %s", cfg.Hooks["PreToolUse"][0].Hooks[0].Command)
 	}
 }
 

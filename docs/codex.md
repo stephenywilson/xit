@@ -7,7 +7,7 @@ Codex CLI 是 XiT 的下一套 AI CLI 适配对象。
 - `AGENTS.md` rules：已建立
 - Codex hook observe：✅ 已启用
 - Codex hitrate 审计：✅ 已可用
-- Codex statusLine：暂未发现官方入口
+- Codex bottom statusLine：❌ 不支持
 - reroute / strict：暂不启用
 - shim / takeover：暂不启用
 
@@ -41,6 +41,27 @@ Codex CLI 使用项目级 `.codex/hooks.json` 配置 hooks。XiT 支持 observe 
 xit hook install codex --scope project --yes
 ```
 
+安装后 `.codex/hooks.json` 内容示例：
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/dongjiayang/.xit/hooks/codex-pretooluse-bash.sh",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
 查看状态：
 
 ```bash
@@ -51,6 +72,23 @@ xit hook status codex
 
 ```bash
 xit hook uninstall codex --scope project --yes
+```
+
+## Live 验证
+
+启动 Codex 时启用 hooks：
+
+```bash
+codex --enable hooks
+```
+
+首次启动时，Codex 可能提示 review/trust hook，请在 UI 中批准。
+
+运行一些命令后验证事件：
+
+```bash
+xit hook stats codex
+xit hook hitrate codex
 ```
 
 ## Hook 统计
@@ -110,9 +148,10 @@ xit auto rg "TODO|FIXME|panic|error" .
 
 ## 当前边界
 
-Codex Phase D5 启用 hooks，但仅限 observe 模式：
+Codex Phase D7 启用 hooks，但仅限 observe 模式：
 
 - ✅ PreToolUse Bash hook 已安装到 `.codex/hooks.json`
+- ✅ 使用 Codex 官方 `hooks` schema（非自定义 `handlers`）
 - ✅ 记录命令分类到 `events.jsonl`
 - ✅ `xit hook hitrate codex` 验证命中率
 - ❌ 不启用 reroute / deny（Codex 暂无官方 statusLine）
@@ -130,5 +169,7 @@ exec xit codex-hook pretooluse-bash
 ```
 
 XiT 处理器读取 Codex 发来的 JSON payload，使用 `filters.ClassifyPolicy()` 分类命令，记录事件后返回 `{"decision": "allow"}`（fail-open）。
+
+隐私说明：所有事件只写入本地 `~/.xit/codex-hooks/events.jsonl`，不上传云端。
 
 下一步：持续观察 Codex CLI 更新，待官方支持 statusLine 或持久化底部栏后再评估集成。

@@ -107,6 +107,12 @@ func Status(hooksPath, home string) (*StatusResult, error) {
 
 	installed := HasXiTHook(cfg)
 
+	hookCfg, _ := ReadHookConfig(home)
+	mode := hookCfg.Mode
+	if mode == "" {
+		mode = "observe"
+	}
+
 	eventsPath := filepath.Join(home, "cursor-hooks", "events.jsonl")
 	_, err = os.Stat(eventsPath)
 	hasEvents := err == nil
@@ -115,10 +121,30 @@ func Status(hooksPath, home string) (*StatusResult, error) {
 		HooksPath:  hooksPath,
 		Installed:  installed,
 		ScriptPath: scriptPath,
-		Mode:       "observe",
+		Mode:       mode,
 		FailOpen:   true,
 		HasEvents:  hasEvents,
 	}, nil
+}
+
+// EnableStrict sets the Cursor hook mode to strict.
+func EnableStrict(home string) error {
+	cfg, err := ReadHookConfig(home)
+	if err != nil {
+		return err
+	}
+	cfg.Mode = "strict"
+	return WriteHookConfig(home, cfg)
+}
+
+// DisableStrict sets the Cursor hook mode back to observe.
+func DisableStrict(home string) error {
+	cfg, err := ReadHookConfig(home)
+	if err != nil {
+		return err
+	}
+	cfg.Mode = "observe"
+	return WriteHookConfig(home, cfg)
 }
 
 type StatsResult struct {

@@ -210,3 +210,146 @@ func TestRunHookCommand(t *testing.T) {
 		t.Errorf("expected should_compress policy, got: %s", string(data))
 	}
 }
+
+func TestReadHookConfigDefault(t *testing.T) {
+	tmp := t.TempDir()
+	cfg, err := ReadHookConfig(tmp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Mode != "observe" {
+		t.Errorf("expected observe mode by default, got %s", cfg.Mode)
+	}
+}
+
+func TestEnableDisableStrict(t *testing.T) {
+	tmp := t.TempDir()
+	if err := EnableStrict(tmp); err != nil {
+		t.Fatalf("enable strict error: %v", err)
+	}
+	cfg, err := ReadHookConfig(tmp)
+	if err != nil {
+		t.Fatalf("read error: %v", err)
+	}
+	if cfg.Mode != "strict" {
+		t.Errorf("expected strict, got %s", cfg.Mode)
+	}
+	if err := DisableStrict(tmp); err != nil {
+		t.Fatalf("disable strict error: %v", err)
+	}
+	cfg2, err := ReadHookConfig(tmp)
+	if err != nil {
+		t.Fatalf("read error: %v", err)
+	}
+	if cfg2.Mode != "observe" {
+		t.Errorf("expected observe, got %s", cfg2.Mode)
+	}
+}
+
+func TestRunHookCommandStrictAsk(t *testing.T) {
+	tmp := t.TempDir()
+	if err := EnableStrict(tmp); err != nil {
+		t.Fatalf("enable strict error: %v", err)
+	}
+
+	oldStdin := os.Stdin
+	oldStdout := os.Stdout
+	defer func() { os.Stdin = oldStdin; os.Stdout = oldStdout }()
+
+	r, w, _ := os.Pipe()
+	os.Stdin = r
+	go func() {
+		w.WriteString(`{"command":"go test -v ./...","cwd":"/tmp/test","sandbox":false}`)
+		w.Close()
+	}()
+
+	outR, outW, _ := os.Pipe()
+	os.Stdout = outW
+
+	RunHookCommand(tmp)
+	outW.Close()
+
+	outBytes, _ := io.ReadAll(outR)
+	outStr := string(outBytes)
+	if !strings.Contains(outStr, `"permission":"ask"`) {
+		t.Errorf("expected permission ask in strict mode, got: %s", outStr)
+	}
+	if !strings.Contains(outStr, `"user_message"`) {
+		t.Errorf("expected user_message in strict mode, got: %s", outStr)
+	}
+	if !strings.Contains(outStr, `xit auto go test -v ./...`) {
+		t.Errorf("expected recommended command in user_message, got: %s", outStr)
+	}
+
+	eventsPath := filepath.Join(tmp, "cursor-hooks", "events.jsonl")
+	data, _ := os.ReadFile(eventsPath)
+	if !strings.Contains(string(data), `"action":"ask"`) {
+		t.Errorf("expected ask action in events, got: %s", string(data))
+	}
+}
+
+func TestRunHookCommandStrictWrappedQuiet(t *testing.T) {
+	tmp := t.TempDir()
+	if err := EnableStrict(tmp); err != nil {
+		t.Fatalf("enable strict error: %v", err)
+	}
+
+	oldStdin := os.Stdin
+	oldStdout := os.Stdout
+	defer func() { os.Stdin = oldStdin; os.Stdout = oldStdout }()
+
+	r, w, _ := os.Pipe()
+	os.Stdin = r
+	go func() {
+		w.WriteString(`{"command":"xit auto go test -v ./...","cwd":"/tmp/test","sandbox":false}`)
+		w.Close()
+	}()
+
+	outR, outW, _ := os.Pipe()
+	os.Stdout = outW
+
+	RunHookCommand(tmp)
+	outW.Close()
+
+	outBytes, _ := io.ReadAll(outR)
+	outStr := string(outBytes)
+	if !strings.Contains(outStr, `"permission":"allow"`) {
+		t.Errorf("expected permission allow for wrapped command, got: %s", outStr)
+	}
+	if strings.Contains(outStr, `"user_message"`) {
+		t.Errorf("expected no user_message for wrapped command, got: %s", outStr)
+	}
+}
+
+func TestRunHookCommandStrictPassthroughQuiet(t *testing.T) {
+	tmp := t.TempDir()
+	if err := EnableStrict(tmp); err != nil {
+		t.Fatalf("enable strict error: %v", err)
+	}
+
+	oldStdin := os.Stdin
+	oldStdout := os.Stdout
+	defer func() { os.Stdin = oldStdin; os.Stdout = oldStdout }()
+
+	r, w, _ := os.Pipe()
+	os.Stdin = r
+	go func() {
+		w.WriteString(`{"command":"git status","cwd":"/tmp/test","sandbox":false}`)
+		w.Close()
+	}()
+
+	outR, outW, _ := os.Pipe()
+	os.Stdout = outW
+
+	RunHookCommand(tmp)
+	outW.Close()
+
+	outBytes, _ := io.ReadAll(outR)
+	outStr := string(outBytes)
+	if !strings.Contains(outStr, `"permission":"allow"`) {
+		t.Errorf("expected permission allow for passthrough command, got: %s", outStr)
+	}
+	if strings.Contains(outStr, `"user_message"`) {
+		t.Errorf("expected no user_message for passthrough command, got: %s", outStr)
+	}
+}

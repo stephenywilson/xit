@@ -28,6 +28,7 @@ type Report struct {
 	ShouldCompress     ShouldCompressStats    `json:"should_compress"`
 	ShouldPassthrough  ShouldPassthroughStats `json:"should_passthrough"`
 	SummaryFidelity    SummaryFidelityStats   `json:"summary_fidelity"`
+	StrictPrompts      int                    `json:"strict_prompts"`
 	MissedHighNoise    []string               `json:"missed_high_noise"`
 	MissedHighNoiseTop []CommandCount         `json:"missed_high_noise_top"`
 	FalsePositive      []string               `json:"false_positive"`
@@ -208,6 +209,9 @@ func ComputeReportForAdapter(adapter, userHome, projectHome string, window time.
 				Reason:  "policy: needs_review",
 			})
 		}
+		if ev.Prompted {
+			r.StrictPrompts++
+		}
 	}
 
 	// Build missed_high_noise_top ranking.
@@ -374,6 +378,9 @@ func ComputeReportForAdapter(adapter, userHome, projectHome string, window time.
 	if r.Mode == "history_only" {
 		r.Recommendations = append([]string{fmt.Sprintf("%s shell command events unavailable; install hook for miss audit", display)}, r.Recommendations...)
 	}
+	if r.StrictPrompts > 0 {
+		r.Recommendations = append(r.Recommendations, fmt.Sprintf("strict mode prompted the user %d time(s); use the recommended xit auto command", r.StrictPrompts))
+	}
 
 	return r, nil
 }
@@ -383,6 +390,9 @@ type hookEvent struct {
 	OriginalCommand    string `json:"original_command"`
 	RecommendedCommand string `json:"recommended_command"`
 	Action             string `json:"action"`
+	Strict             bool   `json:"strict"`
+	Prompted           bool   `json:"prompted"`
+	VisibleFeedback    bool   `json:"visible_feedback"`
 }
 
 // readHookEventsForAdapter reads events from <home>/<adapter>-hooks/events.jsonl.
@@ -523,6 +533,9 @@ func FormatReport(r *Report, verbose bool) string {
 	b.WriteString(fmt.Sprintf("  correctly_wrapped: %d\n", r.ShouldCompress.CorrectlyWrapped))
 	b.WriteString(fmt.Sprintf("  missed: %d\n", r.ShouldCompress.Missed))
 	b.WriteString(fmt.Sprintf("  compress_recall: %.1f%%\n", r.ShouldCompress.CompressRecall))
+	if r.StrictPrompts > 0 {
+		b.WriteString(fmt.Sprintf("  strict_prompts: %d\n", r.StrictPrompts))
+	}
 	b.WriteString("\n")
 	b.WriteString("should_passthrough:\n")
 	b.WriteString(fmt.Sprintf("  total: %d\n", r.ShouldPassthrough.Total))

@@ -11,7 +11,7 @@ func (a *cursorAdapter) base() *baseAdapter {
 		commands:    []string{"cursor"},
 		recommended: MethodWrapper,
 		supported:   []Method{MethodOfficialHook, MethodSessionShim, MethodWrapper, MethodManual},
-		note:        "Cursor hook support may depend on installed version / editor context.",
+		note:        "Cursor hook support may depend on installed version / editor context. Use 'xit hook install cursor' for observe mode.",
 	}
 }
 

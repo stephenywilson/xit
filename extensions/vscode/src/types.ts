@@ -44,6 +44,15 @@ export interface GlobalActivity {
   adapterCounts: Record<string, number>;
 }
 
+export interface TerminalEvent {
+  source: 'vscode-terminal';
+  time: string;
+  commandLine: string;
+  confidence: number;
+  terminalName: string;
+  cwd?: string;
+}
+
 export interface XiTStatus {
   available: boolean;
   state: 'ok' | 'binary-not-found' | 'gain-json-failed' | 'no-data';

@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import type { AdapterEvent, GlobalActivity, XiTStatus } from './types';
-import { readRecentEvents, readWorkspaceHistory } from './xit';
+import { readRecentEvents, readWorkspaceHistory, readTerminalEvents } from './xit';
 
 let panel: vscode.WebviewPanel | undefined;
 let panelContext: vscode.ExtensionContext | undefined;
@@ -74,6 +74,7 @@ function computeActivityFromEvents(events: AdapterEvent[]): GlobalActivity {
 function buildDashboardHtml(
   status: XiTStatus,
   events: AdapterEvent[],
+  terminalEvents: { time: string; commandLine: string; terminalName: string; cwd?: string }[],
   cspSource: string
 ): string {
   const gain = status.gain;
@@ -133,6 +134,25 @@ function buildDashboardHtml(
           <td>${adapter}</td>
           <td>${cmd}</td>
           <td>${policy}</td>
+        </tr>
+      `;
+    })
+    .join('') || '';
+
+  // VS Code Terminal events table
+  const terminalEventRows = terminalEvents
+    .slice(0, 20)
+    .map((e) => {
+      const time = e.time ? escapeHtml(formatTime(e.time)) : '-';
+      const cmd = escapeHtml(e.commandLine);
+      const term = escapeHtml(e.terminalName);
+      const cwd = e.cwd ? escapeHtml(e.cwd) : '';
+      return `
+        <tr>
+          <td>${time}</td>
+          <td>${term}</td>
+          <td><code>${cmd}</code></td>
+          <td>${cwd}</td>
         </tr>
       `;
     })
@@ -318,11 +338,39 @@ th { opacity: 0.7; font-weight: 500; }
 .ga-label { opacity: 0.65; min-width: 120px; }
 .ga-value { font-weight: 500; }
 .ga-cmd { font-family: monospace; font-size: 0.8rem; opacity: 0.85; word-break: break-all; }
+.boundary-box {
+  border: 1px solid var(--vscode-panel-border, #333);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 16px;
+  font-size: 0.82rem;
+  opacity: 0.85;
+  line-height: 1.5;
+}
+.boundary-box strong {
+  font-weight: 600;
+  display: block;
+  margin-bottom: 4px;
+}
+code {
+  font-family: monospace;
+  background: var(--vscode-textCodeBlock-background, #2a2d2e);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 0.8rem;
+}
 </style>
 </head>
 <body>
 <h1>XiT Dashboard</h1>
 ${hardErrors.length > 0 ? `<div class="diagnostic">${escapeHtml(hardErrors.join('\n'))}</div>` : ''}
+
+<div class="boundary-box">
+  <strong>Visibility Boundaries</strong><br>
+  XiT Status shows <em>local XiT-recorded events only</em>.<br>
+  Claude Code CLI hooks are supported. Claude Code for VS Code <em>native panel</em> activity is not observable unless it enters XiT hooks or terminal listener.<br>
+  For native panel support, enable terminal mode or wait for a future bridge.
+</div>
 
 <h2>Workspace Gain</h2>
 ${workspaceGainSection}
@@ -346,6 +394,18 @@ ${events.length > 0 ? `
   </tbody>
 </table>
 ` : '<p class="empty">No recent events.</p>'}
+
+<h2>VS Code Terminal Events</h2>
+${terminalEvents.length > 0 ? `
+<table>
+  <thead>
+    <tr><th>Time</th><th>Terminal</th><th>Command</th><th>CWD</th></tr>
+  </thead>
+  <tbody>
+    ${terminalEventRows}
+  </tbody>
+</table>
+` : '<p class="empty">No terminal events recorded. Enable <code>xit.enableTerminalListener</code> to capture VS Code terminal shell executions locally.</p>'}
 
 <div class="privacy">
   Local only. No telemetry. No network requests.
@@ -379,7 +439,8 @@ export function showDashboard(context: vscode.ExtensionContext, status: XiTStatu
   }
 
   const events = gatherAllEvents();
-  panel.webview.html = buildDashboardHtml(status, events, panel.webview.cspSource);
+  const terminalEvents = readTerminalEvents(20);
+  panel.webview.html = buildDashboardHtml(status, events, terminalEvents, panel.webview.cspSource);
 }
 
 export function updateDashboardIfOpen(status: XiTStatus): void {
@@ -387,5 +448,6 @@ export function updateDashboardIfOpen(status: XiTStatus): void {
     return;
   }
   const events = gatherAllEvents();
-  panel.webview.html = buildDashboardHtml(status, events, panel.webview.cspSource);
+  const terminalEvents = readTerminalEvents(20);
+  panel.webview.html = buildDashboardHtml(status, events, terminalEvents, panel.webview.cspSource);
 }

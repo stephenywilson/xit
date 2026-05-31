@@ -2,10 +2,9 @@ package codexhook
 
 import (
 	"bytes"
-	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -132,15 +131,9 @@ func TestRunHookCommandAlreadyWrapped(t *testing.T) {
 	RunHookCommand(home)
 	outW.Close()
 
-	var out HookOutput
-	if err := json.NewDecoder(outR).Decode(&out); err != nil {
-		t.Fatalf("invalid hook output: %v", err)
-	}
-	if out.Decision != "allow" {
-		t.Errorf("expected decision allow, got %s", out.Decision)
-	}
-	if !strings.Contains(out.StatusMessage, "Codex observe") {
-		t.Errorf("expected observe statusMessage, got %s", out.StatusMessage)
+	outBytes, _ := io.ReadAll(outR)
+	if len(outBytes) != 0 {
+		t.Errorf("expected empty stdout, got %q", string(outBytes))
 	}
 
 	// Check event log.
@@ -176,15 +169,9 @@ func TestRunHookCommandUnwrappedHighNoise(t *testing.T) {
 	RunHookCommand(home)
 	outW.Close()
 
-	var out HookOutput
-	if err := json.NewDecoder(outR).Decode(&out); err != nil {
-		t.Fatalf("invalid hook output: %v", err)
-	}
-	if out.Decision != "allow" {
-		t.Errorf("expected decision allow, got %s", out.Decision)
-	}
-	if !strings.Contains(out.StatusMessage, "建议使用 xit auto") {
-		t.Errorf("expected suggestion statusMessage, got %s", out.StatusMessage)
+	outBytes, _ := io.ReadAll(outR)
+	if len(outBytes) != 0 {
+		t.Errorf("expected empty stdout, got %q", string(outBytes))
 	}
 
 	data, _ := os.ReadFile(filepath.Join(home, "codex-hooks", "events.jsonl"))
@@ -216,12 +203,9 @@ func TestRunHookCommandShortCommand(t *testing.T) {
 	RunHookCommand(home)
 	outW.Close()
 
-	var out HookOutput
-	if err := json.NewDecoder(outR).Decode(&out); err != nil {
-		t.Fatalf("invalid hook output: %v", err)
-	}
-	if out.Decision != "allow" {
-		t.Errorf("expected decision allow, got %s", out.Decision)
+	outBytes, _ := io.ReadAll(outR)
+	if len(outBytes) != 0 {
+		t.Errorf("expected empty stdout, got %q", string(outBytes))
 	}
 
 	data, _ := os.ReadFile(filepath.Join(home, "codex-hooks", "events.jsonl"))
@@ -252,12 +236,9 @@ func TestRunHookCommandFailOpenMalformed(t *testing.T) {
 	RunHookCommand(home)
 	outW.Close()
 
-	var out HookOutput
-	if err := json.NewDecoder(outR).Decode(&out); err != nil {
-		t.Fatalf("invalid hook output: %v", err)
-	}
-	if out.Decision != "allow" {
-		t.Errorf("expected decision allow for malformed input, got %s", out.Decision)
+	outBytes, _ := io.ReadAll(outR)
+	if len(outBytes) != 0 {
+		t.Errorf("expected empty stdout for malformed input, got %q", string(outBytes))
 	}
 }
 

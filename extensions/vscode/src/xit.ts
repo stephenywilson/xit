@@ -365,4 +365,57 @@ export async function openLatestRawLog(): Promise<void> {
   await vscode.window.showTextDocument(doc);
 }
 
+function resolveTerminalEventsPath(): string {
+  const home = resolveXiTHome();
+  return path.join(home, 'vscode-terminal', 'events.jsonl');
+}
+
+export function writeTerminalEvent(event: {
+  commandLine: string;
+  confidence: number;
+  terminalName: string;
+  cwd?: string;
+}): void {
+  const eventsPath = resolveTerminalEventsPath();
+  try {
+    fs.mkdirSync(path.dirname(eventsPath), { recursive: true });
+    const record = {
+      source: 'vscode-terminal',
+      time: new Date().toISOString(),
+      commandLine: event.commandLine,
+      confidence: event.confidence,
+      terminalName: event.terminalName,
+      cwd: event.cwd,
+    };
+    const line = JSON.stringify(record) + '\n';
+    fs.appendFileSync(eventsPath, line, 'utf-8');
+  } catch (err) {
+    log(`writeTerminalEvent failed: ${err}`);
+  }
+}
+
+export function readTerminalEvents(maxLines = 20): { time: string; commandLine: string; terminalName: string; cwd?: string }[] {
+  const eventsPath = resolveTerminalEventsPath();
+  try {
+    if (!fs.existsSync(eventsPath)) {
+      return [];
+    }
+    const content = fs.readFileSync(eventsPath, 'utf-8');
+    const lines = content.split('\n').filter((l) => l.trim().length > 0);
+    const tail = lines.slice(-maxLines);
+    const events = tail
+      .map((line) => {
+        try {
+          return JSON.parse(line) as { time: string; commandLine: string; terminalName: string; cwd?: string };
+        } catch {
+          return undefined;
+        }
+      })
+      .filter((e): e is { time: string; commandLine: string; terminalName: string; cwd?: string } => e !== undefined);
+    return events.reverse();
+  } catch {
+    return [];
+  }
+}
+
 export { showOutput, log };

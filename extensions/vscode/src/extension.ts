@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { fetchStatus, openLatestRawLog, showOutput } from './xit';
+import { fetchStatus, openLatestRawLog, showOutput, writeTerminalEvent } from './xit';
 import { showDashboard, updateDashboardIfOpen } from './dashboard';
 
 let statusBarItem: vscode.StatusBarItem | undefined;
@@ -24,12 +24,15 @@ async function updateStatusBar(): Promise<void> {
 
   if (!status.available) {
     if (status.state === 'binary-not-found') {
-      statusBarItem.text = 'XiT · binary not found';
+      statusBarItem.text = 'XiT · not found';
+    } else if (status.state === 'gain-json-failed') {
+      statusBarItem.text = 'XiT · no data';
     } else {
-      statusBarItem.text = 'XiT · gain JSON failed';
+      statusBarItem.text = 'XiT · no data';
     }
     statusBarItem.tooltip = [
       status.error || 'XiT status unavailable.',
+      'Shows local XiT data only.',
       status.cwd ? `cwd: ${status.cwd}` : '',
       status.attempts && status.attempts.length > 0 ? `Attempted: ${status.attempts.join(', ')}` : '',
       'Click to open XiT Dashboard',
@@ -39,35 +42,20 @@ async function updateStatusBar(): Promise<void> {
   }
 
   const gain = status.gain!;
-  const activity = status.activity;
 
   if (gain.total_commands_condensed > 0) {
     const display = gain.saved_tokens_display || `~${Math.round(gain.saved_tokens / 1000)}k`;
     statusBarItem.text = `吸T神功 · 省${display}`;
-  } else if (activity && activity.eventCount > 0) {
-    if (activity.latestAdapter) {
-      statusBarItem.text = `XiT · latest: ${activity.latestAdapter}`;
-    } else {
-      statusBarItem.text = `XiT · ${activity.eventCount} events`;
-    }
   } else {
     statusBarItem.text = 'XiT · no data';
   }
 
-  const adapterSummary = activity && Object.keys(activity.adapterCounts).length > 0
-    ? Object.entries(activity.adapterCounts).map(([k, v]) => `${k}:${v}`).join(', ')
-    : '';
-
   const lines = [
     gain.total_commands_condensed > 0
       ? `Saved tokens: ${gain.saved_tokens_display}`
-      : activity && activity.eventCount > 0
-        ? `Global events: ${activity.eventCount}${adapterSummary ? ` (${adapterSummary})` : ''}`
-        : 'No workspace history yet.',
+      : 'No XiT gain data for this workspace yet.',
     gain.total_commands_condensed > 0 ? `Estimated reduction: ${(gain.estimated_reduction * 100).toFixed(1)}%` : '',
     gain.total_commands_condensed > 0 ? `Commands condensed: ${gain.total_commands_condensed}` : '',
-    activity?.latestAdapter ? `Latest adapter: ${activity.latestAdapter}` : '',
-    activity?.latestTime ? `Last event: ${activity.latestTime}` : '',
     status.binary ? `Binary: ${status.binary}` : '',
     status.cwd ? `cwd: ${status.cwd}` : '',
     gain.warnings && gain.warnings.length > 0 ? `Warnings: ${gain.warnings.join('; ')}` : '',
@@ -98,6 +86,36 @@ function stopRefresh(): void {
   }
 }
 
+function isTerminalListenerEnabled(): boolean {
+  const cfg = vscode.workspace.getConfiguration('xit');
+  return cfg.get<boolean>('enableTerminalListener', false);
+}
+
+function registerTerminalListeners(context: vscode.ExtensionContext): void {
+  if (!isTerminalListenerEnabled()) {
+    return;
+  }
+
+  // VS Code 1.120+ terminal shell execution API
+  try {
+    const startDisposable = (vscode.window as any).onDidStartTerminalShellExecution?.((event: any) => {
+      const commandLine = event.execution?.commandLine?.value || '';
+      const confidence = event.execution?.commandLine?.confidence ?? 0;
+      const terminalName = event.terminal?.name || 'unknown';
+      const cwd = event.execution?.cwd?.fsPath;
+      if (!commandLine) {
+        return;
+      }
+      writeTerminalEvent({ commandLine, confidence, terminalName, cwd });
+    });
+    if (startDisposable) {
+      context.subscriptions.push(startDisposable);
+    }
+  } catch {
+    // API not available on this VS Code version
+  }
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   if (isEnabled()) {
     statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
@@ -107,6 +125,7 @@ export function activate(context: vscode.ExtensionContext): void {
   }
 
   startRefresh();
+  registerTerminalListeners(context);
 
   context.subscriptions.push(
     vscode.commands.registerCommand('xit.openDashboard', async () => {
@@ -168,6 +187,10 @@ export function activate(context: vscode.ExtensionContext): void {
       }
       if (e.affectsConfiguration('xit.refreshInterval')) {
         startRefresh();
+      }
+      if (e.affectsConfiguration('xit.enableTerminalListener')) {
+        // Terminal listener change requires reload; inform user
+        vscode.window.showInformationMessage('XiT: Terminal listener setting changed. Reload window to apply.');
       }
     })
   );

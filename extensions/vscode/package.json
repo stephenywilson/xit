@@ -77,6 +77,11 @@
           "type": "boolean",
           "default": true,
           "description": "Show XiT status bar item."
+        },
+        "xit.enableTerminalListener": {
+          "type": "boolean",
+          "default": false,
+          "description": "Listen to VS Code terminal shell executions and record them locally in ~/.xit/vscode-terminal/events.jsonl. No command output is captured."
         }
       }
     },

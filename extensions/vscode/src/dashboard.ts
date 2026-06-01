@@ -383,9 +383,9 @@ ${hardErrors.length > 0 ? `<div class="diagnostic">${escapeHtml(hardErrors.join(
 
 <div class="boundary-box">
   <strong>Visibility Boundaries</strong><br>
-  XiT Status shows <em>local XiT-recorded events only</em>.<br>
-  Claude Code CLI hooks are supported. Claude Code for VS Code <em>native panel</em> activity is not observable unless it enters XiT hooks or terminal listener.<br>
-  For native panel support, enable terminal mode or wait for a future bridge.
+  XiT Dashboard shows <em>local XiT-recorded events only</em>.<br>
+  It does not read chat content, private Webviews, or current AI conversation state.<br>
+  Tool names shown here are historical local records from XiT adapters and terminal events.
 </div>
 
 <h2>Latest XiT Run</h2>

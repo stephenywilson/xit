@@ -1,25 +1,34 @@
 # XiT Token Saver
 
-A VS Code companion for [XiT](https://github.com/stephenywilson/xit) — a local terminal output compression layer that prevents AI coding agents from being overwhelmed by high-noise commands.
+XiT Token Saver（吸T神功）helps AI coding tools save tokens and hit the right answer faster.
 
-## What XiT does
+When commands like `go test -v ./...`, `npm test`, `docker logs`, `tsc`, or `eslint` produce huge terminal output, XiT compresses the noise before it reaches your AI assistant.
 
-When you run commands like `go test -v ./...`, `git diff`, or `docker logs`, the output can be thousands of lines long. XiT compresses this output locally before it reaches the AI agent's context window, saving tokens and improving response quality.
+## Supported workflows
 
-- **Detect**: Recognizes high-output commands
-- **Route**: Runs them with `xit auto` for automatic compression
-- **Report**: Shows saved bytes, reduction rate, and raw log paths
+- Claude Code
+- Codex
+- Cursor
+- Gemini Code Assist
+- VS Code Chat
+- Terminal-based AI coding agents
 
-All processing happens locally. No data leaves your machine.
+## Core value
+
+- **Save tokens** — shrink noisy command output before it enters the AI context window
+- **Reduce noisy context** — keep only what matters
+- **Improve AI answer hit rate** — less noise means better answers
+- **Keep all processing local** — no cloud, no upload
+- **No telemetry**
+- **No network requests**
 
 ## What this extension does
 
-XiT Status brings XiT visibility into VS Code:
-
 - **Run commands with compression**: `XiT: Run Command` detects high-output commands and wraps them with `xit auto`
+- **Run with auto compression**: `XiT: Run with Auto Compression` always runs with `xit auto`
 - **Dedicated XiT Terminal**: Open a terminal optimized for XiT workflows
-- **Status bar**: Live state indicators show what XiT is doing
-- **Dashboard**: Latest run details, workspace gain stats, adapter activity, and recent events
+- **Status bar**: Live state indicators show what XiT is doing and which AI tool is active
+- **Dashboard**: Latest run details, workspace gain stats, and recent events
 - **Terminal listener** (opt-in): Detects high-output commands in VS Code terminals and suggests `xit auto`
 
 ## Requirements
@@ -59,13 +68,17 @@ You can also set a custom path via the `xit.binaryPath` setting.
 | Text | Meaning |
 |------|---------|
 | `吸T神功 · 准备就绪` | Idle — XiT is ready |
+| `吸T神功 · 已连接 Claude · 准备就绪` | Idle — Claude Code is the active AI surface |
 | `吸T神功 · 正在压缩` | Running — a command is being compressed |
+| `吸T神功 · Claude · 正在压缩` | Running — compressing for Claude Code |
 | `吸T神功 · 本次省991B` | Success — current run saved 991 bytes |
-| `吸T神功 · 本次省~41KB` | Success — current run saved ~41 kilobytes |
+| `吸T神功 · Claude · 本次省~41KB` | Success — saved ~41KB for Claude Code |
 | `吸T神功 · 本次未触发压缩` | Missed — a high-output command ran without compression |
 | `吸T神功 · 未找到 XiT` | XiT binary not found — install the CLI |
 
 Hover over the status bar for more details, including historical cumulative savings.
+
+**Privacy note:** XiT detects the active AI surface from VS Code UI metadata (tab labels, terminal names) and recent XiT adapter events. It never reads chat content or conversations.
 
 ## Settings
 
@@ -76,6 +89,7 @@ Hover over the status bar for more details, including historical cumulative savi
 | `xit.refreshInterval` | `10` | Status bar refresh interval in seconds. |
 | `xit.enableStatusBar` | `true` | Show XiT status bar item. |
 | `xit.enableTerminalListener` | `false` | Listen to VS Code terminal shell executions and suggest `xit auto` for high-output commands. |
+| `xit.showActiveAiSurface` | `true` | Show the detected active AI tool in the status bar. |
 
 ## Privacy
 
@@ -84,6 +98,7 @@ Hover over the status bar for more details, including historical cumulative savi
 - Only reads local `~/.xit` and workspace `.xit` directories
 - Raw logs are opened only when you explicitly trigger the command
 - Terminal listener captures only command metadata (command line, cwd, terminal name), never command output or environment variables
+- Active AI surface detection uses only VS Code UI metadata and XiT adapter events, never chat content
 
 ## Install from VSIX
 

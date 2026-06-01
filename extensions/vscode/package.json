@@ -2,7 +2,7 @@
   "name": "xit-vscode",
   "displayName": "吸T神功（XiT）",
   "description": "帮你给 Claude、Codex、Gemini、Cursor 等 AI 编程助手省 token、减少噪音、提升命中率。",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "publisher": "XiT",
   "license": "MIT",
   "icon": "media/icon.png",

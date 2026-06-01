@@ -3,7 +3,7 @@
   "displayName": "XiT Status",
   "description": "Active XiT command runner, status dashboard, and terminal listener for VS Code and Cursor.",
   "version": "0.0.3",
-  "publisher": "xit",
+  "publisher": "XiT",
   "license": "MIT",
   "icon": "media/icon.png",
   "repository": {

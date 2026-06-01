@@ -24,98 +24,89 @@ function isShowActiveAiSurface(): boolean {
   return cfg.get<boolean>('showActiveAiSurface', true);
 }
 
+type SurfaceResult =
+  | { kind: 'connected'; name: string }
+  | { kind: 'recent'; name: string }
+  | undefined;
+
 /**
- * Detect active AI coding surface from safe VS Code UI metadata.
+ * Detect currently focused/connected AI surface from active VS Code UI.
+ * Only uses real-time active terminal, editor, or focused tab.
  * Never reads chat content.
  */
-function detectActiveAiSurface(): string | undefined {
+function detectConnectedAiSurface(): string | undefined {
   if (!isShowActiveAiSurface()) {
     return undefined;
   }
 
-  // 1. Check terminal names
+  // 1. Active terminal first
+  const activeTerminal = vscode.window.activeTerminal;
+  if (activeTerminal) {
+    const name = activeTerminal.name.toLowerCase();
+    if (name.includes('claude')) { return 'Claude'; }
+    if (name.includes('codex')) { return 'Codex'; }
+    if (name.includes('gemini')) { return 'Gemini'; }
+    if (name.includes('cursor')) { return 'Cursor'; }
+    if (name.includes('kimi')) { return 'Kimi'; }
+    if (name.includes('aider')) { return 'Aider'; }
+  }
+
+  // 2. All terminals (background AI terminals still count as connected)
   const terminals = vscode.window.terminals;
   for (const t of terminals) {
     const name = t.name.toLowerCase();
-    if (name.includes('claude')) {
-      return 'Claude';
-    }
-    if (name.includes('codex')) {
-      return 'Codex';
-    }
-    if (name.includes('gemini')) {
-      return 'Gemini';
-    }
-    if (name.includes('cursor')) {
-      return 'Cursor';
-    }
-    if (name.includes('kimi')) {
-      return 'Kimi';
-    }
-    if (name.includes('aider')) {
-      return 'Aider';
-    }
+    if (name.includes('claude')) { return 'Claude'; }
+    if (name.includes('codex')) { return 'Codex'; }
+    if (name.includes('gemini')) { return 'Gemini'; }
+    if (name.includes('cursor')) { return 'Cursor'; }
+    if (name.includes('kimi')) { return 'Kimi'; }
+    if (name.includes('aider')) { return 'Aider'; }
   }
 
-  // 2. Check active editor / tab labels
+  // 3. Active editor
   const activeEditor = vscode.window.activeTextEditor;
   if (activeEditor) {
     const doc = activeEditor.document;
     const fileName = doc.fileName.toLowerCase();
     const uriScheme = doc.uri.scheme.toLowerCase();
 
-    // Claude Code opens files with specific markers
-    if (fileName.includes('claude') || uriScheme.includes('claude')) {
-      return 'Claude';
-    }
-    // Codex
-    if (fileName.includes('codex') || uriScheme.includes('codex')) {
-      return 'Codex';
-    }
-    // Gemini
-    if (fileName.includes('gemini') || uriScheme.includes('gemini')) {
-      return 'Gemini';
-    }
-    // Cursor
-    if (fileName.includes('cursor') || uriScheme.includes('cursor')) {
-      return 'Cursor';
-    }
-    // VS Code Chat / Copilot Chat
-    if (uriScheme === 'vscode-chat' || uriScheme === 'chat') {
-      return 'VS Code Chat';
-    }
+    if (fileName.includes('claude') || uriScheme.includes('claude')) { return 'Claude'; }
+    if (fileName.includes('codex') || uriScheme.includes('codex')) { return 'Codex'; }
+    if (fileName.includes('gemini') || uriScheme.includes('gemini')) { return 'Gemini'; }
+    if (fileName.includes('cursor') || uriScheme.includes('cursor')) { return 'Cursor'; }
+    if (uriScheme === 'vscode-chat' || uriScheme === 'chat') { return 'VS Code Chat'; }
   }
 
-  // 3. Check tab group tab labels (VS Code 1.67+)
+  // 4. Active/focused tab only (VS Code 1.67+)
   try {
     const tabGroups = (vscode.window as any).tabGroups;
-    if (tabGroups) {
-      for (const group of tabGroups.all || []) {
-        for (const tab of group.tabs || []) {
-          const label = (tab.label || '').toLowerCase();
-          if (label.includes('claude')) {
-            return 'Claude';
-          }
-          if (label.includes('codex')) {
-            return 'Codex';
-          }
-          if (label.includes('gemini')) {
-            return 'Gemini';
-          }
-          if (label.includes('cursor')) {
-            return 'Cursor';
-          }
-          if (label.includes('chat') && !label.includes('xit')) {
-            return 'VS Code Chat';
-          }
-        }
-      }
+    const activeTab = tabGroups?.activeTabGroup?.activeTab;
+    if (activeTab) {
+      const label = (activeTab.label || '').toLowerCase();
+      if (label.includes('claude')) { return 'Claude'; }
+      if (label.includes('codex')) { return 'Codex'; }
+      if (label.includes('gemini')) { return 'Gemini'; }
+      if (label.includes('cursor')) { return 'Cursor'; }
+      if (label.includes('kimi')) { return 'Kimi'; }
+      if (label.includes('aider')) { return 'Aider'; }
+      if (label.includes('chat') && !label.includes('xit')) { return 'VS Code Chat'; }
     }
   } catch {
     // tabGroups API not available on this VS Code version
   }
 
-  // 4. Fallback: recent XiT adapter events
+  return undefined;
+}
+
+/**
+ * Detect recently used AI surface from XiT adapter events.
+ * This is historical inference, NOT a real-time connection.
+ */
+function detectRecentAiSurface(): string | undefined {
+  if (!isShowActiveAiSurface()) {
+    return undefined;
+  }
+
   const adapters = ['claude', 'codex', 'cursor', 'kimi', 'aider'];
   let latestTime = '';
   let latestAdapter: string | undefined;
@@ -138,22 +129,46 @@ function detectActiveAiSurface(): string | undefined {
   return undefined;
 }
 
-function buildStatusBarText(state: typeof liveState, aiSurface?: string): string {
-  const prefix = aiSurface ? `吸T神功 · ${aiSurface}` : '吸T神功';
+function detectAiSurface(): SurfaceResult {
+  const connected = detectConnectedAiSurface();
+  if (connected) {
+    return { kind: 'connected', name: connected };
+  }
+  const recent = detectRecentAiSurface();
+  if (recent) {
+    return { kind: 'recent', name: recent };
+  }
+  return undefined;
+}
+
+function buildStatusBarText(state: typeof liveState, surface?: SurfaceResult): string {
+  const connectedName = surface?.kind === 'connected' ? surface.name : undefined;
+  const recentName = surface?.kind === 'recent' ? surface.name : undefined;
 
   switch (state) {
     case 'no-binary':
       return '吸T神功 · 未找到 XiT';
     case 'running':
-      return aiSurface ? `${prefix} · 正在压缩` : '吸T神功 · 正在压缩';
+      return connectedName
+        ? `吸T神功 · ${connectedName} · 正在压缩`
+        : '吸T神功 · 正在压缩';
     case 'missed':
-      return aiSurface ? `${prefix} · 本次未触发压缩` : '吸T神功 · 本次未触发压缩';
+      return connectedName
+        ? `吸T神功 · ${connectedName} · 本次未触发压缩`
+        : '吸T神功 · 本次未触发压缩';
     case 'success':
-      // success text is built dynamically in updateStatusBarLive
-      return aiSurface ? `${prefix} · ` : '吸T神功 · ';
+      return connectedName
+        ? `吸T神功 · ${connectedName} · `
+        : '吸T神功 · ';
     case 'idle':
     default:
-      return aiSurface ? `吸T神功 · 已连接 ${aiSurface} · 准备就绪` : '吸T神功 · 准备就绪';
+      if (connectedName) {
+        return `吸T神功 · 已连接 ${connectedName} · 准备就绪`;
+      }
+      if (recentName) {
+        return `吸T神功 · 最近 ${recentName} · 准备就绪`;
+      }
+      return '吸T神功 · 准备就绪';
   }
 }
 
@@ -189,17 +204,23 @@ async function updateStatusBar(): Promise<void> {
   }
 
   // Idle: never show historical gain in status bar text
-  const aiSurface = detectActiveAiSurface();
-  statusBarItem.text = buildStatusBarText('idle', aiSurface);
+  const surface = detectAiSurface();
+  statusBarItem.text = buildStatusBarText('idle', surface);
 
   const gain = status.gain!;
+  const surfaceLine = surface
+    ? surface.kind === 'connected'
+      ? `已连接 AI: ${surface.name} (从 VS Code UI 元数据检测)`
+      : `最近 AI: ${surface.name} (从 XiT adapter 事件推断)`
+    : '';
+
   const lines = [
     gain.total_commands_condensed > 0
       ? `历史累计省: ${gain.saved_tokens_display}`
       : 'No XiT gain data for this workspace yet.',
     gain.total_commands_condensed > 0 ? `Estimated reduction: ${(gain.estimated_reduction * 100).toFixed(1)}%` : '',
     gain.total_commands_condensed > 0 ? `Commands condensed: ${gain.total_commands_condensed}` : '',
-    aiSurface ? `Active AI surface: ${aiSurface} (detected from UI metadata)` : '',
+    surfaceLine,
     'XiT does not read chat content.',
     status.binary ? `Binary: ${status.binary}` : '',
     status.cwd ? `cwd: ${status.cwd}` : '',
@@ -254,14 +275,14 @@ async function updateStatusBarLive(): Promise<void> {
     return;
   }
 
-  const aiSurface = detectActiveAiSurface();
+  const surface = detectAiSurface();
 
   if (liveState === 'running') {
-    statusBarItem.text = buildStatusBarText('running', aiSurface);
+    statusBarItem.text = buildStatusBarText('running', surface);
     return;
   }
   if (liveState === 'missed') {
-    statusBarItem.text = buildStatusBarText('missed', aiSurface);
+    statusBarItem.text = buildStatusBarText('missed', surface);
     return;
   }
   if (liveState === 'success') {
@@ -269,15 +290,16 @@ async function updateStatusBarLive(): Promise<void> {
     if (latest) {
       const saved = latest.raw_bytes - latest.summary_bytes;
       const display = saved >= 1000 ? `~${Math.round(saved / 1000)}KB` : `${saved}B`;
-      const base = aiSurface ? `吸T神功 · ${aiSurface}` : '吸T神功';
+      const connectedName = surface?.kind === 'connected' ? surface.name : undefined;
+      const base = connectedName ? `吸T神功 · ${connectedName}` : '吸T神功';
       statusBarItem.text = `${base} · 本次省${display}`;
     } else {
-      statusBarItem.text = buildStatusBarText('idle', aiSurface);
+      statusBarItem.text = buildStatusBarText('idle', surface);
     }
     return;
   }
   // idle: never show historical gain in status bar text
-  statusBarItem.text = buildStatusBarText('idle', aiSurface);
+  statusBarItem.text = buildStatusBarText('idle', surface);
 }
 
 function isTerminalListenerEnabled(): boolean {

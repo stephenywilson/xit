@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import type { AdapterEvent, GlobalActivity, XiTStatus, LatestRun } from './types';
 import { readRecentEvents, readWorkspaceHistory, readTerminalEvents, readLatestRun } from './xit';
-import { computeWorkflowHealth, formatSavedTokensForRun } from './workflow';
+import { computeWorkflowHealth, formatSavedTokensForRun, getAiAdapterHealth, getTokenImpactStats } from './workflow';
 
 let panel: vscode.WebviewPanel | undefined;
 let panelContext: vscode.ExtensionContext | undefined;
@@ -27,6 +27,13 @@ function formatBytes(n: number): string {
 
 function formatReduction(r: number): string {
   return (r * 100).toFixed(1) + '%';
+}
+
+function formatTokenShort(tokens: number): string {
+  if (tokens >= 1000) {
+    return `~${(tokens / 1000).toFixed(1)}k Token`;
+  }
+  return `${tokens} Token`;
 }
 
 function formatTime(iso: string): string {
@@ -84,6 +91,8 @@ function buildDashboardHtml(
   const activity = status.activity || computeActivityFromEvents(events);
   const hasGlobalActivity = activity.eventCount > 0;
   const health = computeWorkflowHealth(status, latestRun);
+  const tokenImpact = getTokenImpactStats(latestRun);
+  const adapterHealth = getAiAdapterHealth();
 
   // Latest XiT Run section
   const hasLatestRun = latestRun !== undefined;
@@ -112,6 +121,71 @@ function buildDashboardHtml(
       <div class="ga-row"><span class="ga-label">Recommendation</span><span class="ga-value">${escapeHtml(health.recommendation)}</span></div>
       ${health.workspaceRuleFiles.length > 0 ? `<div class="ga-row"><span class="ga-label">Rule files</span><span class="ga-value ga-cmd">${escapeHtml(health.workspaceRuleFiles.join(', '))}</span></div>` : ''}
     </div>
+  `;
+
+  const tokenImpactSection = tokenImpact.latest ? `
+    <div class="grid">
+      <div class="stat">
+        <div class="value">${formatTokenShort(tokenImpact.latest.rawTokens)}</div>
+        <div class="label">Latest raw tokens</div>
+      </div>
+      <div class="stat">
+        <div class="value">${formatTokenShort(tokenImpact.latest.summaryTokens)}</div>
+        <div class="label">Latest summary tokens</div>
+      </div>
+      <div class="stat">
+        <div class="value">${tokenImpact.latest.savedDisplay}</div>
+        <div class="label">Latest saved tokens</div>
+      </div>
+      <div class="stat">
+        <div class="value">${Math.round(tokenImpact.latest.reductionPct)}%</div>
+        <div class="label">Latest reduction</div>
+      </div>
+      <div class="stat">
+        <div class="value">${tokenImpact.todaySavedDisplay}</div>
+        <div class="label">Today saved tokens</div>
+      </div>
+      <div class="stat">
+        <div class="value">${tokenImpact.workspaceTotalSavedDisplay}</div>
+        <div class="label">Workspace total saved tokens</div>
+      </div>
+    </div>
+    <h2>Top Token-Heavy Commands</h2>
+    ${tokenImpact.topTokenHeavyCommands.length > 0 ? `
+    <table>
+      <thead>
+        <tr><th>Command</th><th>Runs</th><th>Saved tokens</th><th>Raw tokens</th><th>Summary tokens</th></tr>
+      </thead>
+      <tbody>
+        ${tokenImpact.topTokenHeavyCommands.map((entry) => `
+          <tr>
+            <td>${escapeHtml(entry.command)}</td>
+            <td>${entry.runs}</td>
+            <td>${entry.savedDisplay}</td>
+            <td>${formatTokenShort(entry.rawTokens)}</td>
+            <td>${formatTokenShort(entry.summaryTokens)}</td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+    ` : '<p class="empty">No token-heavy commands recorded yet.</p>'}
+  ` : '<p class="empty">No completed XiT run yet, so token impact is not available.</p>';
+
+  const adapterHealthSection = `
+    <table>
+      <thead>
+        <tr><th>Adapter</th><th>Status</th><th>Evidence</th></tr>
+      </thead>
+      <tbody>
+        ${adapterHealth.map((item) => `
+          <tr>
+            <td>${escapeHtml(item.adapter)}</td>
+            <td>${escapeHtml(item.status)}</td>
+            <td>${escapeHtml(item.evidence)}</td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
   `;
 
   // Diagnostic section (binary missing / JSON error)
@@ -409,6 +483,12 @@ ${latestRunSection}
 
 <h2>XiT Workflow Health / 吸T状态</h2>
 ${workflowHealthSection}
+
+<h2>Token Impact</h2>
+${tokenImpactSection}
+
+<h2>AI Adapter Health</h2>
+${adapterHealthSection}
 
 <h2>Workspace Gain</h2>
 ${workspaceGainSection}

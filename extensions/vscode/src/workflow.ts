@@ -4,9 +4,13 @@ import * as path from 'path';
 import { execFile } from 'child_process';
 import type {
   AdapterEvent,
+  AdapterHealthItem,
   DiagnoseReport,
   LatestRun,
   TerminalEventRecord,
+  TokenImpactStats,
+  TokenMetrics,
+  VerifyRoutingReport,
   WorkflowHealth,
   XiTStatus,
 } from './types';
@@ -63,6 +67,7 @@ interface WorkflowEvent {
   time: string;
   command: string;
   routedThroughXiT: boolean;
+  source?: string;
 }
 
 function isWorkspaceAvailable(): boolean {
@@ -128,6 +133,47 @@ function collectExistingRuleTargets(root: string): string[] {
   return [...new Set(targets)];
 }
 
+export function getExistingRuleTargets(): string[] {
+  const root = getWorkspaceRoot();
+  return root ? collectExistingRuleTargets(root) : [];
+}
+
+function getWorkspaceHistoryPath(): string | undefined {
+  const root = getWorkspaceRoot();
+  return root ? path.join(root, '.xit', 'history.jsonl') : undefined;
+}
+
+function parseIsoTimeMs(iso: string | undefined): number | undefined {
+  if (!iso) {
+    return undefined;
+  }
+  const ms = Date.parse(iso);
+  return Number.isNaN(ms) ? undefined : ms;
+}
+
+export function readAllWorkspaceRuns(): LatestRun[] {
+  const historyPath = getWorkspaceHistoryPath();
+  if (!historyPath || !fs.existsSync(historyPath)) {
+    return [];
+  }
+  try {
+    const content = fs.readFileSync(historyPath, 'utf-8');
+    return content
+      .split('\n')
+      .filter((line) => line.trim().length > 0)
+      .map((line) => {
+        try {
+          return JSON.parse(line) as LatestRun;
+        } catch {
+          return undefined;
+        }
+      })
+      .filter((run): run is LatestRun => run !== undefined);
+  } catch {
+    return [];
+  }
+}
+
 export function installWorkspaceAiRules(): RuleInstallResult {
   const root = getWorkspaceRoot();
   if (!root) {
@@ -187,6 +233,111 @@ export function getWorkspaceRuleStatus(): { installed: boolean; files: string[] 
   return { installed: installedFiles.length > 0, files: [...new Set(installedFiles)] };
 }
 
+function hasRuleMarker(filePath: string): boolean {
+  try {
+    const content = fs.readFileSync(filePath, 'utf-8');
+    return content.includes(RULES_START) && content.includes(RULES_END);
+  } catch {
+    return false;
+  }
+}
+
+function getAdapterHookRouting(adapter: 'codex' | 'claude' | 'cursor'): {
+  highNoiseObserved: number;
+  highNoiseRouted: number;
+} {
+  const events = readRecentEvents(adapter, 20);
+  let highNoiseObserved = 0;
+  let highNoiseRouted = 0;
+  for (const event of events) {
+    const command = (event.original_command || '').trim();
+    if (!command) {
+      continue;
+    }
+    const normalized = command.replace(/\bxit\s+auto\s+/, '').trim();
+    if (!isHighOutputCommand(normalized)) {
+      continue;
+    }
+    highNoiseObserved += 1;
+    if (/\bxit\s+auto\b/.test(command)) {
+      highNoiseRouted += 1;
+    }
+  }
+  return { highNoiseObserved, highNoiseRouted };
+}
+
+function getAdapterRuleCandidates(root: string): Record<'Codex' | 'Claude' | 'Gemini' | 'Cursor', string[]> {
+  const existingTargets = collectExistingRuleTargets(root);
+  return {
+    Codex: [
+      path.join(root, 'AGENTS.md'),
+      ...existingTargets.filter((p) => p.includes(`${path.sep}.codex${path.sep}`)),
+    ],
+    Claude: [path.join(root, 'CLAUDE.md')],
+    Gemini: [
+      path.join(root, 'GEMINI.md'),
+      path.join(root, '.gemini', 'rules.md'),
+    ],
+    Cursor: existingTargets.filter((p) => p.includes(`${path.sep}.cursor${path.sep}rules${path.sep}`)),
+  };
+}
+
+export function getAiAdapterHealth(): AdapterHealthItem[] {
+  const root = getWorkspaceRoot();
+  if (!root) {
+    return [
+      { adapter: 'Codex', status: 'unknown', evidence: 'No workspace folder open.', ruleFiles: [] },
+      { adapter: 'Claude', status: 'unknown', evidence: 'No workspace folder open.', ruleFiles: [] },
+      { adapter: 'Gemini', status: 'unknown', evidence: 'No workspace folder open.', ruleFiles: [] },
+      { adapter: 'Cursor', status: 'unknown', evidence: 'No workspace folder open.', ruleFiles: [] },
+    ];
+  }
+
+  const candidates = getAdapterRuleCandidates(root);
+  const codexFiles = [...new Set(candidates.Codex)].filter(hasRuleMarker);
+  const claudeFiles = [...new Set(candidates.Claude)].filter(hasRuleMarker);
+  const geminiFiles = [...new Set(candidates.Gemini)].filter(hasRuleMarker);
+  const cursorFiles = [...new Set(candidates.Cursor)].filter(hasRuleMarker);
+  const codexRouting = getAdapterHookRouting('codex');
+  const claudeRouting = getAdapterHookRouting('claude');
+  const cursorRouting = getAdapterHookRouting('cursor');
+
+  return [
+    {
+      adapter: 'Codex',
+      status: codexFiles.length > 0 ? 'rules installed' : 'not verified',
+      evidence: codexFiles.length > 0
+        ? `${path.basename(codexFiles[0])} contains XIT_AI_RULES section; Codex routed ${codexRouting.highNoiseRouted}/${codexRouting.highNoiseObserved} recent high-noise commands through XiT`
+        : 'No AGENTS.md or .codex rule file with XIT_AI_RULES detected.',
+      ruleFiles: codexFiles,
+    },
+    {
+      adapter: 'Claude',
+      status: claudeFiles.length > 0 ? 'rules installed' : 'not verified',
+      evidence: claudeFiles.length > 0
+        ? `${path.basename(claudeFiles[0])} contains XIT_AI_RULES section; Claude routed ${claudeRouting.highNoiseRouted}/${claudeRouting.highNoiseObserved} recent high-noise commands through XiT`
+        : 'No CLAUDE.md with XIT_AI_RULES detected.',
+      ruleFiles: claudeFiles,
+    },
+    {
+      adapter: 'Gemini',
+      status: geminiFiles.length > 0 ? 'rules installed' : 'unknown',
+      evidence: geminiFiles.length > 0
+        ? `${path.basename(geminiFiles[0])} contains XIT_AI_RULES section`
+        : 'No known workspace rule file detected for Gemini. Manual verification needed.',
+      ruleFiles: geminiFiles,
+    },
+    {
+      adapter: 'Cursor',
+      status: cursorFiles.length > 0 ? 'rules installed' : 'not verified',
+      evidence: cursorFiles.length > 0
+        ? `${path.basename(cursorFiles[0])} contains XIT_AI_RULES section; Cursor routed ${cursorRouting.highNoiseRouted}/${cursorRouting.highNoiseObserved} recent high-noise commands through XiT`
+        : 'No .cursor/rules file with XIT_AI_RULES detected.',
+      ruleFiles: cursorFiles,
+    },
+  ];
+}
+
 function mapAdapterEvent(event: AdapterEvent): WorkflowEvent | undefined {
   const command = (event.original_command || '').trim();
   if (!command) {
@@ -200,6 +351,7 @@ function mapAdapterEvent(event: AdapterEvent): WorkflowEvent | undefined {
     time: event.time || '',
     command,
     routedThroughXiT,
+    source: event.adapter,
   };
 }
 
@@ -208,14 +360,11 @@ function mapTerminalEvent(event: TerminalEventRecord): WorkflowEvent {
     time: event.time,
     command: event.commandLine,
     routedThroughXiT: /\bxit\s+auto\b/.test(event.commandLine),
+    source: 'vscode-terminal',
   };
 }
 
-export function getRecentWorkflowRoutingStats(limit = 20): {
-  recentHighNoiseCommands: number;
-  recentHighNoiseRouted: number;
-  routingHitRate: number;
-} {
+function getMergedWorkflowEvents(limit = 20): WorkflowEvent[] {
   const terminalEvents = readTerminalEvents(limit).map(mapTerminalEvent);
   const adapterSources = ['codex', 'claude', 'cursor', 'kimi']
     .flatMap((adapter) => readRecentEvents(adapter, limit))
@@ -225,11 +374,19 @@ export function getRecentWorkflowRoutingStats(limit = 20): {
     .map(mapAdapterEvent)
     .filter((event): event is WorkflowEvent => event !== undefined);
 
-  const merged = terminalEvents
+  return terminalEvents
     .concat(adapterSources)
     .concat(workspaceHistory)
     .sort((a, b) => b.time.localeCompare(a.time))
     .slice(0, limit);
+}
+
+export function getRecentWorkflowRoutingStats(limit = 20): {
+  recentHighNoiseCommands: number;
+  recentHighNoiseRouted: number;
+  routingHitRate: number;
+} {
+  const merged = getMergedWorkflowEvents(limit);
 
   let recentHighNoiseCommands = 0;
   let recentHighNoiseRouted = 0;
@@ -377,4 +534,135 @@ export function formatSavedTokensForRun(run: LatestRun | undefined): string {
     return formatTokenCount(run.saved_tokens);
   }
   return formatSavedTokensFromBytes(Math.max(0, run.raw_bytes - run.summary_bytes));
+}
+
+export function getTokenMetricsForRun(run: LatestRun | undefined): TokenMetrics | undefined {
+  if (!run) {
+    return undefined;
+  }
+  const rawTokens = estimateTokensFromBytes(Math.max(0, run.raw_bytes));
+  const summaryTokens = estimateTokensFromBytes(Math.max(0, run.summary_bytes));
+  const savedTokens = typeof run.saved_tokens === 'number'
+    ? Math.max(0, run.saved_tokens)
+    : Math.max(0, rawTokens - summaryTokens);
+  const savedDisplay = run.saved_tokens_display
+    ? (run.saved_tokens_display.includes('Token') ? run.saved_tokens_display : `${run.saved_tokens_display} Token`)
+    : formatTokenCount(savedTokens);
+  const reductionPct = rawTokens > 0 ? (savedTokens / rawTokens) * 100 : 0;
+
+  return {
+    rawTokens,
+    summaryTokens,
+    savedTokens,
+    savedDisplay,
+    reductionPct,
+  };
+}
+
+function getStartOfTodayMs(): number {
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+}
+
+export function getTokenImpactStats(latestRun: LatestRun | undefined): TokenImpactStats {
+  const latest = getTokenMetricsForRun(latestRun);
+  const runs = readAllWorkspaceRuns();
+  const startOfTodayMs = getStartOfTodayMs();
+  let todaySavedTokens = 0;
+  let workspaceTotalSavedTokens = 0;
+  const byCommand = new Map<string, { runs: number; savedTokens: number; rawTokens: number; summaryTokens: number }>();
+
+  for (const run of runs) {
+    const metrics = getTokenMetricsForRun(run);
+    if (!metrics) {
+      continue;
+    }
+    workspaceTotalSavedTokens += metrics.savedTokens;
+    const ts = parseIsoTimeMs(run.timestamp);
+    if (ts !== undefined && ts >= startOfTodayMs) {
+      todaySavedTokens += metrics.savedTokens;
+    }
+    const entry = byCommand.get(run.command) || { runs: 0, savedTokens: 0, rawTokens: 0, summaryTokens: 0 };
+    entry.runs += 1;
+    entry.savedTokens += metrics.savedTokens;
+    entry.rawTokens += metrics.rawTokens;
+    entry.summaryTokens += metrics.summaryTokens;
+    byCommand.set(run.command, entry);
+  }
+
+  const topTokenHeavyCommands = [...byCommand.entries()]
+    .sort((a, b) => b[1].savedTokens - a[1].savedTokens)
+    .slice(0, 5)
+    .map(([command, entry]) => ({
+      command,
+      runs: entry.runs,
+      savedTokens: entry.savedTokens,
+      savedDisplay: formatTokenCount(entry.savedTokens),
+      rawTokens: entry.rawTokens,
+      summaryTokens: entry.summaryTokens,
+    }));
+
+  return {
+    latest,
+    todaySavedTokens,
+    todaySavedDisplay: formatTokenCount(todaySavedTokens),
+    workspaceTotalSavedTokens,
+    workspaceTotalSavedDisplay: formatTokenCount(workspaceTotalSavedTokens),
+    topTokenHeavyCommands,
+  };
+}
+
+export function buildVerifyRoutingReport(): VerifyRoutingReport {
+  const workspacePath = resolveWorkspaceCwd();
+  const rules = getWorkspaceRuleStatus();
+  const routing = getRecentWorkflowRoutingStats(20);
+  const events = getMergedWorkflowEvents(20);
+  const latestHighNoiseCommands: string[] = [];
+  const latestXiTAutoCommands: string[] = [];
+
+  for (const event of events) {
+    const normalized = event.command.replace(/\bxit\s+auto\s+/, '').trim();
+    if (isHighOutputCommand(normalized) && !latestHighNoiseCommands.includes(event.command)) {
+      latestHighNoiseCommands.push(event.command);
+    }
+    if (/\bxit\s+auto\b/.test(event.command) && !latestXiTAutoCommands.includes(event.command)) {
+      latestXiTAutoCommands.push(event.command);
+    }
+  }
+
+  const adapterHealth = getAiAdapterHealth();
+  const codex = adapterHealth.find((item) => item.adapter === 'Codex')!;
+  const claude = adapterHealth.find((item) => item.adapter === 'Claude')!;
+  const gemini = adapterHealth.find((item) => item.adapter === 'Gemini')!;
+  const cursor = adapterHealth.find((item) => item.adapter === 'Cursor')!;
+  const codexRouting = getAdapterHookRouting('codex');
+  const claudeRouting = getAdapterHookRouting('claude');
+  const cursorRouting = getAdapterHookRouting('cursor');
+
+  let recommendation = 'XiT is active for this workspace';
+  if (codexRouting.highNoiseObserved > 0 && codexRouting.highNoiseRouted === 0) {
+    recommendation = 'High-noise commands are not routed through XiT yet.';
+  } else if (claudeRouting.highNoiseObserved > 0 && claudeRouting.highNoiseRouted === 0) {
+    recommendation = 'High-noise commands are not routed through XiT yet.';
+  } else if (cursorRouting.highNoiseObserved > 0 && cursorRouting.highNoiseRouted === 0) {
+    recommendation = 'High-noise commands are not routed through XiT yet.';
+  } else if (rules.installed && codexRouting.highNoiseObserved === 0 && claudeRouting.highNoiseObserved === 0 && cursorRouting.highNoiseObserved === 0) {
+    recommendation = 'Rules installed, waiting for agent to run a high-noise command through XiT.';
+  } else if (!rules.installed) {
+    recommendation = 'Run XiT: Install Workspace AI Rules';
+  }
+
+  return {
+    workspacePath,
+    rulesFilesInstalled: rules.files,
+    latestHighNoiseCommands: latestHighNoiseCommands.slice(0, 5),
+    latestXiTAutoCommands: latestXiTAutoCommands.slice(0, 5),
+    recentHighNoiseCommands: routing.recentHighNoiseCommands,
+    recentHighNoiseRouted: routing.recentHighNoiseRouted,
+    codex,
+    claude,
+    gemini,
+    cursor,
+    recommendation,
+  };
 }

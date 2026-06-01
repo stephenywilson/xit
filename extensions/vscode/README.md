@@ -45,6 +45,7 @@ npm install -g xitsg
 | `XiT: Show Output Channel` | 显示 XiT 扩展调试输出 |
 | `XiT: Install Workspace AI Rules` | 在当前 workspace 的 AI 规则文件里幂等写入 XiT 命令输出规则 |
 | `XiT: Diagnose AI Workflow` | 输出当前 workspace 的 XiT CLI、最近 run、saved bytes、rules、routing hit rate 报告 |
+| `XiT: Verify AI Agent Routing` | 验证本地 AI agent 规则文件和最近高噪音命令是否真的通过 XiT 路由 |
 
 ## 状态栏含义
 
@@ -53,7 +54,7 @@ npm install -g xitsg
 | `吸T神功 · 准备就绪` | 插件已启动，等待任务 |
 | `吸T神功 · 守护你的T` | 当前工作区已启用 XiT 规则 |
 | `吸T神功 · 正在吸T中` | 正在接管高噪音命令输出 |
-| `吸T完成 · 本次省~9k Token` | 本次命令已完成，节省约 9k Token |
+| `吸T完成 · 省~9k Token` | 本次命令已完成，节省约 9k Token |
 | `吸T神功 · 等待下轮发功` | 本轮完成，等待下一次任务 |
 | `吸T神功 · 无需发功` | 当前命令不需要 XiT 介入 |
 | `吸T神功 · 未找到 XiT` | 没找到本地 XiT CLI |
@@ -61,6 +62,17 @@ npm install -g xitsg
 鼠标悬停在状态栏上可查看更多信息，包括最近一次吸T节省、原始日志路径，以及当前工作区是否处于守护状态。运行中主状态栏只显示“正在吸T中”；任何当前输出估算都不会在主状态栏里冒充实际节省结果。
 
 **边界说明：** 吸T神功**不会读取** AI 聊天内容，也不会读取私有 Webview。它通过本地命令输出、workspace 规则和 `.xit` 运行记录帮助 AI coding workflow 降噪。
+
+## How to verify Codex integration
+
+1. 运行 `XiT: Install Workspace AI Rules`
+2. 打开 Codex 面板
+3. 让 Codex 正常运行项目测试，例如 “Run the project tests and follow workspace instructions.”
+4. 不要手动输入 `./xit auto`
+5. 然后运行 `XiT: Verify AI Agent Routing`
+6. 只有当最近的高噪音命令是通过 XiT 执行时，才算 PASS
+
+这个测试只验证 Codex 是否遵守 workspace rules，不验证 XiT 是否读取 Codex chat 内容。
 
 ## 设置
 
@@ -81,6 +93,14 @@ npm install -g xitsg
 - 原始日志仅在手动触发命令时打开
 - 终端监听器只捕获命令元数据（命令行、工作目录、终端名称），**不捕获命令输出或环境变量**
 - 只展示本地 XiT 事件与终端记录，**不读取聊天内容、私有 Webview 或当前对话上下文**
+
+## Token 估算说明
+
+- 状态栏、tooltip 和 Dashboard 中的 token 数字默认是**估算值**
+- 如果 XiT history / gain 已提供 `saved_tokens` 或 `saved_tokens_display`，插件会优先使用这些字段
+- 如果没有现成 token 字段，插件会按 `bytes / 4` 做保守估算
+- 不同 AI 模型的 tokenizer 不同，所以 `~10k Token` 应理解为本地近似统计，不是某个模型 API 的精确 billing 数字
+- 这些 token 统计默认只保留在本地工作区和本地 XiT 数据目录，不会上传
 
 ## 从 VSIX 安装
 

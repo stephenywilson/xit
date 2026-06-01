@@ -2,7 +2,7 @@
   "name": "xit-vscode",
   "displayName": "吸T神功（XiT）",
   "description": "为 Claude、Codex、Gemini、Cursor 等 AI 编程工作流压缩高噪音终端输出，减少 token 浪费。",
-  "version": "0.0.11",
+  "version": "0.0.13",
   "publisher": "XiT",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -38,7 +38,8 @@
     "onCommand:xit.runWithAutoCompression",
     "onCommand:xit.openXiTTerminal",
     "onCommand:xit.installWorkspaceAiRules",
-    "onCommand:xit.diagnoseAiWorkflow"
+    "onCommand:xit.diagnoseAiWorkflow",
+    "onCommand:xit.verifyAiAgentRouting"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -91,6 +92,11 @@
       {
         "command": "xit.diagnoseAiWorkflow",
         "title": "Diagnose AI Workflow",
+        "category": "XiT"
+      },
+      {
+        "command": "xit.verifyAiAgentRouting",
+        "title": "Verify AI Agent Routing",
         "category": "XiT"
       }
     ],

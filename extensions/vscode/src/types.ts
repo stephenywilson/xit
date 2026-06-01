@@ -29,6 +29,7 @@ export interface AdapterEvent {
   action?: string;
   event?: string;
   original_command?: string;
+  recommended_command?: string;
   policy?: string;
   time?: string;
   mode?: string;
@@ -77,4 +78,47 @@ export interface XiTStatus {
   cwd?: string;
   attempts?: string[];
   refreshedAt: Date;
+}
+
+export interface TerminalEventRecord {
+  time: string;
+  commandLine: string;
+  terminalName: string;
+  cwd?: string;
+}
+
+export interface LatestRawLogMeta {
+  path: string;
+  mtimeMs: number;
+  size: number;
+}
+
+export interface WorkflowHealth {
+  cliStatus: 'found' | 'missing';
+  latestRunStatus: 'success' | 'none';
+  latestSavedBytes: number;
+  latestSavedDisplay: string;
+  workspaceRulesInstalled: boolean;
+  workspaceRuleFiles: string[];
+  recentHighNoiseCommands: number;
+  recentHighNoiseRouted: number;
+  routingHitRate: number;
+  recommendation: string;
+}
+
+export interface DiagnoseReport {
+  binaryPath?: string;
+  cliVersion?: string;
+  workspacePath: string;
+  hasRunsDir: boolean;
+  latestRunTime?: string;
+  latestSavedBytes?: number;
+  latestSavedDisplay?: string;
+  latestRawLogPath?: string;
+  recentHighNoiseCommands: number;
+  recentHighNoiseRouted: number;
+  routingHitRate: number;
+  workspaceRulesInstalled: boolean;
+  workspaceRuleFiles: string[];
+  recommendation?: string;
 }

@@ -2,7 +2,7 @@
   "name": "xit-vscode",
   "displayName": "吸T神功（XiT）",
   "description": "为 Claude、Codex、Gemini、Cursor 等 AI 编程工作流压缩高噪音终端输出，减少 token 浪费。",
-  "version": "0.0.8",
+  "version": "0.0.9",
   "publisher": "XiT",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -36,7 +36,9 @@
     "onCommand:xit.openLatestRawLog",
     "onCommand:xit.runCommand",
     "onCommand:xit.runWithAutoCompression",
-    "onCommand:xit.openXiTTerminal"
+    "onCommand:xit.openXiTTerminal",
+    "onCommand:xit.installWorkspaceAiRules",
+    "onCommand:xit.diagnoseAiWorkflow"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -80,6 +82,16 @@
         "command": "xit.openXiTTerminal",
         "title": "Open XiT Terminal",
         "category": "XiT"
+      },
+      {
+        "command": "xit.installWorkspaceAiRules",
+        "title": "Install Workspace AI Rules",
+        "category": "XiT"
+      },
+      {
+        "command": "xit.diagnoseAiWorkflow",
+        "title": "Diagnose AI Workflow",
+        "category": "XiT"
       }
     ],
     "configuration": {
@@ -97,7 +109,7 @@
         },
         "xit.refreshInterval": {
           "type": "number",
-          "default": 10,
+          "default": 5,
           "description": "Status bar refresh interval in seconds."
         },
         "xit.enableStatusBar": {
@@ -107,7 +119,7 @@
         },
         "xit.enableTerminalListener": {
           "type": "boolean",
-          "default": false,
+          "default": true,
           "description": "Listen to VS Code terminal shell executions and record them locally in ~/.xit/vscode-terminal/events.jsonl. No command output is captured."
         },
         "xit.showActiveAiSurface": {

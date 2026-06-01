@@ -181,9 +181,17 @@ export interface DiagnoseReport {
   binaryPath?: string;
   cliVersion?: string;
   workspacePath: string;
+  watchedStatePath: string;
+  watchedHistoryPath: string;
+  watchedRunsDir: string;
+  stateFileExists: boolean;
+  historyFileExists: boolean;
+  agentsMdDetected: boolean;
+  claudeMdDetected: boolean;
   hasRunsDir: boolean;
   currentRunState?: "running" | "completed" | "failed" | "none";
   latestRunTime?: string;
+  latestHistoryTimestamp?: string;
   latestSavedBytes?: number;
   latestSavedDisplay?: string;
   latestRawLogPath?: string;

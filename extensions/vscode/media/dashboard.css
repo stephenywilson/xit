@@ -101,6 +101,65 @@ tbody tr:hover {
   border-radius: var(--radius-xl);
 }
 
+/* Workspace Watch Banner */
+.workspace-watch-banner {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 12px 16px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.workspace-watch-header {
+  color: var(--dim);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+
+.workspace-watch-root {
+  color: var(--text);
+  font-size: 12px;
+  word-break: break-all;
+  margin-bottom: 6px;
+}
+
+.workspace-watch-paths {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.watch-path-item {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.watch-path-ok {
+  color: var(--success);
+  background: var(--success-soft);
+}
+
+.watch-path-missing {
+  color: var(--muted);
+  background: var(--surface-3);
+}
+
+.workspace-no-data {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: var(--surface-3);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 /* Hero */
 .hero-card {
   display: flex;

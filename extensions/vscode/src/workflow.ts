@@ -570,23 +570,44 @@ export async function buildDiagnoseReport(
   }
 
   const runsDir = path.join(workspacePath, ".xit", "runs");
+  const watchedStatePath = path.join(workspacePath, ".xit", "state", "current-run.json");
+  const watchedHistoryPath = path.join(workspacePath, ".xit", "history.jsonl");
+  const stateFileExists = fs.existsSync(watchedStatePath);
+  const historyFileExists = fs.existsSync(watchedHistoryPath);
+  const agentsMdDetected = fs.existsSync(path.join(workspacePath, "AGENTS.md"));
+  const claudeMdDetected = fs.existsSync(path.join(workspacePath, "CLAUDE.md"));
   const currentRunState = readCurrentRunState()?.status || "none";
   const latestSavedBytes = latestRun
     ? Math.max(0, latestRun.raw_bytes - latestRun.summary_bytes)
     : undefined;
-  const recommendation = !rules.installed
-    ? "Run XiT: Install Workspace AI Rules"
-    : routing.recentHighNoiseCommands > 0 && routing.recentHighNoiseRouted === 0
-      ? "High-noise commands are not routed through XiT yet"
-      : "XiT is active for this workspace";
+
+  // Build recommendation — if no xit data in this workspace, suggest mismatch
+  let recommendation: string;
+  if (!historyFileExists && !stateFileExists && !fs.existsSync(runsDir)) {
+    recommendation = `This VS Code window is watching ${workspacePath}. No XiT state found here. To monitor a different project, open that folder as the workspace or run XiT inside the current workspace.`;
+  } else if (!rules.installed) {
+    recommendation = "Run XiT: Install Workspace AI Rules";
+  } else if (routing.recentHighNoiseCommands > 0 && routing.recentHighNoiseRouted === 0) {
+    recommendation = "High-noise commands are not routed through XiT yet";
+  } else {
+    recommendation = "XiT is active for this workspace";
+  }
 
   return {
     binaryPath: status.binary || binaryPath,
     cliVersion,
     workspacePath,
+    watchedStatePath,
+    watchedHistoryPath,
+    watchedRunsDir: runsDir,
+    stateFileExists,
+    historyFileExists,
+    agentsMdDetected,
+    claudeMdDetected,
     hasRunsDir: fs.existsSync(runsDir),
     currentRunState,
     latestRunTime: latestRun?.timestamp,
+    latestHistoryTimestamp: latestRun?.timestamp,
     latestSavedBytes,
     latestSavedDisplay:
       latestSavedBytes !== undefined

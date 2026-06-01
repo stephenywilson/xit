@@ -325,6 +325,14 @@ async function updateStatusBar(): Promise<void> {
     statusBarItem.text = "吸T神功 · 准备就绪";
   }
 
+  const workspaceRoot = getWorkspacePath() || "unknown";
+  const watchedStatePath = `${workspaceRoot}/.xit/state/current-run.json`;
+  const watchedHistoryPath = `${workspaceRoot}/.xit/history.jsonl`;
+  const currentRunStatus = readCurrentRunState()?.status || "none";
+  const lastUpdateStr = status.refreshedAt
+    ? status.refreshedAt.toLocaleTimeString()
+    : "—";
+
   statusBarItem.tooltip = [
     ...(liveState === "running"
       ? ["正在吸T中", "完成后显示实际节省"]
@@ -345,8 +353,14 @@ async function updateStatusBar(): Promise<void> {
             `降噪率：${Math.round(metrics.reductionPct)}%`,
           ];
         })()),
+    `Workspace: ${workspaceRoot}`,
+    `State: ${watchedStatePath}`,
+    `Current run: ${currentRunStatus}`,
+    latestRun?.timestamp ? `Latest run: ${new Date(latestRun.timestamp).toLocaleString()}` : "Latest run: none",
+    `Rules: ${health.workspaceRulesInstalled ? "installed" : "not installed"}`,
     latestRun?.raw_log ? `raw log：${latestRun.raw_log}` : "",
     status.binary ? `XiT 本体：${status.binary}` : "",
+    `Last update: ${lastUpdateStr}`,
     "本地处理，无遥测，无网络请求",
     "点击打开 XiT Dashboard",
   ]
@@ -561,21 +575,32 @@ async function runDiagnose(): Promise<void> {
   const latestRun = readLatestRun();
   const report = await buildDiagnoseReport(status, latestRun);
   const lines = [
-    "XiT AI Workflow Diagnose",
-    `workspace: ${report.workspacePath}`,
-    `current_run_state: ${report.currentRunState || "none"}`,
-    `binary_path: ${report.binaryPath || "missing"}`,
-    `cli_version: ${report.cliVersion || "unknown"}`,
-    `has_runs_dir: ${report.hasRunsDir ? "yes" : "no"}`,
-    `latest_run_time: ${report.latestRunTime || "none"}`,
-    `latest_saved_bytes: ${report.latestSavedBytes ?? "none"}`,
-    `latest_saved_display: ${report.latestSavedDisplay || "none"}`,
-    `latest_raw_log: ${report.latestRawLogPath || "none"}`,
-    `recent_high_noise_commands: ${report.recentHighNoiseCommands}`,
-    `recent_routed_through_xit: ${report.recentHighNoiseRouted}`,
-    `routing_hit_rate: ${(report.routingHitRate * 100).toFixed(1)}%`,
-    `workspace_rules_installed: ${report.workspaceRulesInstalled ? "yes" : "no"}`,
-    `workspace_rule_files: ${report.workspaceRuleFiles.length > 0 ? report.workspaceRuleFiles.join(", ") : "none"}`,
+    "XiT: Diagnose AI Workflow",
+    "─".repeat(50),
+    `VS Code workspace root:   ${report.workspacePath}`,
+    `Watched XiT state path:   ${report.watchedStatePath}`,
+    `Watched XiT history path: ${report.watchedHistoryPath}`,
+    `Watched runs dir:         ${report.watchedRunsDir}`,
+    `state file exists:        ${report.stateFileExists ? "yes" : "no"}`,
+    `history file exists:      ${report.historyFileExists ? "yes" : "no"}`,
+    `AGENTS.md detected:       ${report.agentsMdDetected ? "yes" : "no"}`,
+    `CLAUDE.md detected:       ${report.claudeMdDetected ? "yes" : "no"}`,
+    "─".repeat(50),
+    `binary_path:              ${report.binaryPath || "missing"}`,
+    `cli_version:              ${report.cliVersion || "unknown"}`,
+    `has_runs_dir:             ${report.hasRunsDir ? "yes" : "no"}`,
+    `latest_current_run_status:${report.currentRunState || "none"}`,
+    `latest_history_timestamp: ${report.latestHistoryTimestamp || "none"}`,
+    `latest_saved_bytes:       ${report.latestSavedBytes ?? "none"}`,
+    `latest_saved_display:     ${report.latestSavedDisplay || "none"}`,
+    `latest_raw_log:           ${report.latestRawLogPath || "none"}`,
+    "─".repeat(50),
+    `recent_agent_events:      ${report.recentHighNoiseCommands} high-noise command(s)`,
+    `recent_xit_auto_runs:     ${report.recentHighNoiseRouted} routed through xit auto`,
+    `routing_hit_rate:         ${(report.routingHitRate * 100).toFixed(1)}%`,
+    `workspace_rules_installed:${report.workspaceRulesInstalled ? "yes" : "no"}`,
+    `workspace_rule_files:     ${report.workspaceRuleFiles.length > 0 ? report.workspaceRuleFiles.join(", ") : "none"}`,
+    "─".repeat(50),
     `recommendation: ${report.recommendation || "none"}`,
   ];
   clearOutput();

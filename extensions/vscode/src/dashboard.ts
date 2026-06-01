@@ -1,3 +1,4 @@
+import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
 import type {
@@ -13,6 +14,7 @@ import {
   readTerminalEvents,
   readLatestRun,
   readCurrentRunState,
+  resolveWorkspaceCwd,
 } from "./xit";
 import {
   computeWorkflowHealth,
@@ -97,6 +99,55 @@ function computeActivityFromEvents(events: AdapterEvent[]): GlobalActivity {
 
 function buildCommandUri(command: string): string {
   return `command:${command}`;
+}
+
+interface WorkspaceWatchInfo {
+  workspaceRoot: string;
+  statePath: string;
+  historyPath: string;
+  stateExists: boolean;
+  historyExists: boolean;
+  hasAnyXitData: boolean;
+}
+
+function getWorkspaceWatchInfo(): WorkspaceWatchInfo {
+  const workspaceRoot = resolveWorkspaceCwd();
+  const statePath = path.join(workspaceRoot, ".xit", "state", "current-run.json");
+  const historyPath = path.join(workspaceRoot, ".xit", "history.jsonl");
+  const runsDir = path.join(workspaceRoot, ".xit", "runs");
+  const stateExists = fs.existsSync(statePath);
+  const historyExists = fs.existsSync(historyPath);
+  const hasAnyXitData = stateExists || historyExists || fs.existsSync(runsDir);
+  return { workspaceRoot, statePath, historyPath, stateExists, historyExists, hasAnyXitData };
+}
+
+function renderWorkspaceWatchBanner(info: WorkspaceWatchInfo): string {
+  const stateLabel = info.stateExists ? "found" : "not found";
+  const historyLabel = info.historyExists ? "found" : "not found";
+  const stateClass = info.stateExists ? "watch-path-ok" : "watch-path-missing";
+  const historyClass = info.historyExists ? "watch-path-ok" : "watch-path-missing";
+
+  const noDataWarning = !info.hasAnyXitData ? `
+    <div class="workspace-no-data">
+      当前工作区没有记录 — No XiT run state found in this workspace.<br>
+      Open the xit project folder or run <code>xit auto &lt;command&gt;</code> inside this workspace.
+    </div>` : "";
+
+  return `
+    <section class="workspace-watch-banner">
+      <div class="workspace-watch-header">Watching workspace</div>
+      <div class="workspace-watch-root mono">${escapeHtml(info.workspaceRoot)}</div>
+      <div class="workspace-watch-paths">
+        <span class="watch-path-item ${stateClass}">
+          State: <span class="mono">.xit/state/current-run.json</span> — ${stateLabel}
+        </span>
+        <span class="watch-path-item ${historyClass}">
+          History: <span class="mono">.xit/history.jsonl</span> — ${historyLabel}
+        </span>
+      </div>
+      ${noDataWarning}
+    </section>
+  `;
 }
 
 function buildStatusMeta(
@@ -342,6 +393,7 @@ function buildDashboardHtml(
       ? formatTokenShort(gainFallbackTokens)
       : "0 Token";
 
+  const workspaceWatchInfo = getWorkspaceWatchInfo();
   const topCommands = tokenImpact.topTokenHeavyCommands;
   const topCommandsPrimary = topCommands.slice(0, 5);
   const topCommandsExtra = topCommands.slice(5);
@@ -393,6 +445,8 @@ function buildDashboardHtml(
       </div>
     </section>
 
+    ${renderWorkspaceWatchBanner(workspaceWatchInfo)}
+
     ${
       hardErrors.length > 0
         ? `<section class="banner warning">${escapeHtml(hardErrors.join(" · "))}</section>`
@@ -407,6 +461,9 @@ function buildDashboardHtml(
         status.state === "binary-not-found" ? "warning" : "accent",
       )}
       ${(() => {
+        if (!workspaceWatchInfo.hasAnyXitData) {
+          return renderSummaryCard("Latest Saved", "—", "当前工作区没有记录", "muted-zero" as const);
+        }
         const savedVal = latestSavedDisplay || "0 Token";
         const isZero = savedVal === "0 Token" || savedVal === "0";
         const tone = isZero ? ("muted-zero" as const) : ("success" as const);
@@ -415,14 +472,14 @@ function buildDashboardHtml(
       })()}
       ${renderSummaryCard(
         "Today Saved",
-        tokenImpact.todaySavedDisplay,
-        "今日累计",
+        workspaceWatchInfo.hasAnyXitData ? tokenImpact.todaySavedDisplay : "—",
+        workspaceWatchInfo.hasAnyXitData ? "今日累计" : "当前工作区没有记录",
         "neutral",
       )}
       ${renderSummaryCard(
         "Workspace Total",
-        workspaceTotalSavedDisplay,
-        "累计节省",
+        workspaceWatchInfo.hasAnyXitData ? workspaceTotalSavedDisplay : "—",
+        workspaceWatchInfo.hasAnyXitData ? "累计节省" : "当前工作区没有记录",
         "neutral",
       )}
     </section>
@@ -461,7 +518,7 @@ function buildDashboardHtml(
           ${renderMetricItem("降噪率", latestReductionDisplay)}
         </div>
       </div>
-      ` : `<p class="empty-state">暂无最近运行 — 运行一次高噪音命令后，这里会显示本次吸T结果。</p>`}
+      ` : `<p class="empty-state">${workspaceWatchInfo.hasAnyXitData ? "暂无最近运行 — 运行一次高噪音命令后，这里会显示本次吸T结果。" : "当前工作区没有记录 — 请在此工作区运行 xit auto 命令，或切换到含有 .xit 数据的工作区。"}</p>`}
     </section>
 
     <section class="panel">

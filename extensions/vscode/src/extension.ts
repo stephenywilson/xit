@@ -142,29 +142,19 @@ function detectAiSurface(): SurfaceResult {
 }
 
 function buildStatusBarText(state: typeof liveState, surface?: SurfaceResult): string {
-  const connectedName = surface?.kind === 'connected' ? surface.name : undefined;
   const recentName = surface?.kind === 'recent' ? surface.name : undefined;
 
   switch (state) {
     case 'no-binary':
       return '吸T神功 · 未找到 XiT';
     case 'running':
-      return connectedName
-        ? `吸T神功 · ${connectedName} · 正在压缩`
-        : '吸T神功 · 正在压缩';
+      return '吸T神功 · 正在压缩';
     case 'missed':
-      return connectedName
-        ? `吸T神功 · ${connectedName} · 本次未触发压缩`
-        : '吸T神功 · 本次未触发压缩';
+      return '吸T神功 · 本次未触发压缩';
     case 'success':
-      return connectedName
-        ? `吸T神功 · ${connectedName} · `
-        : '吸T神功 · ';
+      return '吸T神功 · ';
     case 'idle':
     default:
-      if (connectedName) {
-        return `吸T神功 · 已连接 ${connectedName} · 准备就绪`;
-      }
       if (recentName) {
         return `吸T神功 · 最近 ${recentName} · 准备就绪`;
       }
@@ -208,10 +198,8 @@ async function updateStatusBar(): Promise<void> {
   statusBarItem.text = buildStatusBarText('idle', surface);
 
   const gain = status.gain!;
-  const surfaceLine = surface
-    ? surface.kind === 'connected'
-      ? `已连接 AI: ${surface.name} (从 VS Code UI 元数据检测)`
-      : `最近 AI: ${surface.name} (从 XiT adapter 事件推断)`
+  const surfaceLine = surface?.kind === 'recent'
+    ? `最近 AI: ${surface.name} (从 XiT adapter 事件推断)`
     : '';
 
   const lines = [
@@ -290,9 +278,7 @@ async function updateStatusBarLive(): Promise<void> {
     if (latest) {
       const saved = latest.raw_bytes - latest.summary_bytes;
       const display = saved >= 1000 ? `~${Math.round(saved / 1000)}KB` : `${saved}B`;
-      const connectedName = surface?.kind === 'connected' ? surface.name : undefined;
-      const base = connectedName ? `吸T神功 · ${connectedName}` : '吸T神功';
-      statusBarItem.text = `${base} · 本次省${display}`;
+      statusBarItem.text = `吸T神功 · 本次省${display}`;
     } else {
       statusBarItem.text = buildStatusBarText('idle', surface);
     }

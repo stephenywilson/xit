@@ -33,7 +33,7 @@ async function updateStatusBar(): Promise<void> {
 
   if (!status.available) {
     if (status.state === 'binary-not-found') {
-      statusBarItem.text = 'XiT · not found';
+      statusBarItem.text = '吸T神功 · 未找到 XiT';
     } else if (status.state === 'gain-json-failed') {
       statusBarItem.text = 'XiT · no data';
     } else {
@@ -109,11 +109,11 @@ async function updateStatusBarLive(): Promise<void> {
     return;
   }
   if (liveState === 'no-binary') {
-    statusBarItem.text = 'XiT · binary not found';
+    statusBarItem.text = '吸T神功 · 未找到 XiT';
     return;
   }
   if (liveState === 'running') {
-    statusBarItem.text = '吸T神功 · running';
+    statusBarItem.text = '吸T神功 · 正在压缩';
     return;
   }
   if (liveState === 'missed') {

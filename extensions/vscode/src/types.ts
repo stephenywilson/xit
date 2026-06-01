@@ -60,6 +60,8 @@ export interface LatestRun {
   exit_code: number;
   raw_bytes: number;
   summary_bytes: number;
+  saved_tokens?: number;
+  saved_tokens_display?: string;
   estimated_reduction: number;
   duration_ms: number;
   filter: string;

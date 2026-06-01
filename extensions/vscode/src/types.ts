@@ -34,6 +34,10 @@ export interface AdapterEvent {
   time?: string;
   mode?: string;
   reason?: string;
+  // turn-event fields (kimi turn-events.jsonl)
+  status?: string;
+  session_id?: string;
+  cwd?: string;
 }
 
 export interface GlobalActivity {
@@ -175,6 +179,43 @@ export interface VerifyRoutingReport {
   gemini: AdapterHealthItem;
   cursor: AdapterHealthItem;
   recommendation: string;
+}
+
+export interface TurnState {
+  status: string;
+  event?: string;
+  started_at?: string;
+  finished_at?: string;
+  session_id?: string;
+  cwd?: string;
+}
+
+export type AgentTurnStatus =
+  | "idle"
+  | "working"
+  | "xit_running"
+  | "completed"
+  | "stopped"
+  | "unknown";
+
+export interface AgentTurnView {
+  adapter: "claude" | "codex" | "kimi" | "gemini" | "cursor" | "unknown";
+  status: AgentTurnStatus;
+  latestEvent?: string;
+  startedAt?: string;
+  updatedAt?: string;
+  commandsObserved: number;
+  routedThroughXit: number;
+  savedTokensThisTurn: number;
+  savedTokensDisplay: string;
+  evidence: string[];
+}
+
+export interface AdapterHookInfo {
+  connected: boolean;
+  hasTurnLifecycle: boolean;
+  latestEventTime?: string;
+  eventCount: number;
 }
 
 export interface DiagnoseReport {

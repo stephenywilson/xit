@@ -5,12 +5,16 @@ import { execFile } from "child_process";
 import type {
   AdapterEvent,
   AdapterHealthItem,
+  AdapterHookInfo,
+  AgentTurnView,
+  AgentTurnStatus,
   DiagnoseReport,
   LatestRun,
   CurrentRunState,
   TerminalEventRecord,
   TokenImpactStats,
   TokenMetrics,
+  TurnState,
   VerifyRoutingReport,
   WorkflowHealth,
   XiTStatus,
@@ -19,6 +23,7 @@ import {
   isHighOutputCommand,
   readRecentEvents,
   readTerminalEvents,
+  readTurnState,
   readWorkspaceHistory,
   resolveAvailableBinary,
   readCurrentRunState,
@@ -843,4 +848,154 @@ export function buildVerifyRoutingReport(): VerifyRoutingReport {
     cursor,
     recommendation,
   };
+}
+
+// === Agent Turn Awareness ===
+
+const TURN_WINDOW_MS = 30 * 60 * 1000;
+const FRESH_ACTIVITY_MS = 5 * 60 * 1000;
+
+function isFreshMs(ms: number | undefined): boolean {
+  return ms !== undefined && Date.now() - ms <= FRESH_ACTIVITY_MS;
+}
+
+export function buildAgentTurnView(): AgentTurnView {
+  const workspacePath = resolveWorkspaceCwd();
+  const turnState = readTurnState();
+  const allRuns = readAllWorkspaceRuns();
+  const ADAPTERS = ["claude", "codex", "kimi", "cursor"] as const;
+
+  const adapterEvents = new Map<string, AdapterEvent[]>();
+  for (const adapter of ADAPTERS) {
+    adapterEvents.set(adapter, readRecentEvents(adapter, 50));
+  }
+
+  // Find adapter with most recent event
+  let primaryAdapter: AgentTurnView["adapter"] = "unknown";
+  let mostRecentEventMs: number | undefined;
+  for (const [adapter, events] of adapterEvents) {
+    const latest = events[0];
+    if (!latest?.time) continue;
+    const ms = parseIsoTimeMs(latest.time);
+    if (ms !== undefined && (mostRecentEventMs === undefined || ms > mostRecentEventMs)) {
+      mostRecentEventMs = ms;
+      primaryAdapter = adapter as AgentTurnView["adapter"];
+    }
+  }
+
+  let turnStartMs: number | undefined;
+  let turnStatus: AgentTurnStatus = "idle";
+  let latestEvent: string | undefined;
+  let turnStartedAt: string | undefined;
+  let turnUpdatedAt: string | undefined;
+
+  if (turnState) {
+    // turn.json is written by Kimi hooks — authoritative turn lifecycle
+    primaryAdapter = "kimi";
+    latestEvent = turnState.event;
+    turnStartedAt = turnState.started_at;
+    turnStartMs = parseIsoTimeMs(turnState.started_at);
+    const stateUpdatedMs = parseIsoTimeMs(turnState.finished_at || turnState.started_at);
+    turnUpdatedAt = turnState.finished_at || turnState.started_at;
+
+    if ((turnState.status === "thinking" || turnState.status === "active") && isFreshMs(stateUpdatedMs)) {
+      turnStatus = "working";
+    } else if (turnState.status === "turn_completed" || turnState.status === "turn_stopped") {
+      turnStatus = "completed";
+    } else {
+      turnStatus = "idle";
+    }
+  } else if (mostRecentEventMs !== undefined) {
+    // No turn lifecycle — use 30-min window heuristic
+    turnStartMs = Date.now() - TURN_WINDOW_MS;
+    turnUpdatedAt = new Date(mostRecentEventMs).toISOString();
+    if (isFreshMs(mostRecentEventMs)) {
+      turnStatus = "working";
+    } else if (Date.now() - mostRecentEventMs <= TURN_WINDOW_MS) {
+      turnStatus = "completed";
+    }
+  }
+
+  // Override with xit_running if xit auto is actively running
+  const currentRun = readCurrentRunState();
+  if (currentRun?.status === "running") {
+    const heartbeatMs = parseIsoTimeMs(currentRun.heartbeat_at || currentRun.started_at);
+    if (heartbeatMs !== undefined && Date.now() - heartbeatMs <= 15000) {
+      turnStatus = "xit_running";
+    }
+  }
+
+  // Count commands and xit routes in turn window, filtered by workspace cwd
+  const evidence: string[] = [];
+  let commandsObserved = 0;
+  let routedThroughXit = 0;
+
+  for (const [adapter, events] of adapterEvents) {
+    let countForAdapter = 0;
+    for (const event of events) {
+      if (!event.time || !event.original_command) continue;
+      if (event.cwd && path.resolve(event.cwd) !== path.resolve(workspacePath)) continue;
+      const eventMs = parseIsoTimeMs(event.time);
+      if (eventMs === undefined) continue;
+      if (turnStartMs !== undefined && eventMs < turnStartMs) continue;
+
+      commandsObserved++;
+      countForAdapter++;
+      if (
+        event.action === "reroute" ||
+        /\bxit\s+auto\b/.test(event.recommended_command || "") ||
+        /\bxit\s+auto\b/.test(event.original_command || "")
+      ) {
+        routedThroughXit++;
+      }
+    }
+    const latestForAdapter = events.find(e => e.time && (!e.cwd || path.resolve(e.cwd) === path.resolve(workspacePath)));
+    if (countForAdapter > 0 || latestForAdapter?.time) {
+      evidence.push(`${adapter}: ${countForAdapter} cmd(s)${latestForAdapter?.time ? `, last ${latestForAdapter.time}` : ""}`);
+    }
+  }
+
+  // Saved tokens from history entries within turn window
+  let savedTokensThisTurn = 0;
+  for (const run of allRuns) {
+    if (turnStartMs !== undefined) {
+      const runMs = parseIsoTimeMs(run.timestamp);
+      if (runMs === undefined || runMs < turnStartMs) continue;
+    }
+    const metrics = getTokenMetricsForRun(run);
+    if (metrics) savedTokensThisTurn += metrics.savedTokens;
+  }
+
+  return {
+    adapter: primaryAdapter,
+    status: turnStatus,
+    latestEvent,
+    startedAt: turnStartedAt,
+    updatedAt: turnUpdatedAt,
+    commandsObserved,
+    routedThroughXit,
+    savedTokensThisTurn,
+    savedTokensDisplay: savedTokensThisTurn > 0 ? formatTokenCount(savedTokensThisTurn) : "0 Token",
+    evidence,
+  };
+}
+
+export function getAdapterHookConnectivity(): Record<string, AdapterHookInfo> {
+  const ADAPTERS = ["claude", "codex", "kimi", "cursor"] as const;
+  const result: Record<string, AdapterHookInfo> = {};
+
+  for (const adapter of ADAPTERS) {
+    const events = readRecentEvents(adapter, 5);
+    const hasTurnLifecycle = adapter === "kimi" && events.some(
+      e => e.event === "UserPromptSubmit" || e.event === "Stop" || e.event === "SessionStart"
+    );
+    result[adapter] = {
+      connected: events.length > 0,
+      hasTurnLifecycle,
+      latestEventTime: events[0]?.time,
+      eventCount: events.length,
+    };
+  }
+
+  return result;
 }

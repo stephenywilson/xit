@@ -21,9 +21,11 @@ import {
   writeTerminalEvent,
 } from "./xit";
 import {
+  buildAgentTurnView,
   buildVerifyRoutingReport,
   buildDiagnoseReport,
   computeWorkflowHealth,
+  getAdapterHookConnectivity,
   getTokenMetricsForRun,
   formatSavedTokensForRun,
   installWorkspaceAiRules,
@@ -344,6 +346,26 @@ async function updateStatusBar(): Promise<void> {
     ? status.refreshedAt.toLocaleTimeString()
     : "—";
 
+  // Build turn-aware tooltip lines
+  const agentTurn = buildAgentTurnView();
+  const turnStatusMap: Record<string, string> = {
+    working: "AI 正在工作",
+    xit_running: "正在吸T中",
+    completed: "本轮已完成",
+    stopped: "已停止",
+    idle: "空闲",
+    unknown: "未知",
+  };
+  const turnLines =
+    agentTurn.status !== "idle" || agentTurn.commandsObserved > 0
+      ? [
+          `当前对话：${agentTurn.adapter === "unknown" ? "未知" : agentTurn.adapter}`,
+          `Turn 状态：${turnStatusMap[agentTurn.status] || agentTurn.status}`,
+          `本轮命令：${agentTurn.commandsObserved} 个，路由 XiT：${agentTurn.routedThroughXit}`,
+          agentTurn.savedTokensThisTurn > 0 ? `本轮节省：${agentTurn.savedTokensDisplay}` : "",
+        ].filter(Boolean)
+      : [];
+
   statusBarItem.tooltip = [
     ...(liveState === "running"
       ? ["正在吸T中", "完成后显示实际节省"]
@@ -364,6 +386,7 @@ async function updateStatusBar(): Promise<void> {
             `降噪率：${Math.round(metrics.reductionPct)}%`,
           ];
         })()),
+    ...(turnLines.length > 0 ? ["─".repeat(20), ...turnLines] : []),
     `Workspace: ${workspaceRoot}`,
     `State: ${watchedStatePath}`,
     `Current run: ${currentRunStatus}`,
@@ -585,6 +608,27 @@ async function runDiagnose(): Promise<void> {
   const status = await fetchStatus();
   const latestRun = readLatestRun();
   const report = await buildDiagnoseReport(status, latestRun);
+  const hookConnectivity = getAdapterHookConnectivity();
+  const agentTurn = buildAgentTurnView();
+
+  const hookLines = Object.entries(hookConnectivity).map(([adapter, info]) => {
+    const hookType = info.hasTurnLifecycle
+      ? "turn lifecycle (UserPromptSubmit/Stop)"
+      : info.connected
+        ? "command routing only (PreToolUse)"
+        : "not connected";
+    const detail = info.connected && info.latestEventTime
+      ? `${info.eventCount} events, last ${info.latestEventTime}`
+      : "no events";
+    return `  ${adapter.padEnd(10)}: ${hookType} — ${detail}`;
+  });
+
+  const cannotReadChatNote = [
+    "  NOTE: VS Code extension cannot read Claude/Codex/Gemini chat content.",
+    "  Only local hook metadata (command routing, turn lifecycle) is used.",
+    "  Claude Code panel activity requires Claude hooks to record local turn metadata.",
+  ];
+
   const lines = [
     "XiT: Diagnose AI Workflow",
     "─".repeat(50),
@@ -611,6 +655,20 @@ async function runDiagnose(): Promise<void> {
     `routing_hit_rate:         ${(report.routingHitRate * 100).toFixed(1)}%`,
     `workspace_rules_installed:${report.workspaceRulesInstalled ? "yes" : "no"}`,
     `workspace_rule_files:     ${report.workspaceRuleFiles.length > 0 ? report.workspaceRuleFiles.join(", ") : "none"}`,
+    "─".repeat(50),
+    "Agent conversation hooks:",
+    ...hookLines,
+    ...cannotReadChatNote,
+    "─".repeat(50),
+    "Latest agent turn:",
+    `  adapter:            ${agentTurn.adapter}`,
+    `  turn status:        ${agentTurn.status}`,
+    `  latest event:       ${agentTurn.latestEvent || "none"}`,
+    `  commands observed:  ${agentTurn.commandsObserved}`,
+    `  routed through XiT: ${agentTurn.routedThroughXit}`,
+    `  saved this turn:    ${agentTurn.savedTokensDisplay}`,
+    `  evidence:`,
+    ...agentTurn.evidence.map(e => `    ${e}`),
     "─".repeat(50),
     `recommendation: ${report.recommendation || "none"}`,
   ];

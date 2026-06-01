@@ -11,6 +11,7 @@ import type {
   LatestRun,
   LatestRawLogMeta,
   CurrentRunState,
+  TurnState,
 } from "./types";
 
 const OUTPUT_CHANNEL = vscode.window.createOutputChannel("XiT Status");
@@ -438,6 +439,28 @@ export function readCurrentRunState(): CurrentRunState | undefined {
     }
   }
   return undefined;
+}
+
+export function readTurnState(): TurnState | undefined {
+  const folders = vscode.workspace.workspaceFolders;
+  if (!folders || folders.length === 0) {
+    return undefined;
+  }
+  const workspacePath = folders[0].uri.fsPath;
+  const turnPath = path.join(workspacePath, ".xit", "state", "turn.json");
+  try {
+    if (!fs.existsSync(turnPath)) {
+      return undefined;
+    }
+    const obj = JSON.parse(fs.readFileSync(turnPath, "utf-8")) as TurnState;
+    // Only return if the turn belongs to this workspace
+    if (obj.cwd && path.resolve(obj.cwd) !== path.resolve(workspacePath)) {
+      return undefined;
+    }
+    return obj;
+  } catch {
+    return undefined;
+  }
 }
 
 export async function openLatestRawLog(): Promise<void> {

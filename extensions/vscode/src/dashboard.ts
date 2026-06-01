@@ -4,6 +4,7 @@ import * as vscode from "vscode";
 import type {
   AdapterEvent,
   AdapterHealthItem,
+  AgentTurnView,
   CurrentRunState,
   GlobalActivity,
   LatestRun,
@@ -18,9 +19,11 @@ import {
   resolveWorkspaceCwd,
 } from "./xit";
 import {
+  buildAgentTurnView,
   computeWorkflowHealth,
   formatSavedTokensForRun,
   getAiAdapterHealth,
+  getAdapterHookConnectivity,
   getTokenImpactStats,
   readAllWorkspaceRuns,
 } from "./workflow";
@@ -347,6 +350,84 @@ function renderTerminalRows(
     .join("");
 }
 
+function agentTurnStatusLabel(status: AgentTurnView["status"]): string {
+  switch (status) {
+    case "working": return "AI 正在工作";
+    case "xit_running": return "正在吸T中";
+    case "completed": return "本轮已完成";
+    case "stopped": return "已停止";
+    case "idle": return "空闲";
+    default: return "未知";
+  }
+}
+
+function agentTurnStatusTone(status: AgentTurnView["status"]): string {
+  switch (status) {
+    case "working": return "running";
+    case "xit_running": return "running";
+    case "completed": return "success";
+    case "stopped": return "warning";
+    default: return "idle";
+  }
+}
+
+function renderAgentTurnSection(turn: AgentTurnView, hasAnyXitData: boolean): string {
+  if (!hasAnyXitData || (turn.status === "idle" && turn.commandsObserved === 0)) {
+    return `<p class="empty-state">当前 workspace 暂无 agent turn 记录 — 已安装 workspace rules 后，让 Claude/Codex 正常执行一次任务即可生成记录</p>`;
+  }
+
+  const tone = agentTurnStatusTone(turn.status);
+  const statusLabel = agentTurnStatusLabel(turn.status);
+  const adapterLabel = turn.adapter === "unknown" ? "—" : turn.adapter;
+  const updatedLabel = turn.updatedAt ? new Date(turn.updatedAt).toLocaleTimeString() : "—";
+  const startedLabel = turn.startedAt ? new Date(turn.startedAt).toLocaleTimeString() : "—";
+  const hasTurnLifecycle = turn.adapter === "kimi";
+
+  return `
+    <div class="agent-turn-card">
+      <div class="agent-turn-header">
+        <div class="agent-turn-adapter">${escapeHtml(adapterLabel.toUpperCase())}</div>
+        <span class="status-pill ${escapeHtml(tone)}">${escapeHtml(statusLabel)}</span>
+        ${!hasTurnLifecycle ? `<span class="turn-no-lifecycle" title="仅有命令路由事件，无 UserPromptSubmit/Stop lifecycle">命令路由模式</span>` : ""}
+      </div>
+      <div class="agent-turn-metrics">
+        <div class="metric-tile">
+          <div class="metric-label">本轮命令</div>
+          <div class="metric-value">${turn.commandsObserved}</div>
+        </div>
+        <div class="metric-tile">
+          <div class="metric-label">路由 XiT</div>
+          <div class="metric-value">${turn.routedThroughXit} / ${turn.commandsObserved}</div>
+        </div>
+        <div class="metric-tile ${turn.savedTokensThisTurn > 0 ? "highlight" : ""}">
+          <div class="metric-label">本轮节省</div>
+          <div class="metric-value">${escapeHtml(turn.savedTokensDisplay)}</div>
+        </div>
+        <div class="metric-tile">
+          <div class="metric-label">最近更新</div>
+          <div class="metric-value">${escapeHtml(updatedLabel)}</div>
+        </div>
+      </div>
+      ${turn.latestEvent ? `
+      <div class="kv-row">
+        <span class="kv-label">Latest event</span>
+        <span class="kv-value">${escapeHtml(turn.latestEvent)}</span>
+      </div>` : ""}
+      ${turn.startedAt ? `
+      <div class="kv-row">
+        <span class="kv-label">Turn started</span>
+        <span class="kv-value">${escapeHtml(startedLabel)}</span>
+      </div>` : ""}
+    </div>
+    ${!hasTurnLifecycle ? `
+    <p class="turn-note">
+      ${escapeHtml(adapterLabel)} conversation hooks: 命令路由模式（PreToolUse 级别）。
+      无 UserPromptSubmit / Stop lifecycle 记录。
+      Kimi hooks 有完整 turn lifecycle；Claude/Codex/Cursor 仅记录命令路由事件。
+    </p>` : ""}
+  `;
+}
+
 function buildDashboardHtml(
   status: XiTStatus,
   events: AdapterEvent[],
@@ -367,6 +448,8 @@ function buildDashboardHtml(
   const adapterHealth = getAiAdapterHealth();
   const currentRunState = readCurrentRunState();
   const statusMeta = buildStatusMeta(status, latestRun);
+  const agentTurn = buildAgentTurnView();
+  const hookConnectivity = getAdapterHookConnectivity();
 
   // Only treat current-run.json as active when it is freshly running (status=running + heartbeat ≤15s).
   // Any stale completed state — even one with raw_bytes>0 — must not override history.jsonl.
@@ -519,6 +602,14 @@ function buildDashboardHtml(
         workspaceWatchInfo.hasAnyXitData ? "累计节省" : "当前工作区没有记录",
         "neutral",
       )}
+    </section>
+
+    <section class="panel">
+      <div class="section-heading">
+        <h2>Current Agent Turn</h2>
+        <span class="section-note">AI 对话轮次感知（基于本地 hook 事件，不读取聊天内容）</span>
+      </div>
+      ${renderAgentTurnSection(agentTurn, workspaceWatchInfo.hasAnyXitData)}
     </section>
 
     <section class="panel">
@@ -765,6 +856,25 @@ function buildDashboardHtml(
                 .map(([adapter, count]) => renderKeyValueRow(adapter, String(count)))
                 .join("")
             : '<p class="empty-state">No adapter counts recorded.</p>'}
+        </div>
+
+        <div class="debug-card">
+          <h3>Agent Conversation Hooks</h3>
+          ${Object.entries(hookConnectivity).map(([adapter, info]) => {
+            const hookStatus = info.connected
+              ? (info.hasTurnLifecycle ? "connected (turn lifecycle)" : "connected (command routing only)")
+              : "not connected";
+            const detail = info.connected && info.latestEventTime
+              ? `${info.eventCount} events, last ${info.latestEventTime}`
+              : "no events";
+            return renderKeyValueRow(adapter, `${hookStatus} — ${detail}`);
+          }).join("")}
+          <div class="kv-row" style="margin-top:6px">
+            <span class="kv-value" style="font-size:0.75rem;opacity:0.6">
+              VS Code extension 不读取聊天内容，只使用本地 hook metadata。
+              Claude/Codex/Cursor = 命令路由; Kimi = 完整 turn lifecycle。
+            </span>
+          </div>
         </div>
 
         <div class="debug-card full-span">

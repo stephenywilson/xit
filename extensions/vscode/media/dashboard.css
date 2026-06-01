@@ -422,6 +422,52 @@ tbody tr:hover {
   padding: 14px 16px;
 }
 
+/* Agent Turn Section */
+.agent-turn-card {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.agent-turn-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.agent-turn-adapter {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  text-transform: uppercase;
+}
+
+.turn-no-lifecycle {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.agent-turn-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.turn-note {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin: 6px 0 0;
+  line-height: 1.5;
+}
+
 .metrics-grid {
   display: grid;
   gap: 10px;

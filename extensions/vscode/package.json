@@ -1,8 +1,8 @@
 {
   "name": "xit-vscode",
-  "displayName": "XiT Status",
-  "description": "Active XiT command runner, status dashboard, and terminal listener for VS Code and Cursor.",
-  "version": "0.0.3",
+  "displayName": "XiT Token Saver",
+  "description": "Save AI coding tokens by compressing noisy terminal output for Claude Code, Codex, Cursor, and VS Code workflows.",
+  "version": "0.0.4",
   "publisher": "XiT",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -20,8 +20,11 @@
   ],
   "keywords": [
     "xit",
+    "token",
     "ai",
-    "cli",
+    "claude",
+    "codex",
+    "cursor",
     "terminal",
     "compression"
   ],

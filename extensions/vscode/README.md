@@ -39,7 +39,7 @@ npm install -g xitsg
 | `XiT: Run Command`                | 检测命令是否高输出，如果是则用 `xit auto` 运行                                     |
 | `XiT: Run with Auto Compression`  | 始终用 `xit auto` 运行命令                                                         |
 | `XiT: Open XiT Terminal`          | 打开名为 "XiT" 的专用终端                                                          |
-| `XiT: Open Dashboard`             | 显示最近运行记录、Workflow Health、累计节省、活动日志                              |
+| `XiT: Open Dashboard`             | 打开产品化 Dashboard，首屏展示状态、Latest Saved、Today Saved、Workspace Total、Adapter Health |
 | `XiT: Refresh`                    | 刷新状态栏                                                                         |
 | `XiT: Show Gain`                  | 弹出累计节省摘要                                                                   |
 | `XiT: Open Latest Raw Log`        | 打开工作区 `.xit/runs/` 中最新的原始日志                                           |
@@ -63,6 +63,19 @@ npm install -g xitsg
 鼠标悬停在状态栏上可查看更多信息，包括最近一次吸T节省、原始日志路径，以及当前工作区是否处于守护状态。运行中主状态栏只显示“正在吸T中”；任何当前输出估算都不会在主状态栏里冒充实际节省结果。
 
 XiT CLI 在运行 `xit auto` 时还会把当前 active run 写到工作区 `.xit/state/current-run.json`（兼容保留 `.xit/state/current.json`）。扩展优先监听这个 state 文件来感知 running / completed 状态，再用 `.xit/history.jsonl` 做完成态与历史回放兜底。
+
+## Dashboard 0.0.16
+
+新版 Dashboard 从调试文本墙重构为产品化深色看板，默认首屏直接显示：
+
+- Current Status
+- Latest Saved
+- Today Saved
+- Workspace Total
+- AI Adapter Health 卡片
+- Top Token-Heavy Commands 表格
+
+调试信息如 binary path、workspace cwd、attempted paths、raw log full path、VS Code terminal events 已移入默认折叠的 `Advanced / Debug` 区域。
 
 **边界说明：** 吸T神功**不会读取** AI 聊天内容，也不会读取私有 Webview。它通过本地命令输出、workspace 规则和 `.xit` 运行记录帮助 AI coding workflow 降噪。
 

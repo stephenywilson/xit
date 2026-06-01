@@ -350,21 +350,35 @@ export function getAiAdapterHealth(): AdapterHealthItem[] {
   return [
     {
       adapter: "Codex",
-      status: codexFiles.length > 0 ? "rules installed" : "not verified",
+      status:
+        codexFiles.length > 0
+          ? codexRouting.highNoiseRouted > 0
+            ? "verified"
+            : "rules installed"
+          : "not verified",
       evidence:
         codexFiles.length > 0
           ? `${path.basename(codexFiles[0])} contains XIT_AI_RULES section; Codex routed ${codexRouting.highNoiseRouted}/${codexRouting.highNoiseObserved} recent high-noise commands through XiT`
           : "No AGENTS.md or .codex rule file with XIT_AI_RULES detected.",
       ruleFiles: codexFiles,
+      routedCount: codexRouting.highNoiseRouted,
+      observedCount: codexRouting.highNoiseObserved,
     },
     {
       adapter: "Claude",
-      status: claudeFiles.length > 0 ? "rules installed" : "not verified",
+      status:
+        claudeFiles.length > 0
+          ? claudeRouting.highNoiseRouted > 0
+            ? "verified"
+            : "rules installed"
+          : "not verified",
       evidence:
         claudeFiles.length > 0
           ? `${path.basename(claudeFiles[0])} contains XIT_AI_RULES section; Claude routed ${claudeRouting.highNoiseRouted}/${claudeRouting.highNoiseObserved} recent high-noise commands through XiT`
           : "No CLAUDE.md with XIT_AI_RULES detected.",
       ruleFiles: claudeFiles,
+      routedCount: claudeRouting.highNoiseRouted,
+      observedCount: claudeRouting.highNoiseObserved,
     },
     {
       adapter: "Gemini",
@@ -377,12 +391,19 @@ export function getAiAdapterHealth(): AdapterHealthItem[] {
     },
     {
       adapter: "Cursor",
-      status: cursorFiles.length > 0 ? "rules installed" : "not verified",
+      status:
+        cursorFiles.length > 0
+          ? cursorRouting.highNoiseRouted > 0
+            ? "verified"
+            : "rules installed"
+          : "not verified",
       evidence:
         cursorFiles.length > 0
           ? `${path.basename(cursorFiles[0])} contains XIT_AI_RULES section; Cursor routed ${cursorRouting.highNoiseRouted}/${cursorRouting.highNoiseObserved} recent high-noise commands through XiT`
           : "No .cursor/rules file with XIT_AI_RULES detected.",
       ruleFiles: cursorFiles,
+      routedCount: cursorRouting.highNoiseRouted,
+      observedCount: cursorRouting.highNoiseObserved,
     },
   ];
 }
@@ -702,7 +723,7 @@ export function getTokenImpactStats(
 
   const topTokenHeavyCommands = [...byCommand.entries()]
     .sort((a, b) => b[1].savedTokens - a[1].savedTokens)
-    .slice(0, 5)
+    .slice(0, 10)
     .map(([command, entry]) => ({
       command,
       runs: entry.runs,

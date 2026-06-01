@@ -1,8 +1,8 @@
 {
   "name": "xit-vscode",
-  "displayName": "XiT Token Saver",
-  "description": "Save tokens and improve AI coding accuracy by compressing noisy terminal output for Claude Code, Codex, Cursor, Gemini Code Assist, and VS Code workflows.",
-  "version": "0.0.4",
+  "displayName": "吸T神功（XiT）",
+  "description": "帮你给 Claude、Codex、Gemini、Cursor 等 AI 编程助手省 token、减少噪音、提升命中率。",
+  "version": "0.0.5",
   "publisher": "XiT",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -88,7 +88,7 @@
         "xit.binaryPath": {
           "type": "string",
           "default": "",
-          "description": "Path to the xit binary. If empty, XiT Status tries PATH, ~/.local/bin/xit, then workspace ./xit."
+          "description": "Path to the xit binary. If empty, XiT tries PATH, ~/.local/bin/xit, then workspace ./xit."
         },
         "xit.home": {
           "type": "string",

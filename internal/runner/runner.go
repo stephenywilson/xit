@@ -27,6 +27,7 @@ type XitHome struct {
 func (h *XitHome) Ensure() error {
 	dirs := []string{
 		filepath.Join(h.Path, "runs"),
+		filepath.Join(h.Path, "state"),
 	}
 	for _, d := range dirs {
 		if err := os.MkdirAll(d, 0755); err != nil {
@@ -36,11 +37,15 @@ func (h *XitHome) Ensure() error {
 	return nil
 }
 
-func (h *XitHome) SaveRaw(args []string, r *Result) error {
-	ts := util.TimestampSlug()
-	slug := util.CommandSlug(args)
-	fname := fmt.Sprintf("%s-%s.raw.log", ts, slug)
-	path := filepath.Join(h.Path, "runs", fname)
+func (h *XitHome) RawLogPathFor(args []string, ts string) string {
+	fname := fmt.Sprintf("%s-%s.raw.log", ts, util.CommandSlug(args))
+	return filepath.Join(h.Path, "runs", fname)
+}
+
+func (h *XitHome) SaveRawAt(path string, args []string, r *Result) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
 
 	var b bytes.Buffer
 	b.WriteString(fmt.Sprintf("# command: %s\n", strings.Join(args, " ")))
@@ -57,6 +62,11 @@ func (h *XitHome) SaveRaw(args []string, r *Result) error {
 	}
 	r.RawLogPath = path
 	return nil
+}
+
+func (h *XitHome) SaveRaw(args []string, r *Result) error {
+	ts := util.TimestampSlug()
+	return h.SaveRawAt(h.RawLogPathFor(args, ts), args, r)
 }
 
 func Run(args []string) (*Result, error) {

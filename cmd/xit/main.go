@@ -10,31 +10,33 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/stephenywilson/xit/internal/aiderrulesinstall"
 	"github.com/stephenywilson/xit/internal/autoshim"
 	"github.com/stephenywilson/xit/internal/autostate"
 	"github.com/stephenywilson/xit/internal/claudehook"
 	"github.com/stephenywilson/xit/internal/codexhook"
-	"github.com/stephenywilson/xit/internal/cursorhook"
 	"github.com/stephenywilson/xit/internal/config"
+	"github.com/stephenywilson/xit/internal/cursorhook"
 	"github.com/stephenywilson/xit/internal/doctor"
 	"github.com/stephenywilson/xit/internal/filters"
 	"github.com/stephenywilson/xit/internal/history"
 	"github.com/stephenywilson/xit/internal/hitrate"
 	"github.com/stephenywilson/xit/internal/impact"
 	"github.com/stephenywilson/xit/internal/integrations"
-	"github.com/stephenywilson/xit/internal/aiderrulesinstall"
 	"github.com/stephenywilson/xit/internal/kimihook"
 	"github.com/stephenywilson/xit/internal/kimirulesinstall"
 	"github.com/stephenywilson/xit/internal/kimistatus"
+	"github.com/stephenywilson/xit/internal/output"
 	"github.com/stephenywilson/xit/internal/runner"
 	"github.com/stephenywilson/xit/internal/session"
 	"github.com/stephenywilson/xit/internal/shim"
 	"os/exec"
 )
 
-const version = "0.2.43"
+const version = "0.2.44"
 
 func main() {
 	mode, rest := parseArgs(os.Args[1:])
@@ -518,13 +520,13 @@ func cmdGain(args []string) error {
 
 func buildGainJSON(home string, g *history.Gain, warnings []string) ([]byte, error) {
 	type cmdJSON struct {
-		Command            string  `json:"command"`
-		Runs               int     `json:"runs"`
-		RawBytes           int     `json:"raw_bytes"`
-		SummaryBytes       int     `json:"summary_bytes"`
-		SavedBytes         int     `json:"saved_bytes"`
-		SavedTokens        int     `json:"saved_tokens"`
-		SavedTokensDisplay string  `json:"saved_tokens_display"`
+		Command            string `json:"command"`
+		Runs               int    `json:"runs"`
+		RawBytes           int    `json:"raw_bytes"`
+		SummaryBytes       int    `json:"summary_bytes"`
+		SavedBytes         int    `json:"saved_bytes"`
+		SavedTokens        int    `json:"saved_tokens"`
+		SavedTokensDisplay string `json:"saved_tokens_display"`
 	}
 	out := struct {
 		TotalCommandsCondensed int       `json:"total_commands_condensed"`
@@ -1042,6 +1044,13 @@ func cmdConfig() error {
 	return nil
 }
 
+func autoStatePaths(home string) []string {
+	return []string{
+		filepath.Join(home, "state", "current-run.json"),
+		filepath.Join(home, "state", "current.json"),
+	}
+}
+
 func writeAutoState(statePath string, state map[string]interface{}) {
 	data, err := json.Marshal(state)
 	if err != nil {
@@ -1049,7 +1058,53 @@ func writeAutoState(statePath string, state map[string]interface{}) {
 	}
 	dir := filepath.Dir(statePath)
 	_ = os.MkdirAll(dir, 0755)
-	_ = os.WriteFile(statePath, data, 0644)
+	tmpPath := statePath + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+		return
+	}
+	_ = os.Rename(tmpPath, statePath)
+}
+
+func writeAutoStateFiles(home string, state map[string]interface{}) {
+	for _, statePath := range autoStatePaths(home) {
+		writeAutoState(statePath, state)
+	}
+}
+
+func buildAutoRenderedSummary(summary *output.Summary, rawBytes int, summaryBytes int, savedBytes int) string {
+	var b strings.Builder
+	b.WriteString("吸T完成\n\n")
+	b.WriteString(fmt.Sprintf("command: %s\n", summary.Command))
+	b.WriteString(fmt.Sprintf("exit_code: %d\n", summary.ExitCode))
+	b.WriteString(fmt.Sprintf("原始输出: %s\n", formatTokenCount(rawBytes/4)))
+	b.WriteString(fmt.Sprintf("吸后摘要: %s\n", formatTokenCount(summaryBytes/4)))
+	b.WriteString(fmt.Sprintf("本次节省: %s\n", formatTokenCount(savedBytes/4)))
+	b.WriteString(fmt.Sprintf("降噪率: %.0f%%\n", summary.EstimatedReduction*100))
+	b.WriteString(fmt.Sprintf("raw_log: %s\n", summary.RawLogPath))
+	b.WriteString("\nkey_facts:\n")
+
+	if len(summary.KeyFacts) > 0 {
+		keys := make([]string, 0, len(summary.KeyFacts))
+		for k := range summary.KeyFacts {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			b.WriteString(fmt.Sprintf("- %v\n", summary.KeyFacts[k]))
+		}
+	} else if len(summary.BodyLines) > 0 {
+		for _, line := range summary.BodyLines {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			b.WriteString(fmt.Sprintf("- %s\n", line))
+		}
+	} else {
+		b.WriteString("- 已生成本地摘要\n")
+	}
+
+	return b.String()
 }
 
 func cmdAuto(args []string) error {
@@ -1061,43 +1116,89 @@ func cmdAuto(args []string) error {
 
 	// State file setup (fail-open).
 	home := xitHome()
-	statePath := filepath.Join(home, "state", "current.json")
 	cmdStr := strings.Join(append([]string{tool}, toolArgs...), " ")
-	startedAt := time.Now().UTC().Format(time.RFC3339)
-
-	writeAutoState(statePath, map[string]interface{}{
-		"status":      "running",
-		"command":     cmdStr,
-		"started_at":  startedAt,
-		"pid":         os.Getpid(),
-	})
+	startTime := time.Now().UTC()
+	startedAt := startTime.Format(time.RFC3339)
 
 	// Find original binary path, avoiding recursion.
 	origPath := autoshim.ResolveOriginal(tool)
 	if origPath == "" {
-		writeAutoState(statePath, map[string]interface{}{
-			"status":       "failed",
-			"command":      cmdStr,
-			"exit_code":    -1,
-			"saved_bytes":  0,
-			"raw_log":      "",
-			"finished_at":  time.Now().UTC().Format(time.RFC3339),
+		writeAutoStateFiles(home, map[string]interface{}{
+			"schema_version": 1,
+			"status":         "failed",
+			"command":        cmdStr,
+			"started_at":     startedAt,
+			"heartbeat_at":   time.Now().UTC().Format(time.RFC3339),
+			"completed_at":   time.Now().UTC().Format(time.RFC3339),
+			"finished_at":    time.Now().UTC().Format(time.RFC3339),
+			"exit_code":      -1,
+			"saved_bytes":    0,
+			"raw_log":        "",
 		})
 		return fmt.Errorf("cannot find original %s path", tool)
 	}
 
 	// Build the actual command to run.
 	actualArgs := append([]string{origPath}, toolArgs...)
+	xh := &runner.XitHome{Path: home}
+	_ = xh.Ensure()
+	rawLogPath := xh.RawLogPathFor(actualArgs, time.Now().UTC().Format("20060102-150405-000"))
+	baseRunningState := map[string]interface{}{
+		"schema_version": 1,
+		"status":         "running",
+		"command":        cmdStr,
+		"started_at":     startedAt,
+		"heartbeat_at":   startedAt,
+		"pid":            os.Getpid(),
+		"raw_log":        rawLogPath,
+	}
+	writeAutoStateFiles(home, baseRunningState)
+
+	stopHeartbeat := make(chan struct{})
+	var heartbeatWG sync.WaitGroup
+	heartbeatWG.Add(1)
+	go func() {
+		defer heartbeatWG.Done()
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				runningState := map[string]interface{}{
+					"schema_version": 1,
+					"status":         "running",
+					"command":        cmdStr,
+					"started_at":     startedAt,
+					"heartbeat_at":   time.Now().UTC().Format(time.RFC3339),
+					"pid":            os.Getpid(),
+					"raw_log":        rawLogPath,
+				}
+				writeAutoStateFiles(home, runningState)
+			case <-stopHeartbeat:
+				return
+			}
+		}
+	}()
+	defer func() {
+		close(stopHeartbeat)
+		heartbeatWG.Wait()
+	}()
+
 	res, err := runner.Run(actualArgs)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "xit: auto run error:", err)
-		writeAutoState(statePath, map[string]interface{}{
-			"status":       "failed",
-			"command":      cmdStr,
-			"exit_code":    -1,
-			"saved_bytes":  0,
-			"raw_log":      "",
-			"finished_at":  time.Now().UTC().Format(time.RFC3339),
+		now := time.Now().UTC().Format(time.RFC3339)
+		writeAutoStateFiles(home, map[string]interface{}{
+			"schema_version": 1,
+			"status":         "failed",
+			"command":        cmdStr,
+			"started_at":     startedAt,
+			"heartbeat_at":   now,
+			"completed_at":   now,
+			"finished_at":    now,
+			"exit_code":      -1,
+			"saved_bytes":    0,
+			"raw_log":        rawLogPath,
 		})
 		return err
 	}
@@ -1110,21 +1211,30 @@ func cmdAuto(args []string) error {
 		// Passthrough: print raw stdout/stderr exactly as-is.
 		os.Stdout.Write(res.Stdout)
 		os.Stderr.Write(res.Stderr)
-		writeAutoState(statePath, map[string]interface{}{
-			"status":       "completed",
-			"command":      cmdStr,
-			"exit_code":    res.ExitCode,
-			"saved_bytes":  0,
-			"raw_log":      res.RawLogPath,
-			"finished_at":  time.Now().UTC().Format(time.RFC3339),
+		now := time.Now().UTC().Format(time.RFC3339)
+		writeAutoStateFiles(home, map[string]interface{}{
+			"schema_version":       1,
+			"status":               "completed",
+			"command":              cmdStr,
+			"started_at":           startedAt,
+			"heartbeat_at":         now,
+			"completed_at":         now,
+			"finished_at":          now,
+			"exit_code":            res.ExitCode,
+			"raw_bytes":            rawBytes,
+			"summary_bytes":        rawBytes,
+			"saved_bytes":          0,
+			"saved_tokens":         0,
+			"saved_tokens_display": "0",
+			"estimated_reduction":  0,
+			"raw_log":              rawLogPath,
 		})
 		return nil
 	}
 
 	// Compression path.
-	xh := &runner.XitHome{Path: home}
-	_ = xh.Ensure()
-	_ = xh.SaveRaw(actualArgs, res)
+	res.RawLogPath = rawLogPath
+	_ = xh.SaveRawAt(rawLogPath, actualArgs, res)
 
 	disp := filters.NewDispatcher()
 	summary, err := disp.Dispatch(actualArgs, res)
@@ -1132,44 +1242,67 @@ func cmdAuto(args []string) error {
 		fmt.Fprintln(os.Stderr, "xit: auto filter error:", err)
 		os.Stdout.Write(res.Stdout)
 		os.Stderr.Write(res.Stderr)
-		writeAutoState(statePath, map[string]interface{}{
-			"status":       "completed",
-			"command":      cmdStr,
-			"exit_code":    res.ExitCode,
-			"saved_bytes":  0,
-			"raw_log":      res.RawLogPath,
-			"finished_at":  time.Now().UTC().Format(time.RFC3339),
+		now := time.Now().UTC().Format(time.RFC3339)
+		writeAutoStateFiles(home, map[string]interface{}{
+			"schema_version":       1,
+			"status":               "completed",
+			"command":              cmdStr,
+			"started_at":           startedAt,
+			"heartbeat_at":         now,
+			"completed_at":         now,
+			"finished_at":          now,
+			"exit_code":            res.ExitCode,
+			"raw_bytes":            rawBytes,
+			"summary_bytes":        rawBytes,
+			"saved_bytes":          0,
+			"saved_tokens":         0,
+			"saved_tokens_display": "0",
+			"estimated_reduction":  0,
+			"raw_log":              res.RawLogPath,
 		})
 		return nil
 	}
 
-	savedBytes := rawBytes - len([]byte(summary.Render("human")))
+	summary.Command = cmdStr
+	summary.RawLogPath = res.RawLogPath
+	autoPreview := buildAutoRenderedSummary(summary, rawBytes, len([]byte(summary.Render("agent"))), 0)
+	summaryBytes := len([]byte(autoPreview))
+	savedBytes := rawBytes - summaryBytes
+	if savedBytes < 0 {
+		savedBytes = 0
+	}
+	rendered := buildAutoRenderedSummary(summary, rawBytes, summaryBytes, savedBytes)
+	summaryBytes = len([]byte(rendered))
+	savedBytes = rawBytes - summaryBytes
 	if savedBytes < 0 {
 		savedBytes = 0
 	}
 
-	// Render auto summary.
-	fmt.Println("XiT Auto Summary")
-	fmt.Printf("command: %s %s\n", tool, strings.Join(toolArgs, " "))
-	fmt.Printf("exit_code: %d\n", res.ExitCode)
-	fmt.Printf("estimated_reduction: %.0f%%\n", summary.EstimatedReduction*100)
-	fmt.Printf("saved_tokens: ~%s\n", formatTokenCount(savedBytes/4))
-	fmt.Printf("raw_log: %s\n", res.RawLogPath)
-	fmt.Println()
-	fmt.Print(summary.Render("agent"))
+	// Render auto summary with product wording but stable fields.
+	fmt.Print(rendered)
 
 	// Write history.
-	_ = disp.WriteHistory(home, actualArgs, res, summary)
+	_ = disp.WriteHistoryWithSummaryBytes(home, actualArgs, res, summary, summaryBytes)
 	if sessionDir := os.Getenv("XIT_SESSION_DIR"); sessionDir != "" {
-		_ = disp.WriteHistory(sessionDir, actualArgs, res, summary)
+		_ = disp.WriteHistoryWithSummaryBytes(sessionDir, actualArgs, res, summary, summaryBytes)
 	}
-	writeAutoState(statePath, map[string]interface{}{
-		"status":       "completed",
-		"command":      cmdStr,
-		"exit_code":    res.ExitCode,
-		"saved_bytes":  savedBytes,
-		"raw_log":      res.RawLogPath,
-		"finished_at":  time.Now().UTC().Format(time.RFC3339),
+	now := time.Now().UTC().Format(time.RFC3339)
+	writeAutoStateFiles(home, map[string]interface{}{
+		"schema_version":       1,
+		"status":               "completed",
+		"command":              cmdStr,
+		"started_at":           startedAt,
+		"heartbeat_at":         now,
+		"completed_at":         now,
+		"finished_at":          now,
+		"exit_code":            res.ExitCode,
+		"raw_bytes":            rawBytes,
+		"summary_bytes":        summaryBytes,
+		"saved_bytes":          savedBytes,
+		"saved_tokens":         savedBytes / 4,
+		"saved_tokens_display": formatTokenCount(savedBytes / 4),
+		"estimated_reduction":  summary.EstimatedReduction,
+		"raw_log":              res.RawLogPath,
 	})
 
 	return nil

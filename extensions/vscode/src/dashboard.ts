@@ -1,32 +1,48 @@
-import * as vscode from 'vscode';
-import type { AdapterEvent, GlobalActivity, XiTStatus, LatestRun } from './types';
-import { readRecentEvents, readWorkspaceHistory, readTerminalEvents, readLatestRun } from './xit';
-import { computeWorkflowHealth, formatSavedTokensForRun, getAiAdapterHealth, getTokenImpactStats } from './workflow';
+import * as vscode from "vscode";
+import type {
+  AdapterEvent,
+  GlobalActivity,
+  XiTStatus,
+  LatestRun,
+} from "./types";
+import {
+  readRecentEvents,
+  readWorkspaceHistory,
+  readTerminalEvents,
+  readLatestRun,
+  readCurrentRunState,
+} from "./xit";
+import {
+  computeWorkflowHealth,
+  formatSavedTokensForRun,
+  getAiAdapterHealth,
+  getTokenImpactStats,
+} from "./workflow";
 
 let panel: vscode.WebviewPanel | undefined;
 let panelContext: vscode.ExtensionContext | undefined;
 
 function escapeHtml(text: string): string {
   return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 }
 
 function formatBytes(n: number): string {
   if (n >= 1000000) {
-    return (n / 1000000).toFixed(1) + ' MB';
+    return (n / 1000000).toFixed(1) + " MB";
   }
   if (n >= 1000) {
-    return (n / 1000).toFixed(1) + ' kB';
+    return (n / 1000).toFixed(1) + " kB";
   }
-  return n + ' B';
+  return n + " B";
 }
 
 function formatReduction(r: number): string {
-  return (r * 100).toFixed(1) + '%';
+  return (r * 100).toFixed(1) + "%";
 }
 
 function formatTokenShort(tokens: number): string {
@@ -45,7 +61,7 @@ function formatTime(iso: string): string {
 }
 
 function gatherAllEvents(): AdapterEvent[] {
-  const adapters = ['cursor', 'codex', 'claude', 'kimi'];
+  const adapters = ["cursor", "codex", "claude", "kimi"];
   let allEvents: AdapterEvent[] = [];
   for (const a of adapters) {
     allEvents = allEvents.concat(readRecentEvents(a, 10));
@@ -53,8 +69,8 @@ function gatherAllEvents(): AdapterEvent[] {
   const workspaceEvents = readWorkspaceHistory(10);
   allEvents = allEvents.concat(workspaceEvents);
   allEvents.sort((a, b) => {
-    const ta = a.time || '';
-    const tb = b.time || '';
+    const ta = a.time || "";
+    const tb = b.time || "";
     return tb.localeCompare(ta);
   });
   return allEvents;
@@ -67,7 +83,9 @@ function computeActivityFromEvents(events: AdapterEvent[]): GlobalActivity {
       adapterCounts[e.adapter] = (adapterCounts[e.adapter] || 0) + 1;
     }
   }
-  const sorted = [...events].sort((a, b) => (b.time || '').localeCompare(a.time || ''));
+  const sorted = [...events].sort((a, b) =>
+    (b.time || "").localeCompare(a.time || ""),
+  );
   const latest = sorted[0];
   return {
     latestAdapter: latest?.adapter,
@@ -82,9 +100,14 @@ function computeActivityFromEvents(events: AdapterEvent[]): GlobalActivity {
 function buildDashboardHtml(
   status: XiTStatus,
   events: AdapterEvent[],
-  terminalEvents: { time: string; commandLine: string; terminalName: string; cwd?: string }[],
+  terminalEvents: {
+    time: string;
+    commandLine: string;
+    terminalName: string;
+    cwd?: string;
+  }[],
   latestRun: LatestRun | undefined,
-  cspSource: string
+  cspSource: string,
 ): string {
   const gain = status.gain;
   const hasWorkspaceGain = gain && gain.total_commands_condensed > 0;
@@ -93,11 +116,15 @@ function buildDashboardHtml(
   const health = computeWorkflowHealth(status, latestRun);
   const tokenImpact = getTokenImpactStats(latestRun);
   const adapterHealth = getAiAdapterHealth();
+  const currentRunState = readCurrentRunState();
 
   // Latest XiT Run section
   const hasLatestRun = latestRun !== undefined;
-  const latestSavedBytes = hasLatestRun ? (latestRun.raw_bytes - latestRun.summary_bytes) : 0;
-  const latestRunSection = hasLatestRun ? `
+  const latestSavedBytes = hasLatestRun
+    ? latestRun.raw_bytes - latestRun.summary_bytes
+    : 0;
+  const latestRunSection = hasLatestRun
+    ? `
     <div class="latest-run">
       <div class="ga-row"><span class="ga-label">Command</span><span class="ga-value ga-cmd">${escapeHtml(latestRun.command)}</span></div>
       <div class="ga-row"><span class="ga-label">Executed</span><span class="ga-value">xit auto ${escapeHtml(latestRun.command)}</span></div>
@@ -105,25 +132,29 @@ function buildDashboardHtml(
       <div class="ga-row"><span class="ga-label">Exit code</span><span class="ga-value">${latestRun.exit_code}</span></div>
       <div class="ga-row"><span class="ga-label">Reduction</span><span class="ga-value">${formatReduction(latestRun.estimated_reduction)}</span></div>
       <div class="ga-row"><span class="ga-label">Saved bytes</span><span class="ga-value">${formatBytes(latestSavedBytes)}</span></div>
+      <div class="ga-row"><span class="ga-label">Current run</span><span class="ga-value">${currentRunState?.status || "none"}</span></div>
       <div class="ga-row"><span class="ga-label">Duration</span><span class="ga-value">${(latestRun.duration_ms / 1000).toFixed(1)}s</span></div>
       <div class="ga-row"><span class="ga-label">Raw log</span><span class="ga-value ga-cmd">${escapeHtml(latestRun.raw_log)}</span></div>
     </div>
-  ` : '<p class="empty">No recent XiT run found. Use <strong>XiT: Run Command</strong> or run <code>xit auto</code> in terminal.</p>';
+  `
+    : '<p class="empty">No recent XiT run found. Use <strong>XiT: Run Command</strong> or run <code>xit auto</code> in terminal.</p>';
 
   const workflowHealthSection = `
     <div class="global-activity">
       <div class="ga-row"><span class="ga-label">CLI</span><span class="ga-value">${health.cliStatus}</span></div>
       <div class="ga-row"><span class="ga-label">Latest run</span><span class="ga-value">${health.latestRunStatus}</span></div>
       <div class="ga-row"><span class="ga-label">Latest saved</span><span class="ga-value">${health.latestSavedDisplay}</span></div>
+      <div class="ga-row"><span class="ga-label">Current run</span><span class="ga-value">${currentRunState?.status || "none"}</span></div>
       <div class="ga-row"><span class="ga-label">Saved bytes</span><span class="ga-value">${formatBytes(health.latestSavedBytes)}</span></div>
-      <div class="ga-row"><span class="ga-label">Workspace rules</span><span class="ga-value">${health.workspaceRulesInstalled ? 'installed' : 'missing'}</span></div>
+      <div class="ga-row"><span class="ga-label">Workspace rules</span><span class="ga-value">${health.workspaceRulesInstalled ? "installed" : "missing"}</span></div>
       <div class="ga-row"><span class="ga-label">Recent routed</span><span class="ga-value">${health.recentHighNoiseRouted}/${health.recentHighNoiseCommands}</span></div>
       <div class="ga-row"><span class="ga-label">Recommendation</span><span class="ga-value">${escapeHtml(health.recommendation)}</span></div>
-      ${health.workspaceRuleFiles.length > 0 ? `<div class="ga-row"><span class="ga-label">Rule files</span><span class="ga-value ga-cmd">${escapeHtml(health.workspaceRuleFiles.join(', '))}</span></div>` : ''}
+      ${health.workspaceRuleFiles.length > 0 ? `<div class="ga-row"><span class="ga-label">Rule files</span><span class="ga-value ga-cmd">${escapeHtml(health.workspaceRuleFiles.join(", "))}</span></div>` : ""}
     </div>
   `;
 
-  const tokenImpactSection = tokenImpact.latest ? `
+  const tokenImpactSection = tokenImpact.latest
+    ? `
     <div class="grid">
       <div class="stat">
         <div class="value">${formatTokenShort(tokenImpact.latest.rawTokens)}</div>
@@ -151,13 +182,17 @@ function buildDashboardHtml(
       </div>
     </div>
     <h2>Top Token-Heavy Commands</h2>
-    ${tokenImpact.topTokenHeavyCommands.length > 0 ? `
+    ${
+      tokenImpact.topTokenHeavyCommands.length > 0
+        ? `
     <table>
       <thead>
         <tr><th>Command</th><th>Runs</th><th>Saved tokens</th><th>Raw tokens</th><th>Summary tokens</th></tr>
       </thead>
       <tbody>
-        ${tokenImpact.topTokenHeavyCommands.map((entry) => `
+        ${tokenImpact.topTokenHeavyCommands
+          .map(
+            (entry) => `
           <tr>
             <td>${escapeHtml(entry.command)}</td>
             <td>${entry.runs}</td>
@@ -165,11 +200,16 @@ function buildDashboardHtml(
             <td>${formatTokenShort(entry.rawTokens)}</td>
             <td>${formatTokenShort(entry.summaryTokens)}</td>
           </tr>
-        `).join('')}
+        `,
+          )
+          .join("")}
       </tbody>
     </table>
-    ` : '<p class="empty">No token-heavy commands recorded yet.</p>'}
-  ` : '<p class="empty">No completed XiT run yet, so token impact is not available.</p>';
+    `
+        : '<p class="empty">No token-heavy commands recorded yet.</p>'
+    }
+  `
+    : '<p class="empty">No completed XiT run yet, so token impact is not available.</p>';
 
   const adapterHealthSection = `
     <table>
@@ -177,24 +217,28 @@ function buildDashboardHtml(
         <tr><th>Adapter</th><th>Status</th><th>Evidence</th></tr>
       </thead>
       <tbody>
-        ${adapterHealth.map((item) => `
+        ${adapterHealth
+          .map(
+            (item) => `
           <tr>
             <td>${escapeHtml(item.adapter)}</td>
             <td>${escapeHtml(item.status)}</td>
             <td>${escapeHtml(item.evidence)}</td>
           </tr>
-        `).join('')}
+        `,
+          )
+          .join("")}
       </tbody>
     </table>
   `;
 
   // Diagnostic section (binary missing / JSON error)
   const hardErrors: string[] = [];
-  if (status.state === 'binary-not-found') {
-    hardErrors.push('XiT binary not found.');
+  if (status.state === "binary-not-found") {
+    hardErrors.push("XiT binary not found.");
   }
-  if (status.state === 'gain-json-failed') {
-    hardErrors.push('xit gain --json did not return valid JSON.');
+  if (status.state === "gain-json-failed") {
+    hardErrors.push("xit gain --json did not return valid JSON.");
   }
   if (status.error) {
     hardErrors.push(status.error);
@@ -206,35 +250,39 @@ function buildDashboardHtml(
     hardErrors.push(`cwd: ${status.cwd}`);
   }
   if (status.attempts && status.attempts.length > 0) {
-    hardErrors.push(`Attempted: ${status.attempts.join(', ')}`);
+    hardErrors.push(`Attempted: ${status.attempts.join(", ")}`);
   }
   if (gain?.warnings && gain.warnings.length > 0) {
-    hardErrors.push(`Warnings: ${gain.warnings.join('; ')}`);
+    hardErrors.push(`Warnings: ${gain.warnings.join("; ")}`);
   }
 
   // Workspace gain stats
-  const topCommandsRows = gain?.top_commands
-    .map(
-      (c) => `
+  const topCommandsRows =
+    gain?.top_commands
+      .map(
+        (c) => `
       <tr>
         <td>${escapeHtml(c.command)}</td>
         <td>${c.runs}</td>
         <td>${c.saved_tokens_display}</td>
         <td>${formatBytes(c.saved_bytes)}</td>
       </tr>
-    `
-    )
-    .join('') || '';
+    `,
+      )
+      .join("") || "";
 
   // Recent events table
-  const eventRows = events
-    .slice(0, 20)
-    .map((e) => {
-      const time = e.time ? escapeHtml(formatTime(e.time)) : '-';
-      const cmd = e.original_command ? escapeHtml(e.original_command) : e.event || e.action || '-';
-      const adapter = e.adapter ? escapeHtml(e.adapter) : '-';
-      const policy = e.policy ? escapeHtml(e.policy) : '';
-      return `
+  const eventRows =
+    events
+      .slice(0, 20)
+      .map((e) => {
+        const time = e.time ? escapeHtml(formatTime(e.time)) : "-";
+        const cmd = e.original_command
+          ? escapeHtml(e.original_command)
+          : e.event || e.action || "-";
+        const adapter = e.adapter ? escapeHtml(e.adapter) : "-";
+        const policy = e.policy ? escapeHtml(e.policy) : "";
+        return `
         <tr>
           <td>${time}</td>
           <td>${adapter}</td>
@@ -242,18 +290,19 @@ function buildDashboardHtml(
           <td>${policy}</td>
         </tr>
       `;
-    })
-    .join('') || '';
+      })
+      .join("") || "";
 
   // VS Code Terminal events table
-  const terminalEventRows = terminalEvents
-    .slice(0, 20)
-    .map((e) => {
-      const time = e.time ? escapeHtml(formatTime(e.time)) : '-';
-      const cmd = escapeHtml(e.commandLine);
-      const term = escapeHtml(e.terminalName);
-      const cwd = e.cwd ? escapeHtml(e.cwd) : '';
-      return `
+  const terminalEventRows =
+    terminalEvents
+      .slice(0, 20)
+      .map((e) => {
+        const time = e.time ? escapeHtml(formatTime(e.time)) : "-";
+        const cmd = escapeHtml(e.commandLine);
+        const term = escapeHtml(e.terminalName);
+        const cwd = e.cwd ? escapeHtml(e.cwd) : "";
+        return `
         <tr>
           <td>${time}</td>
           <td>${term}</td>
@@ -261,47 +310,61 @@ function buildDashboardHtml(
           <td>${cwd}</td>
         </tr>
       `;
-    })
-    .join('') || '';
+      })
+      .join("") || "";
 
   // Adapter cards — active = has events in current session data
-  const adapters = ['Cursor', 'Codex', 'Claude', 'Kimi', 'Antigravity', 'Aider'];
+  const adapters = [
+    "Cursor",
+    "Codex",
+    "Claude",
+    "Kimi",
+    "Antigravity",
+    "Aider",
+  ];
   const adapterCards = adapters
     .map((a) => {
       const lower = a.toLowerCase();
       const count = activity.adapterCounts[lower] || 0;
       const isActive = count > 0;
-      const statusClass = isActive ? 'active' : 'inactive';
-      const badge = isActive ? ` <span class="badge">${count}</span>` : '';
+      const statusClass = isActive ? "active" : "inactive";
+      const badge = isActive ? ` <span class="badge">${count}</span>` : "";
       return `<div class="card adapter ${statusClass}">${escapeHtml(a)}${badge}</div>`;
     })
-    .join('');
+    .join("");
 
   // Global activity summary block
-  const globalActivityBlock = hasGlobalActivity ? `
+  const globalActivityBlock = hasGlobalActivity
+    ? `
     <div class="global-activity">
       <div class="ga-row">
         <span class="ga-label">Latest adapter</span>
-        <span class="ga-value">${activity.latestAdapter ? escapeHtml(activity.latestAdapter) : '-'}</span>
+        <span class="ga-value">${activity.latestAdapter ? escapeHtml(activity.latestAdapter) : "-"}</span>
       </div>
       <div class="ga-row">
         <span class="ga-label">Last event</span>
-        <span class="ga-value">${activity.latestTime ? escapeHtml(formatTime(activity.latestTime)) : '-'}</span>
+        <span class="ga-value">${activity.latestTime ? escapeHtml(formatTime(activity.latestTime)) : "-"}</span>
       </div>
       <div class="ga-row">
         <span class="ga-label">Recent events</span>
         <span class="ga-value">${activity.eventCount}</span>
       </div>
-      ${activity.latestCommand ? `
+      ${
+        activity.latestCommand
+          ? `
       <div class="ga-row">
         <span class="ga-label">Last command</span>
         <span class="ga-value ga-cmd">${escapeHtml(activity.latestCommand)}</span>
-      </div>` : ''}
+      </div>`
+          : ""
+      }
     </div>
-  ` : '<p class="empty">No global agent events found in ~/.xit.</p>';
+  `
+    : '<p class="empty">No global agent events found in ~/.xit.</p>';
 
   // Workspace gain section
-  const workspaceGainSection = hasWorkspaceGain ? `
+  const workspaceGainSection = hasWorkspaceGain
+    ? `
     <div class="grid">
       <div class="stat">
         <div class="value">${gain!.total_commands_condensed}</div>
@@ -321,7 +384,9 @@ function buildDashboardHtml(
       </div>
     </div>
     <h2>Top Commands</h2>
-    ${gain!.top_commands.length > 0 ? `
+    ${
+      gain!.top_commands.length > 0
+        ? `
     <table>
       <thead>
         <tr><th>Command</th><th>Runs</th><th>Saved tokens</th><th>Saved bytes</th></tr>
@@ -330,11 +395,14 @@ function buildDashboardHtml(
         ${topCommandsRows}
       </tbody>
     </table>
-    ` : '<p class="empty">No condensed commands yet.</p>'}
-  ` : `
+    `
+        : '<p class="empty">No condensed commands yet.</p>'
+    }
+  `
+    : `
     <div class="no-workspace-gain">
       No XiT gain history for this workspace yet.<br>
-      ${hasGlobalActivity ? 'Showing global agent activity from ~/.xit below.' : 'No global activity found either.'}
+      ${hasGlobalActivity ? "Showing global agent activity from ~/.xit below." : "No global activity found either."}
     </div>
   `;
 
@@ -469,7 +537,7 @@ code {
 </head>
 <body>
 <h1>XiT Dashboard</h1>
-${hardErrors.length > 0 ? `<div class="diagnostic">${escapeHtml(hardErrors.join('\n'))}</div>` : ''}
+${hardErrors.length > 0 ? `<div class="diagnostic">${escapeHtml(hardErrors.join("\n"))}</div>` : ""}
 
 <div class="boundary-box">
   <strong>Visibility Boundaries</strong><br>
@@ -502,7 +570,9 @@ ${globalActivityBlock}
 </div>
 
 <h2>Recent Events</h2>
-${events.length > 0 ? `
+${
+  events.length > 0
+    ? `
 <table>
   <thead>
     <tr><th>Time</th><th>Adapter</th><th>Command / Event</th><th>Policy</th></tr>
@@ -511,10 +581,14 @@ ${events.length > 0 ? `
     ${eventRows}
   </tbody>
 </table>
-` : '<p class="empty">No recent events.</p>'}
+`
+    : '<p class="empty">No recent events.</p>'
+}
 
 <h2>VS Code Terminal Events</h2>
-${terminalEvents.length > 0 ? `
+${
+  terminalEvents.length > 0
+    ? `
 <table>
   <thead>
     <tr><th>Time</th><th>Terminal</th><th>Command</th><th>CWD</th></tr>
@@ -523,7 +597,9 @@ ${terminalEvents.length > 0 ? `
     ${terminalEventRows}
   </tbody>
 </table>
-` : '<p class="empty">No terminal events recorded. Enable <code>xit.enableTerminalListener</code> to capture VS Code terminal shell executions locally.</p>'}
+`
+    : '<p class="empty">No terminal events recorded. Enable <code>xit.enableTerminalListener</code> to capture VS Code terminal shell executions locally.</p>'
+}
 
 <div class="privacy">
   Local only. No telemetry. No network requests.
@@ -533,33 +609,42 @@ ${terminalEvents.length > 0 ? `
 `;
 }
 
-export function showDashboard(context: vscode.ExtensionContext, status: XiTStatus): void {
+export function showDashboard(
+  context: vscode.ExtensionContext,
+  status: XiTStatus,
+): void {
   panelContext = context;
   if (panel) {
     panel.reveal(vscode.ViewColumn.One);
   } else {
     panel = vscode.window.createWebviewPanel(
-      'xitDashboard',
-      'XiT Dashboard',
+      "xitDashboard",
+      "XiT Dashboard",
       vscode.ViewColumn.One,
       {
         enableScripts: false,
         localResourceRoots: [],
-      }
+      },
     );
     panel.onDidDispose(
       () => {
         panel = undefined;
       },
       null,
-      context.subscriptions
+      context.subscriptions,
     );
   }
 
   const events = gatherAllEvents();
   const terminalEvents = readTerminalEvents(20);
   const latestRun = readLatestRun();
-  panel.webview.html = buildDashboardHtml(status, events, terminalEvents, latestRun, panel.webview.cspSource);
+  panel.webview.html = buildDashboardHtml(
+    status,
+    events,
+    terminalEvents,
+    latestRun,
+    panel.webview.cspSource,
+  );
 }
 
 export function updateDashboardIfOpen(status: XiTStatus): void {
@@ -569,5 +654,11 @@ export function updateDashboardIfOpen(status: XiTStatus): void {
   const events = gatherAllEvents();
   const terminalEvents = readTerminalEvents(20);
   const latestRun = readLatestRun();
-  panel.webview.html = buildDashboardHtml(status, events, terminalEvents, latestRun, panel.webview.cspSource);
+  panel.webview.html = buildDashboardHtml(
+    status,
+    events,
+    terminalEvents,
+    latestRun,
+    panel.webview.cspSource,
+  );
 }

@@ -1,14 +1,22 @@
-import * as vscode from 'vscode';
-import * as child_process from 'child_process';
-import * as path from 'path';
-import * as fs from 'fs';
-import * as os from 'os';
-import type { GainData, AdapterEvent, GlobalActivity, XiTStatus, LatestRun, LatestRawLogMeta } from './types';
+import * as vscode from "vscode";
+import * as child_process from "child_process";
+import * as path from "path";
+import * as fs from "fs";
+import * as os from "os";
+import type {
+  GainData,
+  AdapterEvent,
+  GlobalActivity,
+  XiTStatus,
+  LatestRun,
+  LatestRawLogMeta,
+  CurrentRunState,
+} from "./types";
 
-const OUTPUT_CHANNEL = vscode.window.createOutputChannel('XiT Status');
+const OUTPUT_CHANNEL = vscode.window.createOutputChannel("XiT Status");
 
 function getConfig(): vscode.WorkspaceConfiguration {
-  return vscode.workspace.getConfiguration('xit');
+  return vscode.workspace.getConfiguration("xit");
 }
 
 function log(message: string): void {
@@ -37,24 +45,27 @@ export function resolveWorkspaceCwd(): string {
 
 function resolveXiTHome(): string {
   const cfg = getConfig();
-  const configured = cfg.get<string>('home', '');
+  const configured = cfg.get<string>("home", "");
   if (configured) {
     return configured;
   }
-  return path.join(os.homedir(), '.xit');
+  return path.join(os.homedir(), ".xit");
 }
 
 function expandHome(p: string): string {
-  if (p === '~') {
+  if (p === "~") {
     return os.homedir();
   }
-  if (p.startsWith('~/')) {
+  if (p.startsWith("~/")) {
     return path.join(os.homedir(), p.slice(2));
   }
   return p;
 }
 
-function addCandidate(candidates: string[], candidate: string | undefined): void {
+function addCandidate(
+  candidates: string[],
+  candidate: string | undefined,
+): void {
   if (!candidate) {
     return;
   }
@@ -67,36 +78,36 @@ function addCandidate(candidates: string[], candidate: string | undefined): void
 function resolveBinaryCandidates(): string[] {
   const cfg = getConfig();
   const candidates: string[] = [];
-  const configured = cfg.get<string>('binaryPath', '');
+  const configured = cfg.get<string>("binaryPath", "");
   addCandidate(candidates, configured);
 
   // Try PATH
-  addCandidate(candidates, tryWhich('xit'));
+  addCandidate(candidates, tryWhich("xit"));
 
   // Try ~/.local/bin/xit
-  addCandidate(candidates, '~/.local/bin/xit');
+  addCandidate(candidates, "~/.local/bin/xit");
 
   // Try workspace ./xit
   const workspaceFolders = vscode.workspace.workspaceFolders;
   if (workspaceFolders && workspaceFolders.length > 0) {
-    addCandidate(candidates, path.join(workspaceFolders[0].uri.fsPath, 'xit'));
+    addCandidate(candidates, path.join(workspaceFolders[0].uri.fsPath, "xit"));
   }
 
-  addCandidate(candidates, 'xit');
+  addCandidate(candidates, "xit");
   return candidates;
 }
 
 function tryWhich(command: string): string | undefined {
   try {
-    const envPath = process.env.PATH || '';
+    const envPath = process.env.PATH || "";
     const paths = envPath.split(path.delimiter);
     for (const p of paths) {
       const candidate = path.join(p, command);
       if (fs.existsSync(candidate)) {
         return candidate;
       }
-      if (process.platform === 'win32') {
-        const candidateExe = candidate + '.exe';
+      if (process.platform === "win32") {
+        const candidateExe = candidate + ".exe";
         if (fs.existsSync(candidateExe)) {
           return candidateExe;
         }
@@ -112,13 +123,13 @@ function execFilePromise(
   file: string,
   args: string[],
   cwd: string,
-  timeoutMs = 5000
+  timeoutMs = 5000,
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     child_process.execFile(
       file,
       args,
-      { cwd, timeout: timeoutMs, encoding: 'utf-8' },
+      { cwd, timeout: timeoutMs, encoding: "utf-8" },
       (error, stdout, stderr) => {
         if (error) {
           const wrapped = error as Error & { stderr?: string; stdout?: string };
@@ -128,13 +139,13 @@ function execFilePromise(
         } else {
           resolve({ stdout: stdout as string, stderr: stderr as string });
         }
-      }
+      },
     );
   });
 }
 
 function isExecutableCandidate(candidate: string): boolean {
-  if (candidate === 'xit') {
+  if (candidate === "xit") {
     return true;
   }
   try {
@@ -149,14 +160,14 @@ function previewText(text: string, max = 500): string {
   if (trimmed.length <= max) {
     return trimmed;
   }
-  return trimmed.slice(0, max) + '...';
+  return trimmed.slice(0, max) + "...";
 }
 
 export function readGlobalActivity(): GlobalActivity {
-  const adapters = ['cursor', 'codex', 'claude', 'kimi'];
+  const adapters = ["cursor", "codex", "claude", "kimi"];
   const adapterCounts: Record<string, number> = {};
   let latestAdapter: string | undefined;
-  let latestTime = '';
+  let latestTime = "";
   let latestCommand: string | undefined;
   let latestPolicy: string | undefined;
   let eventCount = 0;
@@ -169,7 +180,7 @@ export function readGlobalActivity(): GlobalActivity {
       // events[0] is most recent (readRecentEvents reverses)
       const latest = events[0];
       if (!latestTime || (latest.time && latest.time > latestTime)) {
-        latestTime = latest.time || '';
+        latestTime = latest.time || "";
         latestAdapter = adapter;
         latestCommand = latest.original_command;
         latestPolicy = latest.policy;
@@ -192,10 +203,10 @@ export async function fetchStatus(): Promise<XiTStatus> {
   const candidates = resolveBinaryCandidates();
   const attempts: string[] = [];
   let sawRunnableBinary = false;
-  let lastError = '';
+  let lastError = "";
 
   log(`[${new Date().toISOString()}] fetchStatus cwd=${cwd}`);
-  log(`binary candidates: ${candidates.join(', ')}`);
+  log(`binary candidates: ${candidates.join(", ")}`);
 
   for (const binary of candidates) {
     attempts.push(binary);
@@ -208,7 +219,11 @@ export async function fetchStatus(): Promise<XiTStatus> {
 
     sawRunnableBinary = true;
     try {
-      const { stdout, stderr } = await execFilePromise(binary, ['gain', '--json'], cwd);
+      const { stdout, stderr } = await execFilePromise(
+        binary,
+        ["gain", "--json"],
+        cwd,
+      );
       if (stderr.trim()) {
         log(`stderr from ${binary}: ${previewText(stderr)}`);
       }
@@ -220,21 +235,38 @@ export async function fetchStatus(): Promise<XiTStatus> {
       try {
         const data = JSON.parse(stdout) as GainData;
         const activity = readGlobalActivity();
-        const state = data.total_commands_condensed > 0 ? 'ok' : 'no-data';
-        log(`activity: eventCount=${activity.eventCount} latestAdapter=${activity.latestAdapter || 'none'}`);
-        return { available: true, state, gain: data, activity, binary, cwd, attempts, refreshedAt: new Date() };
+        const state = data.total_commands_condensed > 0 ? "ok" : "no-data";
+        log(
+          `activity: eventCount=${activity.eventCount} latestAdapter=${activity.latestAdapter || "none"}`,
+        );
+        return {
+          available: true,
+          state,
+          gain: data,
+          activity,
+          binary,
+          cwd,
+          attempts,
+          refreshedAt: new Date(),
+        };
       } catch (parseErr) {
         lastError = `${binary}: JSON parse error: ${parseErr}; stdout=${previewText(stdout)}`;
         log(lastError);
       }
     } catch (err) {
-      const e = err as Error & { code?: string; stderr?: string; stdout?: string };
+      const e = err as Error & {
+        code?: string;
+        stderr?: string;
+        stdout?: string;
+      };
       const details = [
         `${binary}: execFile failed: ${e.message}`,
-        e.code ? `code=${e.code}` : '',
-        e.stderr ? `stderr=${previewText(e.stderr)}` : '',
-        e.stdout ? `stdout=${previewText(e.stdout)}` : '',
-      ].filter(Boolean).join(' | ');
+        e.code ? `code=${e.code}` : "",
+        e.stderr ? `stderr=${previewText(e.stderr)}` : "",
+        e.stdout ? `stdout=${previewText(e.stdout)}` : "",
+      ]
+        .filter(Boolean)
+        .join(" | ");
       lastError = details;
       log(details);
     }
@@ -245,9 +277,9 @@ export async function fetchStatus(): Promise<XiTStatus> {
   if (!sawRunnableBinary) {
     return {
       available: false,
-      state: 'binary-not-found',
+      state: "binary-not-found",
       activity,
-      error: `XiT binary not found. Attempted: ${attempts.join(', ')}`,
+      error: `XiT binary not found. Attempted: ${attempts.join(", ")}`,
       cwd,
       attempts,
       refreshedAt: new Date(),
@@ -256,24 +288,27 @@ export async function fetchStatus(): Promise<XiTStatus> {
 
   return {
     available: false,
-    state: 'gain-json-failed',
+    state: "gain-json-failed",
     activity,
-    error: lastError || 'xit gain --json failed for all binary candidates',
+    error: lastError || "xit gain --json failed for all binary candidates",
     cwd,
     attempts,
     refreshedAt: new Date(),
   };
 }
 
-export function readRecentEvents(adapter: string, maxLines = 20): AdapterEvent[] {
+export function readRecentEvents(
+  adapter: string,
+  maxLines = 20,
+): AdapterEvent[] {
   const home = resolveXiTHome();
   const eventPaths: Record<string, string[]> = {
-    cursor: [path.join(home, 'cursor-hooks', 'events.jsonl')],
-    codex: [path.join(home, 'codex-hooks', 'events.jsonl')],
-    claude: [path.join(home, 'claude-hooks', 'events.jsonl')],
+    cursor: [path.join(home, "cursor-hooks", "events.jsonl")],
+    codex: [path.join(home, "codex-hooks", "events.jsonl")],
+    claude: [path.join(home, "claude-hooks", "events.jsonl")],
     kimi: [
-      path.join(home, 'kimi-hooks', 'turn-events.jsonl'),
-      path.join(home, 'kimi-hooks', 'events.jsonl'),
+      path.join(home, "kimi-hooks", "turn-events.jsonl"),
+      path.join(home, "kimi-hooks", "events.jsonl"),
     ],
   };
 
@@ -285,8 +320,8 @@ export function readRecentEvents(adapter: string, maxLines = 20): AdapterEvent[]
       if (!fs.existsSync(p)) {
         continue;
       }
-      const content = fs.readFileSync(p, 'utf-8');
-      const lines = content.split('\n').filter((l) => l.trim().length > 0);
+      const content = fs.readFileSync(p, "utf-8");
+      const lines = content.split("\n").filter((l) => l.trim().length > 0);
       const tail = lines.slice(-maxLines);
       for (const line of tail) {
         try {
@@ -310,13 +345,13 @@ export function readWorkspaceHistory(maxLines = 20): AdapterEvent[] {
   if (!folders || folders.length === 0) {
     return [];
   }
-  const historyPath = path.join(folders[0].uri.fsPath, '.xit', 'history.jsonl');
+  const historyPath = path.join(folders[0].uri.fsPath, ".xit", "history.jsonl");
   try {
     if (!fs.existsSync(historyPath)) {
       return [];
     }
-    const content = fs.readFileSync(historyPath, 'utf-8');
-    const lines = content.split('\n').filter((l) => l.trim().length > 0);
+    const content = fs.readFileSync(historyPath, "utf-8");
+    const lines = content.split("\n").filter((l) => l.trim().length > 0);
     const tail = lines.slice(-maxLines);
     return tail
       .map((line) => {
@@ -338,12 +373,12 @@ export function findLatestRawLog(): string | undefined {
   if (!folders || folders.length === 0) {
     return undefined;
   }
-  const runsDir = path.join(folders[0].uri.fsPath, '.xit', 'runs');
+  const runsDir = path.join(folders[0].uri.fsPath, ".xit", "runs");
   try {
     if (!fs.existsSync(runsDir)) {
       return undefined;
     }
-    const files = fs.readdirSync(runsDir).filter((f) => f.endsWith('.raw.log'));
+    const files = fs.readdirSync(runsDir).filter((f) => f.endsWith(".raw.log"));
     if (files.length === 0) {
       return undefined;
     }
@@ -379,10 +414,38 @@ export function readLatestRawLogMeta(): LatestRawLogMeta | undefined {
   }
 }
 
+function getCurrentRunStateCandidates(): string[] {
+  const folders = vscode.workspace.workspaceFolders;
+  if (!folders || folders.length === 0) {
+    return [];
+  }
+  const root = folders[0].uri.fsPath;
+  return [
+    path.join(root, ".xit", "state", "current-run.json"),
+    path.join(root, ".xit", "state", "current.json"),
+  ];
+}
+
+export function readCurrentRunState(): CurrentRunState | undefined {
+  for (const candidate of getCurrentRunStateCandidates()) {
+    try {
+      if (!fs.existsSync(candidate)) {
+        continue;
+      }
+      return JSON.parse(fs.readFileSync(candidate, "utf-8")) as CurrentRunState;
+    } catch {
+      continue;
+    }
+  }
+  return undefined;
+}
+
 export async function openLatestRawLog(): Promise<void> {
   const logPath = findLatestRawLog();
   if (!logPath) {
-    vscode.window.showInformationMessage('XiT: No raw log found in workspace .xit/runs/');
+    vscode.window.showInformationMessage(
+      "XiT: No raw log found in workspace .xit/runs/",
+    );
     return;
   }
   const doc = await vscode.workspace.openTextDocument(logPath);
@@ -391,7 +454,7 @@ export async function openLatestRawLog(): Promise<void> {
 
 function resolveTerminalEventsPath(): string {
   const home = resolveXiTHome();
-  return path.join(home, 'vscode-terminal', 'events.jsonl');
+  return path.join(home, "vscode-terminal", "events.jsonl");
 }
 
 export function writeTerminalEvent(event: {
@@ -404,38 +467,54 @@ export function writeTerminalEvent(event: {
   try {
     fs.mkdirSync(path.dirname(eventsPath), { recursive: true });
     const record = {
-      source: 'vscode-terminal',
+      source: "vscode-terminal",
       time: new Date().toISOString(),
       commandLine: event.commandLine,
       confidence: event.confidence,
       terminalName: event.terminalName,
       cwd: event.cwd,
     };
-    const line = JSON.stringify(record) + '\n';
-    fs.appendFileSync(eventsPath, line, 'utf-8');
+    const line = JSON.stringify(record) + "\n";
+    fs.appendFileSync(eventsPath, line, "utf-8");
   } catch (err) {
     log(`writeTerminalEvent failed: ${err}`);
   }
 }
 
-export function readTerminalEvents(maxLines = 20): { time: string; commandLine: string; terminalName: string; cwd?: string }[] {
+export function readTerminalEvents(
+  maxLines = 20,
+): { time: string; commandLine: string; terminalName: string; cwd?: string }[] {
   const eventsPath = resolveTerminalEventsPath();
   try {
     if (!fs.existsSync(eventsPath)) {
       return [];
     }
-    const content = fs.readFileSync(eventsPath, 'utf-8');
-    const lines = content.split('\n').filter((l) => l.trim().length > 0);
+    const content = fs.readFileSync(eventsPath, "utf-8");
+    const lines = content.split("\n").filter((l) => l.trim().length > 0);
     const tail = lines.slice(-maxLines);
     const events = tail
       .map((line) => {
         try {
-          return JSON.parse(line) as { time: string; commandLine: string; terminalName: string; cwd?: string };
+          return JSON.parse(line) as {
+            time: string;
+            commandLine: string;
+            terminalName: string;
+            cwd?: string;
+          };
         } catch {
           return undefined;
         }
       })
-      .filter((e): e is { time: string; commandLine: string; terminalName: string; cwd?: string } => e !== undefined);
+      .filter(
+        (
+          e,
+        ): e is {
+          time: string;
+          commandLine: string;
+          terminalName: string;
+          cwd?: string;
+        } => e !== undefined,
+      );
     return events.reverse();
   } catch {
     return [];
@@ -524,13 +603,13 @@ export function readLatestRun(): LatestRun | undefined {
   if (!folders || folders.length === 0) {
     return undefined;
   }
-  const historyPath = path.join(folders[0].uri.fsPath, '.xit', 'history.jsonl');
+  const historyPath = path.join(folders[0].uri.fsPath, ".xit", "history.jsonl");
   try {
     if (!fs.existsSync(historyPath)) {
       return undefined;
     }
-    const content = fs.readFileSync(historyPath, 'utf-8');
-    const lines = content.split('\n').filter((l) => l.trim().length > 0);
+    const content = fs.readFileSync(historyPath, "utf-8");
+    const lines = content.split("\n").filter((l) => l.trim().length > 0);
     if (lines.length === 0) {
       return undefined;
     }

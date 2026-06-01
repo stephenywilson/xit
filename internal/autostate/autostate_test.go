@@ -27,7 +27,7 @@ func TestReadProjectPriority(t *testing.T) {
 	userHome := filepath.Join(tmp, "user")
 
 	_ = os.MkdirAll(filepath.Join(userHome, "state"), 0755)
-	_ = os.WriteFile(filepath.Join(userHome, "state", "current.json"), []byte(`{"status":"completed","saved_bytes":100}`), 0644)
+	_ = os.WriteFile(filepath.Join(userHome, "state", "current-run.json"), []byte(`{"status":"completed","saved_bytes":100}`), 0644)
 
 	state, path, err := Read(projectHome, userHome)
 	if err != nil {
@@ -36,12 +36,12 @@ func TestReadProjectPriority(t *testing.T) {
 	if state == nil {
 		t.Fatal("expected state from user fallback")
 	}
-	if path != filepath.Join(userHome, "state", "current.json") {
+	if path != filepath.Join(userHome, "state", "current-run.json") {
 		t.Fatalf("expected user path, got %s", path)
 	}
 
 	_ = os.MkdirAll(filepath.Join(projectHome, "state"), 0755)
-	_ = os.WriteFile(filepath.Join(projectHome, "state", "current.json"), []byte(`{"status":"running","saved_bytes":200}`), 0644)
+	_ = os.WriteFile(filepath.Join(projectHome, "state", "current-run.json"), []byte(`{"status":"running","saved_bytes":200}`), 0644)
 
 	state, path, err = Read(projectHome, userHome)
 	if err != nil {
@@ -50,7 +50,7 @@ func TestReadProjectPriority(t *testing.T) {
 	if state.Status != "running" {
 		t.Fatalf("expected project priority, got status %s", state.Status)
 	}
-	if path != filepath.Join(projectHome, "state", "current.json") {
+	if path != filepath.Join(projectHome, "state", "current-run.json") {
 		t.Fatalf("expected project path, got %s", path)
 	}
 }
@@ -58,14 +58,14 @@ func TestReadProjectPriority(t *testing.T) {
 func TestIsRunningFresh(t *testing.T) {
 	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
 
-	fresh := &AutoState{Status: "running", StartedAt: now.Add(-5 * time.Minute).Format(time.RFC3339)}
+	fresh := &AutoState{Status: "running", StartedAt: now.Add(-5 * time.Second).Format(time.RFC3339), HeartbeatAt: now.Add(-5 * time.Second).Format(time.RFC3339)}
 	if !IsRunningFresh(fresh, now) {
-		t.Error("expected fresh for 5min old running")
+		t.Error("expected fresh for 5s old running heartbeat")
 	}
 
-	stale := &AutoState{Status: "running", StartedAt: now.Add(-11 * time.Minute).Format(time.RFC3339)}
+	stale := &AutoState{Status: "running", StartedAt: now.Add(-20 * time.Second).Format(time.RFC3339), HeartbeatAt: now.Add(-20 * time.Second).Format(time.RFC3339)}
 	if IsRunningFresh(stale, now) {
-		t.Error("expected stale for 11min old running")
+		t.Error("expected stale for 20s old running heartbeat")
 	}
 
 	completed := &AutoState{Status: "completed", StartedAt: now.Add(-1 * time.Minute).Format(time.RFC3339)}
@@ -105,7 +105,7 @@ func TestReadMalformedJSON(t *testing.T) {
 	tmp := t.TempDir()
 	projectHome := filepath.Join(tmp, "project")
 	_ = os.MkdirAll(filepath.Join(projectHome, "state"), 0755)
-	_ = os.WriteFile(filepath.Join(projectHome, "state", "current.json"), []byte(`{not json`), 0644)
+	_ = os.WriteFile(filepath.Join(projectHome, "state", "current-run.json"), []byte(`{not json`), 0644)
 
 	state, _, err := Read(projectHome, "")
 	if err == nil {
@@ -116,11 +116,11 @@ func TestReadMalformedJSON(t *testing.T) {
 	}
 }
 
-func TestRunningStaleOver10Min(t *testing.T) {
+func TestRunningStaleOver15Seconds(t *testing.T) {
 	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
-	stale := &AutoState{Status: "running", StartedAt: now.Add(-10 * time.Minute).Add(-1 * time.Second).Format(time.RFC3339)}
+	stale := &AutoState{Status: "running", HeartbeatAt: now.Add(-16 * time.Second).Format(time.RFC3339)}
 	if IsRunningFresh(stale, now) {
-		t.Error("expected stale for running over 10min")
+		t.Error("expected stale for running over 15s")
 	}
 }
 

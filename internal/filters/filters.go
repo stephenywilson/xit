@@ -163,12 +163,16 @@ func safeStringSlice(s string, max int) string {
 }
 
 func (d *Dispatcher) WriteHistory(home string, args []string, res *runner.Result, s *output.Summary) error {
+	return d.WriteHistoryWithSummaryBytes(home, args, res, s, len([]byte(s.Render("human"))))
+}
+
+func (d *Dispatcher) WriteHistoryWithSummaryBytes(home string, args []string, res *runner.Result, s *output.Summary, summaryBytes int) error {
 	r := history.Record{
 		Timestamp:          time.Now().Format(time.RFC3339),
 		Command:            strings.Join(args, " "),
 		ExitCode:           res.ExitCode,
 		RawBytes:           len(res.Stdout) + len(res.Stderr),
-		SummaryBytes:       len([]byte(s.Render("human"))),
+		SummaryBytes:       summaryBytes,
 		EstimatedReduction: s.EstimatedReduction,
 		DurationMs:         res.DurationMs,
 		Filter:             s.Filter,
@@ -212,12 +216,12 @@ func isDiagnosticFind(args []string) bool {
 		return false
 	}
 	limitedPaths := map[string]bool{
-		"/opt/homebrew":        true,
-		"/usr/local":           true,
-		"/usr/local/bin":       true,
-		"/opt/homebrew/bin":    true,
-		"/usr/bin":             true,
-		"/bin":                 true,
+		"/opt/homebrew":     true,
+		"/usr/local":        true,
+		"/usr/local/bin":    true,
+		"/opt/homebrew/bin": true,
+		"/usr/bin":          true,
+		"/bin":              true,
 	}
 	hasLimitedPath := false
 	for _, arg := range args[1:] {
@@ -233,9 +237,10 @@ func isDiagnosticFind(args []string) bool {
 }
 
 // ClassifyPolicy returns the compression policy for a command:
-//   should_compress   — high-output commands that clearly benefit from XiT
-//   should_passthrough — short-output commands where compression adds little value
-//   needs_review      — edge cases or unknown commands
+//
+//	should_compress   — high-output commands that clearly benefit from XiT
+//	should_passthrough — short-output commands where compression adds little value
+//	needs_review      — edge cases or unknown commands
 func ClassifyPolicy(args []string) string {
 	if len(args) == 0 {
 		return "needs_review"

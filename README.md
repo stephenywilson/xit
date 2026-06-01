@@ -10,6 +10,8 @@ XiT 会把 `go test`、`grep`、`git diff`、`docker logs` 这类高噪音命令
 
 适用于所有会调用终端命令的 AI Coding CLI（Kimi · Claude Code · Codex · Cursor 等）。
 
+XiT helps AI coding agents spend fewer tokens on noisy terminal output.
+
 [![npm](https://img.shields.io/npm/v/xitsg?color=56f5a3&label=xitsg&style=flat-square)](https://www.npmjs.com/package/xitsg)
 [![Go](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat-square&logo=go)](https://go.dev)
 [![License](https://img.shields.io/badge/license-MIT-b8860b?style=flat-square)](LICENSE)
@@ -50,6 +52,34 @@ npm i -g xitsg
 xit --version      # 验证安装
 xit auto echo hello  # 验证 auto 子命令
 ```
+
+## CLI Installation
+
+```bash
+npm install -g xitsg
+xit --version
+```
+
+Expected:
+
+```text
+xit version 0.2.45
+```
+
+## VS Code Extension
+
+XiT is now available as a VS Code extension: **吸T神功（XiT）**.
+
+The VS Code extension brings XiT directly into AI coding workflows:
+
+- live status bar updates while `xit auto` is running
+- dark-gold XiT Dashboard
+- token impact: latest saved, today saved, workspace total
+- AI adapter health for Claude, Codex, Kimi, Cursor
+- agent conversation turn awareness based on local hook metadata
+- workspace watch diagnostics, so users know which project XiT is monitoring
+
+XiT does **not** read chat content. It only reads local XiT state, run history, and hook metadata.
 
 ---
 
@@ -244,10 +274,10 @@ xit auto --help     # 查看帮助
 - Codex CLI 适配（AGENTS.md rules + PreToolUse hook observe + hitrate）
 - Cursor 适配（beforeShellExecution observe + strict mode GUI ask + hitrate）
 - npm 全平台分发（macOS / Linux / Windows）
+- VS Code extension `0.0.20` 已发布到 Visual Studio Marketplace
 
 **近期**
 
-- VS Code / Cursor Extension MVP（local VSIX，本地 dashboard + status bar）
 - DeepSeek 系 AI CLI 调研与适配
 - 更多高噪音命令过滤器
 

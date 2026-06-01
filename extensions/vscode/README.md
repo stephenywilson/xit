@@ -1,47 +1,71 @@
 # XiT Status
 
-Active XiT command runner, status dashboard, and terminal listener for VS Code and Cursor.
+A VS Code companion for [XiT](https://github.com/stephenywilson/xit) — a local terminal output compression layer that prevents AI coding agents from being overwhelmed by high-noise commands.
 
-## What it does
+## What XiT does
 
-XiT Status is a companion extension for the [XiT](https://github.com/stephenywilson/xit) CLI. It helps you:
+When you run commands like `go test -v ./...`, `git diff`, or `docker logs`, the output can be thousands of lines long. XiT compresses this output locally before it reaches the AI agent's context window, saving tokens and improving response quality.
 
-- **Run commands with compression**: `XiT: Run Command` detects high-output commands and runs them with `xit auto`
-- **Status bar**: live states (idle / running / saved / missed), saved tokens, estimated reduction
-- **Dashboard**: latest run, workspace gain, adapter activity, recent events
-- **Terminal listener** (opt-in): detects high-output commands in VS Code terminal and suggests `xit auto`
-- **Quick access**: open XiT Terminal, latest raw log, refresh status
+- **Detect**: Recognizes high-output commands
+- **Route**: Runs them with `xit auto` for automatic compression
+- **Report**: Shows saved bytes, reduction rate, and raw log paths
 
-All data stays local. No telemetry, no network requests.
+All processing happens locally. No data leaves your machine.
+
+## What this extension does
+
+XiT Status brings XiT visibility into VS Code:
+
+- **Run commands with compression**: `XiT: Run Command` detects high-output commands and wraps them with `xit auto`
+- **Dedicated XiT Terminal**: Open a terminal optimized for XiT workflows
+- **Status bar**: Live state indicators show what XiT is doing
+- **Dashboard**: Latest run details, workspace gain stats, adapter activity, and recent events
+- **Terminal listener** (opt-in): Detects high-output commands in VS Code terminals and suggests `xit auto`
 
 ## Requirements
 
-- XiT CLI installed (`npm i -g xitsg` or download from GitHub Releases)
+**XiT CLI must be installed separately.** This extension does not bundle the XiT binary.
 
-## Local install from VSIX
+### Install XiT CLI
 
 ```bash
-npx vsce package
+npm install -g xitsg
 ```
 
-Then in VS Code / Cursor:
+Or download from [GitHub Releases](https://github.com/stephenywilson/xit/releases).
 
-1. Command Palette → `Extensions: Install from VSIX...`
-2. Choose `xit-vscode-*.vsix`
-3. Reload window
+The extension will auto-detect the `xit` binary from:
+- Your `PATH`
+- `~/.local/bin/xit`
+- Workspace `./xit`
+
+You can also set a custom path via the `xit.binaryPath` setting.
 
 ## Commands
 
-| Command | Title |
-|---------|-------|
-| `XiT: Run Command` | Detect high-output and run with `xit auto` |
-| `XiT: Run with Auto Compression` | Always run with `xit auto` |
-| `XiT: Open XiT Terminal` | Open a dedicated XiT terminal |
-| `XiT: Open Dashboard` | Open XiT Dashboard |
-| `XiT: Refresh` | Refresh status bar |
-| `XiT: Show Gain` | Show gain summary |
-| `XiT: Open Latest Raw Log` | Open the newest raw log from workspace `.xit/runs/` |
-| `XiT: Show Output Channel` | Show XiT output for debugging |
+| Command | What it does |
+|---------|-------------|
+| `XiT: Run Command` | Detects if a command is high-output and runs it with `xit auto` |
+| `XiT: Run with Auto Compression` | Always runs the command with `xit auto` |
+| `XiT: Open XiT Terminal` | Opens a dedicated terminal named "XiT" |
+| `XiT: Open Dashboard` | Shows latest run, gain stats, and activity |
+| `XiT: Refresh` | Refreshes the status bar |
+| `XiT: Show Gain` | Shows a quick gain summary message |
+| `XiT: Open Latest Raw Log` | Opens the most recent raw log from workspace `.xit/runs/` |
+| `XiT: Show Output Channel` | Shows XiT extension debug output |
+
+## Status bar meanings
+
+| Text | Meaning |
+|------|---------|
+| `吸T神功 · 准备就绪` | Idle — XiT is ready |
+| `吸T神功 · 正在压缩` | Running — a command is being compressed |
+| `吸T神功 · 本次省991B` | Success — current run saved 991 bytes |
+| `吸T神功 · 本次省~41KB` | Success — current run saved ~41 kilobytes |
+| `吸T神功 · 本次未触发压缩` | Missed — a high-output command ran without compression |
+| `吸T神功 · 未找到 XiT` | XiT binary not found — install the CLI |
+
+Hover over the status bar for more details, including historical cumulative savings.
 
 ## Settings
 
@@ -59,3 +83,18 @@ Then in VS Code / Cursor:
 - No network requests
 - Only reads local `~/.xit` and workspace `.xit` directories
 - Raw logs are opened only when you explicitly trigger the command
+- Terminal listener captures only command metadata (command line, cwd, terminal name), never command output or environment variables
+
+## Install from VSIX
+
+If not installing from the Marketplace:
+
+```bash
+npx vsce package
+```
+
+Then in VS Code / Cursor:
+
+1. Command Palette → `Extensions: Install from VSIX...`
+2. Choose `xit-vscode-*.vsix`
+3. Reload window

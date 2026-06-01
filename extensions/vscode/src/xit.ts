@@ -67,7 +67,6 @@ function resolveBinaryCandidates(): string[] {
 
   // Try ~/.local/bin/xit
   addCandidate(candidates, '~/.local/bin/xit');
-  addCandidate(candidates, '/Users/dongjiayang/.local/bin/xit');
 
   // Try workspace ./xit
   const workspaceFolders = vscode.workspace.workspaceFolders;

@@ -25,6 +25,7 @@ npm install -g xitsg
 或从 [GitHub Releases](https://github.com/stephenywilson/xit/releases) 下载。
 
 插件会自动从以下位置检测 `xit`：
+
 - 系统 `PATH`
 - `~/.local/bin/xit`
 - 工作区 `./xit`
@@ -33,33 +34,35 @@ npm install -g xitsg
 
 ## 命令
 
-| 命令 | 作用 |
-|---------|-------------|
-| `XiT: Run Command` | 检测命令是否高输出，如果是则用 `xit auto` 运行 |
-| `XiT: Run with Auto Compression` | 始终用 `xit auto` 运行命令 |
-| `XiT: Open XiT Terminal` | 打开名为 "XiT" 的专用终端 |
-| `XiT: Open Dashboard` | 显示最近运行记录、Workflow Health、累计节省、活动日志 |
-| `XiT: Refresh` | 刷新状态栏 |
-| `XiT: Show Gain` | 弹出累计节省摘要 |
-| `XiT: Open Latest Raw Log` | 打开工作区 `.xit/runs/` 中最新的原始日志 |
-| `XiT: Show Output Channel` | 显示 XiT 扩展调试输出 |
-| `XiT: Install Workspace AI Rules` | 在当前 workspace 的 AI 规则文件里幂等写入 XiT 命令输出规则 |
-| `XiT: Diagnose AI Workflow` | 输出当前 workspace 的 XiT CLI、最近 run、saved bytes、rules、routing hit rate 报告 |
-| `XiT: Verify AI Agent Routing` | 验证本地 AI agent 规则文件和最近高噪音命令是否真的通过 XiT 路由 |
+| 命令                              | 作用                                                                               |
+| --------------------------------- | ---------------------------------------------------------------------------------- |
+| `XiT: Run Command`                | 检测命令是否高输出，如果是则用 `xit auto` 运行                                     |
+| `XiT: Run with Auto Compression`  | 始终用 `xit auto` 运行命令                                                         |
+| `XiT: Open XiT Terminal`          | 打开名为 "XiT" 的专用终端                                                          |
+| `XiT: Open Dashboard`             | 显示最近运行记录、Workflow Health、累计节省、活动日志                              |
+| `XiT: Refresh`                    | 刷新状态栏                                                                         |
+| `XiT: Show Gain`                  | 弹出累计节省摘要                                                                   |
+| `XiT: Open Latest Raw Log`        | 打开工作区 `.xit/runs/` 中最新的原始日志                                           |
+| `XiT: Show Output Channel`        | 显示 XiT 扩展调试输出                                                              |
+| `XiT: Install Workspace AI Rules` | 在当前 workspace 的 AI 规则文件里幂等写入 XiT 命令输出规则                         |
+| `XiT: Diagnose AI Workflow`       | 输出当前 workspace 的 XiT CLI、最近 run、saved bytes、rules、routing hit rate 报告 |
+| `XiT: Verify AI Agent Routing`    | 验证本地 AI agent 规则文件和最近高噪音命令是否真的通过 XiT 路由                    |
 
 ## 状态栏含义
 
-| 状态栏 | 含义 |
-|------|---------|
-| `吸T神功 · 准备就绪` | 插件已启动，等待任务 |
-| `吸T神功 · 守护你的T` | 当前工作区已启用 XiT 规则 |
-| `吸T神功 · 正在吸T中` | 正在接管高噪音命令输出 |
-| `吸T完成 · 省~9k Token` | 本次命令已完成，节省约 9k Token |
-| `吸T神功 · 等待下轮发功` | 本轮完成，等待下一次任务 |
-| `吸T神功 · 无需发功` | 当前命令不需要 XiT 介入 |
-| `吸T神功 · 未找到 XiT` | 没找到本地 XiT CLI |
+| 状态栏                   | 含义                            |
+| ------------------------ | ------------------------------- |
+| `吸T神功 · 准备就绪`     | 插件已启动，等待任务            |
+| `吸T神功 · 守护你的T`    | 当前工作区已启用 XiT 规则       |
+| `吸T神功 · 正在吸T中`    | 正在接管高噪音命令输出          |
+| `吸T完成 · 省~9k Token`  | 本次命令已完成，节省约 9k Token |
+| `吸T神功 · 等待下轮发功` | 本轮完成，等待下一次任务        |
+| `吸T神功 · 无需发功`     | 当前命令不需要 XiT 介入         |
+| `吸T神功 · 未找到 XiT`   | 没找到本地 XiT CLI              |
 
 鼠标悬停在状态栏上可查看更多信息，包括最近一次吸T节省、原始日志路径，以及当前工作区是否处于守护状态。运行中主状态栏只显示“正在吸T中”；任何当前输出估算都不会在主状态栏里冒充实际节省结果。
+
+XiT CLI 在运行 `xit auto` 时还会把当前 active run 写到工作区 `.xit/state/current-run.json`（兼容保留 `.xit/state/current.json`）。扩展优先监听这个 state 文件来感知 running / completed 状态，再用 `.xit/history.jsonl` 做完成态与历史回放兜底。
 
 **边界说明：** 吸T神功**不会读取** AI 聊天内容，也不会读取私有 Webview。它通过本地命令输出、workspace 规则和 `.xit` 运行记录帮助 AI coding workflow 降噪。
 
@@ -76,14 +79,14 @@ npm install -g xitsg
 
 ## 设置
 
-| 设置 | 默认值 | 说明 |
-|---------|---------|-------------|
-| `xit.binaryPath` | `""` | `xit` 二进制文件路径。为空时自动检测。 |
-| `xit.home` | `""` | XiT 主目录。默认为 `~/.xit`。 |
-| `xit.refreshInterval` | `5` | 状态栏刷新间隔（秒）。 |
-| `xit.enableStatusBar` | `true` | 显示吸T神功状态栏。 |
+| 设置                         | 默认值 | 说明                                                                             |
+| ---------------------------- | ------ | -------------------------------------------------------------------------------- |
+| `xit.binaryPath`             | `""`   | `xit` 二进制文件路径。为空时自动检测。                                           |
+| `xit.home`                   | `""`   | XiT 主目录。默认为 `~/.xit`。                                                    |
+| `xit.refreshInterval`        | `5`    | 状态栏刷新间隔（秒）。                                                           |
+| `xit.enableStatusBar`        | `true` | 显示吸T神功状态栏。                                                              |
 | `xit.enableTerminalListener` | `true` | 监听 VS Code 终端命令执行，对高输出命令记录本地元数据并辅助计算 XiT 路由命中率。 |
-| `xit.showActiveAiSurface` | `true` | 在 tooltip / Dashboard 显示最近的本地 XiT 工具来源记录。 |
+| `xit.showActiveAiSurface`    | `true` | 在 tooltip / Dashboard 显示最近的本地 XiT 工具来源记录。                         |
 
 ## 隐私
 

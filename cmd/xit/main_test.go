@@ -289,8 +289,8 @@ func TestVersionOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("xit --version failed: %v", err)
 	}
-	if !strings.Contains(string(out), "0.2.43") {
-		t.Errorf("expected version 0.2.43, got: %s", out)
+	if !strings.Contains(string(out), "0.2.44") {
+		t.Errorf("expected version 0.2.44, got: %s", out)
 	}
 }
 
@@ -749,8 +749,8 @@ func TestAutoCommand(t *testing.T) {
 		// auto may return non-zero if git returns non-zero, but here git succeeds
 		t.Fatalf("auto git diff failed: %v\n%s", err, out)
 	}
-	if !strings.Contains(string(out), "XiT Auto Summary") {
-		t.Errorf("expected Auto Summary header, got:\n%s", out)
+	if !strings.Contains(string(out), "吸T完成") {
+		t.Errorf("expected 吸T完成 header, got:\n%s", out)
 	}
 }
 
@@ -766,8 +766,8 @@ func TestAutoPassthroughSmallOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("auto git status failed: %v\n%s", err, out)
 	}
-	if strings.Contains(string(out), "XiT Auto Summary") {
-		t.Error("small output should passthrough without Auto Summary")
+	if strings.Contains(string(out), "吸T完成") {
+		t.Error("small output should passthrough without auto summary")
 	}
 	if !strings.Contains(string(out), "small output") {
 		t.Errorf("expected passthrough output, got:\n%s", out)
@@ -787,11 +787,11 @@ func TestAutoWritesRuntimeState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("auto git diff failed: %v\n%s", err, out)
 	}
-	if !strings.Contains(string(out), "XiT Auto Summary") {
-		t.Errorf("expected Auto Summary header, got:\n%s", out)
+	if !strings.Contains(string(out), "吸T完成") {
+		t.Errorf("expected 吸T完成 header, got:\n%s", out)
 	}
 
-	statePath := filepath.Join(tmpHome, "state", "current.json")
+	statePath := filepath.Join(tmpHome, "state", "current-run.json")
 	data, err := os.ReadFile(statePath)
 	if err != nil {
 		t.Fatalf("expected state file at %s: %v", statePath, err)
@@ -804,6 +804,9 @@ func TestAutoWritesRuntimeState(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"raw_log"`) {
 		t.Errorf("expected raw_log in state file, got: %s", string(data))
+	}
+	if !strings.Contains(string(data), `"heartbeat_at"`) {
+		t.Errorf("expected heartbeat_at in state file, got: %s", string(data))
 	}
 }
 

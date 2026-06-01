@@ -46,7 +46,7 @@ export interface GlobalActivity {
 }
 
 export interface TerminalEvent {
-  source: 'vscode-terminal';
+  source: "vscode-terminal";
   time: string;
   commandLine: string;
   confidence: number;
@@ -70,9 +70,28 @@ export interface LatestRun {
   raw_log: string;
 }
 
+export interface CurrentRunState {
+  schema_version?: number;
+  status: "running" | "completed" | "failed";
+  command?: string;
+  started_at?: string;
+  heartbeat_at?: string;
+  completed_at?: string;
+  finished_at?: string;
+  exit_code?: number;
+  raw_bytes?: number;
+  summary_bytes?: number;
+  saved_bytes?: number;
+  saved_tokens?: number;
+  saved_tokens_display?: string;
+  estimated_reduction?: number;
+  raw_log?: string;
+  pid?: number;
+}
+
 export interface XiTStatus {
   available: boolean;
-  state: 'ok' | 'binary-not-found' | 'gain-json-failed' | 'no-data';
+  state: "ok" | "binary-not-found" | "gain-json-failed" | "no-data";
   gain?: GainData;
   activity?: GlobalActivity;
   error?: string;
@@ -96,8 +115,8 @@ export interface LatestRawLogMeta {
 }
 
 export interface WorkflowHealth {
-  cliStatus: 'found' | 'missing';
-  latestRunStatus: 'success' | 'none';
+  cliStatus: "found" | "missing";
+  latestRunStatus: "success" | "none";
   latestSavedBytes: number;
   latestSavedDisplay: string;
   workspaceRulesInstalled: boolean;
@@ -133,8 +152,8 @@ export interface TokenImpactStats {
 }
 
 export interface AdapterHealthItem {
-  adapter: 'Codex' | 'Claude' | 'Gemini' | 'Cursor';
-  status: 'rules installed' | 'unknown' | 'not verified';
+  adapter: "Codex" | "Claude" | "Gemini" | "Cursor";
+  status: "rules installed" | "unknown" | "not verified";
   evidence: string;
   ruleFiles: string[];
 }
@@ -142,6 +161,9 @@ export interface AdapterHealthItem {
 export interface VerifyRoutingReport {
   workspacePath: string;
   rulesFilesInstalled: string[];
+  currentRunState: "running" | "completed" | "failed" | "none";
+  latestRunTime?: string;
+  latestRunRawLog?: string;
   latestHighNoiseCommands: string[];
   latestXiTAutoCommands: string[];
   recentHighNoiseCommands: number;
@@ -158,6 +180,7 @@ export interface DiagnoseReport {
   cliVersion?: string;
   workspacePath: string;
   hasRunsDir: boolean;
+  currentRunState?: "running" | "completed" | "failed" | "none";
   latestRunTime?: string;
   latestSavedBytes?: number;
   latestSavedDisplay?: string;

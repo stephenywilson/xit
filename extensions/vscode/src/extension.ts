@@ -15,12 +15,19 @@ import {
   showOutput,
   writeTerminalEvent,
 } from './xit';
-import { buildDiagnoseReport, computeWorkflowHealth, formatSavedBytes, installWorkspaceAiRules } from './workflow';
+import {
+  buildDiagnoseReport,
+  computeWorkflowHealth,
+  formatSavedTokensForRun,
+  formatTokenCount,
+  installWorkspaceAiRules,
+} from './workflow';
 
 let statusBarItem: vscode.StatusBarItem | undefined;
 let refreshTimer: NodeJS.Timeout | undefined;
-let liveState: 'idle' | 'running' | 'success' | 'missed' | 'no-binary' = 'idle';
+let liveState: 'idle' | 'guarding' | 'running' | 'success' | 'waiting' | 'missed' | 'no-binary' = 'idle';
 let liveStateTimer: NodeJS.Timeout | undefined;
+let waitingStateTimer: NodeJS.Timeout | undefined;
 let lastObservedRunSignature: string | undefined;
 let terminalListenerDisposable: vscode.Disposable | undefined;
 
@@ -51,9 +58,9 @@ function getStatusBarTextFromRun(run: LatestRun | undefined): string {
   }
   const savedBytes = Math.max(0, run.raw_bytes - run.summary_bytes);
   if (savedBytes <= 0) {
-    return '吸T神功 · 本次未触发压缩';
+    return '吸T神功 · 无需发功';
   }
-  return `吸T神功 · 本次省${formatSavedBytes(savedBytes)}`;
+  return `吸T完成 · 本次省${formatSavedTokensForRun(run)}`;
 }
 
 function setLiveState(state: typeof liveState, durationMs = 0): void {
@@ -62,9 +69,22 @@ function setLiveState(state: typeof liveState, durationMs = 0): void {
     clearTimeout(liveStateTimer);
     liveStateTimer = undefined;
   }
+  if (waitingStateTimer) {
+    clearTimeout(waitingStateTimer);
+    waitingStateTimer = undefined;
+  }
   void updateStatusBarLive();
   if (durationMs > 0) {
     liveStateTimer = setTimeout(() => {
+      if (state === 'success' || state === 'missed') {
+        liveState = 'waiting';
+        void updateStatusBarLive();
+        waitingStateTimer = setTimeout(() => {
+          liveState = 'idle';
+          void updateStatusBar();
+        }, 20000);
+        return;
+      }
       liveState = 'idle';
       void updateStatusBar();
     }, durationMs);
@@ -118,15 +138,16 @@ async function updateStatusBar(): Promise<void> {
   const latestRun = readLatestRun();
   const latestRunSignature = getRunSignature(latestRun);
   const activeRawLog = detectActiveRawLog();
+  const health = computeWorkflowHealth(status, latestRun);
 
   if (!status.available && status.state === 'binary-not-found') {
     liveState = 'no-binary';
     statusBarItem.text = '吸T神功 · 未找到 XiT';
     statusBarItem.tooltip = [
-      status.error || 'XiT binary not found.',
-      status.cwd ? `workspace: ${status.cwd}` : '',
-      status.attempts && status.attempts.length > 0 ? `Attempted: ${status.attempts.join(', ')}` : '',
-      'Click to open XiT Dashboard',
+      '吸T神功尚未找到本地 XiT。',
+      status.cwd ? `当前工作区：${status.cwd}` : '',
+      status.attempts && status.attempts.length > 0 ? `已尝试：${status.attempts.join(', ')}` : '',
+      '点击打开 XiT Dashboard',
     ].filter(Boolean).join('\n');
     updateDashboardIfOpen(status);
     return;
@@ -137,30 +158,36 @@ async function updateStatusBar(): Promise<void> {
   } else if (latestRunSignature && latestRunSignature !== lastObservedRunSignature) {
     lastObservedRunSignature = latestRunSignature;
     const savedBytes = Math.max(0, (latestRun?.raw_bytes || 0) - (latestRun?.summary_bytes || 0));
-      setLiveState(savedBytes > 0 ? 'success' : 'missed', 25000);
+    setLiveState(savedBytes > 0 ? 'success' : 'missed', 25000);
+  } else if (liveState === 'idle' && health.workspaceRulesInstalled) {
+    liveState = 'guarding';
   }
 
   if (liveState === 'running') {
-    statusBarItem.text = '吸T神功 · 正在压缩';
+    const rawLogMeta = readLatestRawLogMeta();
+    const estimatedTokens = rawLogMeta ? Math.round(rawLogMeta.size / 4) : 0;
+    statusBarItem.text = estimatedTokens >= 1000
+      ? `吸T神功 · 已接管${formatTokenCount(estimatedTokens)}`
+      : '吸T神功 · 正在吸T中';
   } else if (liveState === 'success') {
     statusBarItem.text = getStatusBarTextFromRun(latestRun);
   } else if (liveState === 'missed') {
-    statusBarItem.text = '吸T神功 · 本次未触发压缩';
+    statusBarItem.text = '吸T神功 · 无需发功';
+  } else if (liveState === 'waiting') {
+    statusBarItem.text = '吸T神功 · 等待下轮发功';
+  } else if (liveState === 'guarding') {
+    statusBarItem.text = '吸T神功 · 守护你的T';
   } else {
     statusBarItem.text = '吸T神功 · 准备就绪';
   }
 
-  const health = computeWorkflowHealth(status, latestRun);
   statusBarItem.tooltip = [
-    latestRun ? `Latest run: ${latestRun.command}` : 'No XiT run recorded in this workspace yet.',
-    latestRun ? `Latest saved: ${health.latestSavedDisplay}` : '',
-    `Workspace rules: ${health.workspaceRulesInstalled ? 'installed' : 'missing'}`,
-    `Recent routed: ${health.recentHighNoiseRouted}/${health.recentHighNoiseCommands}`,
-    health.recommendation,
-    status.binary ? `Binary: ${status.binary}` : '',
-    status.cwd ? `workspace: ${status.cwd}` : '',
-    'XiT does not read chat content or private webviews.',
-    'Click to open XiT Dashboard',
+    health.workspaceRulesInstalled ? '吸T神功正在守护当前工作区' : '吸T神功已准备好，随时出手',
+    latestRun ? `最近吸T：省${health.latestSavedDisplay}` : '最近吸T：尚未出手',
+    latestRun?.raw_log ? `原始日志：${latestRun.raw_log}` : '',
+    status.binary ? `XiT 本体：${status.binary}` : '',
+    '本地处理，无遥测，无网络请求',
+    '点击打开 XiT Dashboard',
   ].filter(Boolean).join('\n');
 
   updateDashboardIfOpen(status);
@@ -176,18 +203,32 @@ async function updateStatusBarLive(): Promise<void> {
     return;
   }
   if (liveState === 'running') {
-    statusBarItem.text = '吸T神功 · 正在压缩';
+    const rawLogMeta = readLatestRawLogMeta();
+    const estimatedTokens = rawLogMeta ? Math.round(rawLogMeta.size / 4) : 0;
+    statusBarItem.text = estimatedTokens >= 1000
+      ? `吸T神功 · 已接管${formatTokenCount(estimatedTokens)}`
+      : '吸T神功 · 正在吸T中';
     return;
   }
   if (liveState === 'missed') {
-    statusBarItem.text = '吸T神功 · 本次未触发压缩';
+    statusBarItem.text = '吸T神功 · 无需发功';
     return;
   }
   if (liveState === 'success') {
     statusBarItem.text = getStatusBarTextFromRun(readLatestRun());
     return;
   }
-  statusBarItem.text = '吸T神功 · 准备就绪';
+  if (liveState === 'waiting') {
+    statusBarItem.text = '吸T神功 · 等待下轮发功';
+    return;
+  }
+  if (liveState === 'guarding') {
+    statusBarItem.text = '吸T神功 · 守护你的T';
+    return;
+  }
+  statusBarItem.text = computeWorkflowHealth(await fetchStatus(), readLatestRun()).workspaceRulesInstalled
+    ? '吸T神功 · 守护你的T'
+    : '吸T神功 · 准备就绪';
 }
 
 function startRefresh(): void {

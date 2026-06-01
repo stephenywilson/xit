@@ -275,7 +275,7 @@ export function computeWorkflowHealth(status: XiTStatus, latestRun: LatestRun | 
     cliStatus: status.available || status.state === 'gain-json-failed' ? 'found' : 'missing',
     latestRunStatus: latestRun ? 'success' : 'none',
     latestSavedBytes,
-    latestSavedDisplay: formatSavedBytes(latestSavedBytes),
+    latestSavedDisplay: formatSavedTokensFromBytes(latestSavedBytes),
     workspaceRulesInstalled: rules.installed,
     workspaceRuleFiles: rules.files,
     recentHighNoiseCommands: routing.recentHighNoiseCommands,
@@ -327,7 +327,7 @@ export async function buildDiagnoseReport(status: XiTStatus, latestRun: LatestRu
     hasRunsDir: fs.existsSync(runsDir),
     latestRunTime: latestRun?.timestamp,
     latestSavedBytes,
-    latestSavedDisplay: latestSavedBytes !== undefined ? formatSavedBytes(latestSavedBytes) : undefined,
+    latestSavedDisplay: latestSavedBytes !== undefined ? formatSavedTokensFromBytes(latestSavedBytes) : undefined,
     latestRawLogPath: latestRun?.raw_log,
     recentHighNoiseCommands: routing.recentHighNoiseCommands,
     recentHighNoiseRouted: routing.recentHighNoiseRouted,
@@ -346,4 +346,35 @@ export function formatSavedBytes(bytes: number): string {
     return `~${Math.round(bytes / 1000)}KB`;
   }
   return `${bytes}B`;
+}
+
+export function estimateTokensFromBytes(bytes: number): number {
+  return Math.max(0, Math.round(bytes / 4));
+}
+
+export function formatTokenCount(tokens: number): string {
+  if (tokens >= 1000000) {
+    return `~${Math.round(tokens / 100000) / 10}M Token`;
+  }
+  if (tokens >= 1000) {
+    return `~${Math.round(tokens / 1000)}k Token`;
+  }
+  return `${tokens} Token`;
+}
+
+export function formatSavedTokensFromBytes(bytes: number): string {
+  return formatTokenCount(estimateTokensFromBytes(bytes));
+}
+
+export function formatSavedTokensForRun(run: LatestRun | undefined): string {
+  if (!run) {
+    return '0 Token';
+  }
+  if (run.saved_tokens_display) {
+    return run.saved_tokens_display.includes('Token') ? run.saved_tokens_display : `${run.saved_tokens_display} Token`;
+  }
+  if (typeof run.saved_tokens === 'number') {
+    return formatTokenCount(run.saved_tokens);
+  }
+  return formatSavedTokensFromBytes(Math.max(0, run.raw_bytes - run.summary_bytes));
 }

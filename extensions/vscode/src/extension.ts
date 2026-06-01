@@ -186,6 +186,7 @@ function getCompletedRunFromStateOrHistory(): LatestRun | undefined {
   if (!state || (state.status !== "completed" && state.status !== "failed")) {
     return latestRun;
   }
+  // If the state raw_log matches history's latest, use history (it has richer fields).
   if (
     latestRun?.raw_log &&
     state.raw_log &&
@@ -194,6 +195,16 @@ function getCompletedRunFromStateOrHistory(): LatestRun | undefined {
     return latestRun;
   }
   if (!state.completed_at && !state.finished_at) {
+    return latestRun;
+  }
+  // If history has a newer entry than state's completion time, history is the source of truth.
+  const stateCompletedMs = parseIsoTimeMs(state.completed_at || state.finished_at);
+  const historyTs = parseIsoTimeMs(latestRun?.timestamp);
+  if (
+    stateCompletedMs !== undefined &&
+    historyTs !== undefined &&
+    historyTs > stateCompletedMs
+  ) {
     return latestRun;
   }
   return {

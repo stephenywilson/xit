@@ -4,6 +4,7 @@ import * as vscode from "vscode";
 import type {
   AdapterEvent,
   AdapterHealthItem,
+  CurrentRunState,
   GlobalActivity,
   LatestRun,
   XiTStatus,
@@ -21,6 +22,7 @@ import {
   formatSavedTokensForRun,
   getAiAdapterHealth,
   getTokenImpactStats,
+  readAllWorkspaceRuns,
 } from "./workflow";
 
 let panel: vscode.WebviewPanel | undefined;
@@ -99,6 +101,33 @@ function computeActivityFromEvents(events: AdapterEvent[]): GlobalActivity {
 
 function buildCommandUri(command: string): string {
   return `command:${command}`;
+}
+
+// True only when current-run.json is actively running with a fresh heartbeat (≤15s).
+// A stale completed state must never override history.jsonl as the latest run source.
+function isCurrentRunFreshAndRunning(state: CurrentRunState | undefined): boolean {
+  if (!state || state.status !== "running") {
+    return false;
+  }
+  const heartbeat = state.heartbeat_at || state.started_at;
+  if (!heartbeat) {
+    return false;
+  }
+  const ms = Date.parse(heartbeat);
+  return !Number.isNaN(ms) && Date.now() - ms <= 15000;
+}
+
+// Walk history newest-first and return the first entry with positive saved bytes/tokens.
+function selectLatestSavedRun(runs: LatestRun[]): LatestRun | undefined {
+  for (let i = runs.length - 1; i >= 0; i--) {
+    const run = runs[i];
+    const savedBytes = Math.max(0, run.raw_bytes - run.summary_bytes);
+    const savedTokens = typeof run.saved_tokens === "number" ? run.saved_tokens : 0;
+    if (savedBytes > 0 || savedTokens > 0) {
+      return run;
+    }
+  }
+  return undefined;
 }
 
 interface WorkspaceWatchInfo {
@@ -339,13 +368,15 @@ function buildDashboardHtml(
   const currentRunState = readCurrentRunState();
   const statusMeta = buildStatusMeta(status, latestRun);
 
-  // Only treat currentRunState as a real run if it's actively running or has actual output data.
-  // Stale state files with raw_bytes=0 / saved_tokens=null are ignored.
-  const validCurrentRun = currentRunState && (
-    currentRunState.status === "running" ||
-    (typeof currentRunState.raw_bytes === "number" && currentRunState.raw_bytes > 0) ||
-    (typeof currentRunState.saved_tokens === "number" && currentRunState.saved_tokens > 0)
-  ) ? currentRunState : undefined;
+  // Only treat current-run.json as active when it is freshly running (status=running + heartbeat ≤15s).
+  // Any stale completed state — even one with raw_bytes>0 — must not override history.jsonl.
+  const validCurrentRun = isCurrentRunFreshAndRunning(currentRunState ?? undefined)
+    ? currentRunState
+    : undefined;
+
+  // Latest entry in history with positive savings (used for the "Latest Saved" card).
+  const allRuns = readAllWorkspaceRuns();
+  const latestPositiveSavedRun = selectLatestSavedRun(allRuns);
 
   const hasAnyRun = !!(validCurrentRun || latestRun);
 
@@ -464,11 +495,17 @@ function buildDashboardHtml(
         if (!workspaceWatchInfo.hasAnyXitData) {
           return renderSummaryCard("Latest Saved", "—", "当前工作区没有记录", "muted-zero" as const);
         }
-        const savedVal = latestSavedDisplay || "0 Token";
+        // Use the latest history entry with positive savings — never let a stale zero-gain run override it.
+        const positiveSavedVal = latestPositiveSavedRun
+          ? formatSavedTokensForRun(latestPositiveSavedRun)
+          : undefined;
+        const savedVal = positiveSavedVal || "0 Token";
         const isZero = savedVal === "0 Token" || savedVal === "0";
         const tone = isZero ? ("muted-zero" as const) : ("success" as const);
-        const subtitle = latestReductionDisplay === "--" ? "等待下一次 run" : `降噪 ${latestReductionDisplay}`;
-        return renderSummaryCard("Latest Saved", savedVal, subtitle, tone);
+        const positiveReduction = latestPositiveSavedRun
+          ? `降噪 ${formatReduction(latestPositiveSavedRun.estimated_reduction)}`
+          : "等待下一次 run";
+        return renderSummaryCard("Latest Saved", savedVal, positiveReduction, tone);
       })()}
       ${renderSummaryCard(
         "Today Saved",

@@ -156,7 +156,7 @@ function renderSummaryCard(
   title: string,
   value: string,
   subtitle: string,
-  tone: "neutral" | "accent" | "success" | "warning",
+  tone: "neutral" | "accent" | "success" | "warning" | "muted-zero",
 ): string {
   return `
     <article class="summary-card ${tone}">
@@ -288,58 +288,82 @@ function buildDashboardHtml(
   const currentRunState = readCurrentRunState();
   const statusMeta = buildStatusMeta(status, latestRun);
 
-  const latestCommand = currentRunState?.command || latestRun?.command || "No recent XiT run";
-  const latestRawLog = currentRunState?.raw_log || latestRun?.raw_log;
+  // Only treat currentRunState as a real run if it's actively running or has actual output data.
+  // Stale state files with raw_bytes=0 / saved_tokens=null are ignored.
+  const validCurrentRun = currentRunState && (
+    currentRunState.status === "running" ||
+    (typeof currentRunState.raw_bytes === "number" && currentRunState.raw_bytes > 0) ||
+    (typeof currentRunState.saved_tokens === "number" && currentRunState.saved_tokens > 0)
+  ) ? currentRunState : undefined;
+
+  const hasAnyRun = !!(validCurrentRun || latestRun);
+
+  const latestCommand = validCurrentRun?.command || latestRun?.command;
+  const latestRawLog = validCurrentRun?.raw_log || latestRun?.raw_log;
   const latestRawTokens =
-    typeof currentRunState?.raw_bytes === "number" && currentRunState.raw_bytes > 0
-      ? Math.max(0, Math.round(currentRunState.raw_bytes / 4))
+    typeof validCurrentRun?.raw_bytes === "number" && validCurrentRun.raw_bytes > 0
+      ? Math.max(0, Math.round(validCurrentRun.raw_bytes / 4))
       : tokenImpact.latest?.rawTokens;
   const latestSummaryTokens =
-    typeof currentRunState?.summary_bytes === "number" && currentRunState.summary_bytes > 0
-      ? Math.max(0, Math.round(currentRunState.summary_bytes / 4))
+    typeof validCurrentRun?.summary_bytes === "number" && validCurrentRun.summary_bytes > 0
+      ? Math.max(0, Math.round(validCurrentRun.summary_bytes / 4))
       : tokenImpact.latest?.summaryTokens;
   const latestSavedDisplay =
-    currentRunState?.saved_tokens_display ||
-    (typeof currentRunState?.saved_tokens === "number"
-      ? formatTokenShort(currentRunState.saved_tokens)
+    validCurrentRun?.saved_tokens_display ||
+    (typeof validCurrentRun?.saved_tokens === "number"
+      ? formatTokenShort(validCurrentRun.saved_tokens)
       : undefined) ||
     formatSavedTokensForRun(latestRun);
   const latestReductionDisplay =
-    typeof currentRunState?.estimated_reduction === "number"
-      ? formatReduction(currentRunState.estimated_reduction)
+    typeof validCurrentRun?.estimated_reduction === "number"
+      ? formatReduction(validCurrentRun.estimated_reduction)
       : latestRun
         ? formatReduction(latestRun.estimated_reduction)
         : "--";
   const latestExitCode =
-    typeof currentRunState?.exit_code === "number"
-      ? String(currentRunState.exit_code)
+    typeof validCurrentRun?.exit_code === "number"
+      ? String(validCurrentRun.exit_code)
       : latestRun
         ? String(latestRun.exit_code)
         : "--";
   const latestDuration = latestRun
     ? `${(latestRun.duration_ms / 1000).toFixed(1)}s`
-    : currentRunState?.started_at && currentRunState.heartbeat_at
+    : validCurrentRun?.started_at && validCurrentRun.heartbeat_at
       ? "running"
       : "--";
+
+  // Workspace total: prefer history aggregation; fall back to gain.saved_bytes if history is empty.
+  const gainFallbackTokens = !tokenImpact.workspaceTotalSavedTokens && gain?.saved_bytes
+    ? Math.max(0, Math.round(gain.saved_bytes / 4))
+    : 0;
+  const workspaceTotalSavedDisplay = tokenImpact.workspaceTotalSavedTokens > 0
+    ? tokenImpact.workspaceTotalSavedDisplay
+    : gainFallbackTokens > 0
+      ? formatTokenShort(gainFallbackTokens)
+      : "0 Token";
 
   const topCommands = tokenImpact.topTokenHeavyCommands;
   const topCommandsPrimary = topCommands.slice(0, 5);
   const topCommandsExtra = topCommands.slice(5);
   const recentEventsPrimary = events.slice(0, 5);
   const recentEventsExtra = events.slice(5, 20);
-  const hardErrors: string[] = [];
 
+  // Critical errors only — shown in main banner.
+  const hardErrors: string[] = [];
   if (status.state === "binary-not-found") {
-    hardErrors.push("XiT binary not found");
+    hardErrors.push("未找到 XiT CLI，请运行 npm install -g xitsg 安装");
   }
+
+  // Low-severity notes relegated to Debug panel only.
+  const debugNotes: string[] = [];
   if (status.state === "gain-json-failed") {
-    hardErrors.push("xit gain --json did not return valid JSON");
+    debugNotes.push("xit gain --json 未返回有效 JSON");
   }
-  if (status.error) {
-    hardErrors.push(status.error);
+  if (status.error && status.state !== "binary-not-found") {
+    debugNotes.push(status.error);
   }
   if (gain?.warnings?.length) {
-    hardErrors.push(...gain.warnings);
+    debugNotes.push(...gain.warnings);
   }
 
   const rawLogHref = latestRawLog ? buildCommandUri("xit.openLatestRawLog") : undefined;
@@ -382,12 +406,13 @@ function buildDashboardHtml(
         status.available ? "XiT 工作区守护状态" : "需要本地 XiT CLI",
         status.state === "binary-not-found" ? "warning" : "accent",
       )}
-      ${renderSummaryCard(
-        "Latest Saved",
-        latestSavedDisplay || "0 Token",
-        latestReductionDisplay === "--" ? "等待下一次 run" : `降噪 ${latestReductionDisplay}`,
-        "success",
-      )}
+      ${(() => {
+        const savedVal = latestSavedDisplay || "0 Token";
+        const isZero = savedVal === "0 Token" || savedVal === "0";
+        const tone = isZero ? ("muted-zero" as const) : ("success" as const);
+        const subtitle = latestReductionDisplay === "--" ? "等待下一次 run" : `降噪 ${latestReductionDisplay}`;
+        return renderSummaryCard("Latest Saved", savedVal, subtitle, tone);
+      })()}
       ${renderSummaryCard(
         "Today Saved",
         tokenImpact.todaySavedDisplay,
@@ -396,7 +421,7 @@ function buildDashboardHtml(
       )}
       ${renderSummaryCard(
         "Workspace Total",
-        tokenImpact.workspaceTotalSavedDisplay,
+        workspaceTotalSavedDisplay,
         "累计节省",
         "neutral",
       )}
@@ -407,14 +432,15 @@ function buildDashboardHtml(
         <h2>Current / Latest Run</h2>
         <span class="section-note">最新一轮命令与压缩结果</span>
       </div>
+      ${hasAnyRun ? `
       <div class="run-grid">
         <div class="run-card">
-          ${renderKeyValueRow("Command", latestCommand, {
+          ${renderKeyValueRow("Command", latestCommand ?? "—", {
             mono: true,
             truncate: true,
-            title: latestCommand,
+            title: latestCommand ?? "—",
           })}
-          ${renderKeyValueRow("Status", currentRunState?.status || (latestRun ? "completed" : "idle"))}
+          ${renderKeyValueRow("Status", validCurrentRun?.status || (latestRun ? "completed" : "idle"))}
           ${renderKeyValueRow("Exit code", latestExitCode)}
           ${renderKeyValueRow("Duration", latestDuration)}
           ${
@@ -425,7 +451,7 @@ function buildDashboardHtml(
                   title: latestRawLog,
                   href: rawLogHref,
                 })
-              : renderKeyValueRow("Raw log", "No raw log yet")
+              : renderKeyValueRow("Raw log", "暂无 raw log")
           }
         </div>
         <div class="metrics-grid compact">
@@ -435,6 +461,7 @@ function buildDashboardHtml(
           ${renderMetricItem("降噪率", latestReductionDisplay)}
         </div>
       </div>
+      ` : `<p class="empty-state">暂无最近运行 — 运行一次高噪音命令后，这里会显示本次吸T结果。</p>`}
     </section>
 
     <section class="panel">
@@ -575,6 +602,12 @@ function buildDashboardHtml(
     <details class="debug-panel">
       <summary>Advanced / Debug</summary>
       <div class="debug-grid">
+        ${debugNotes.length > 0 ? `
+        <div class="debug-card full-span">
+          <h3>Notes</h3>
+          ${debugNotes.map((n) => `<div class="kv-row"><span class="kv-value">${escapeHtml(n)}</span></div>`).join("")}
+        </div>
+        ` : ""}
         <div class="debug-card">
           <h3>Paths</h3>
           ${renderKeyValueRow("Binary path", status.binary || "Not resolved", {

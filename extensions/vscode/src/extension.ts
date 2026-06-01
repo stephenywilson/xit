@@ -1,17 +1,33 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import * as vscode from 'vscode';
-import { fetchStatus, openLatestRawLog, showOutput, writeTerminalEvent, readRecentEvents } from './xit';
 import { showDashboard, updateDashboardIfOpen } from './dashboard';
-import { promptRunCommand, promptRunWithAutoCompression, openXiTTerminal, handleTerminalHighOutput, refreshAfterRun } from './runner';
+import { openXiTTerminal, promptRunCommand, promptRunWithAutoCompression } from './runner';
+import type { LatestRun, XiTStatus } from './types';
+import {
+  appendOutput,
+  clearOutput,
+  fetchStatus,
+  openLatestRawLog,
+  readLatestRawLogMeta,
+  readLatestRun,
+  resolveWorkspaceCwd,
+  showOutput,
+  writeTerminalEvent,
+} from './xit';
+import { buildDiagnoseReport, computeWorkflowHealth, formatSavedBytes, installWorkspaceAiRules } from './workflow';
 
 let statusBarItem: vscode.StatusBarItem | undefined;
 let refreshTimer: NodeJS.Timeout | undefined;
 let liveState: 'idle' | 'running' | 'success' | 'missed' | 'no-binary' = 'idle';
 let liveStateTimer: NodeJS.Timeout | undefined;
+let lastObservedRunSignature: string | undefined;
+let terminalListenerDisposable: vscode.Disposable | undefined;
 
 function getRefreshIntervalMs(): number {
   const cfg = vscode.workspace.getConfiguration('xit');
-  const seconds = cfg.get<number>('refreshInterval', 10);
-  return Math.max(5, seconds) * 1000;
+  const seconds = cfg.get<number>('refreshInterval', 5);
+  return Math.max(3, seconds) * 1000;
 }
 
 function isEnabled(): boolean {
@@ -19,52 +35,78 @@ function isEnabled(): boolean {
   return cfg.get<boolean>('enableStatusBar', true);
 }
 
-function isShowActiveAiSurface(): boolean {
+function isTerminalListenerEnabled(): boolean {
   const cfg = vscode.workspace.getConfiguration('xit');
-  return cfg.get<boolean>('showActiveAiSurface', true);
+  return cfg.get<boolean>('enableTerminalListener', true);
 }
 
-function detectRecentAiSurface(): string | undefined {
-  if (!isShowActiveAiSurface()) {
+function getWorkspacePath(): string | undefined {
+  const folders = vscode.workspace.workspaceFolders;
+  return folders && folders.length > 0 ? folders[0].uri.fsPath : undefined;
+}
+
+function getStatusBarTextFromRun(run: LatestRun | undefined): string {
+  if (!run) {
+    return '吸T神功 · 准备就绪';
+  }
+  const savedBytes = Math.max(0, run.raw_bytes - run.summary_bytes);
+  if (savedBytes <= 0) {
+    return '吸T神功 · 本次未触发压缩';
+  }
+  return `吸T神功 · 本次省${formatSavedBytes(savedBytes)}`;
+}
+
+function setLiveState(state: typeof liveState, durationMs = 0): void {
+  liveState = state;
+  if (liveStateTimer) {
+    clearTimeout(liveStateTimer);
+    liveStateTimer = undefined;
+  }
+  void updateStatusBarLive();
+  if (durationMs > 0) {
+    liveStateTimer = setTimeout(() => {
+      liveState = 'idle';
+      void updateStatusBar();
+    }, durationMs);
+  }
+}
+
+function getRunSignature(run: LatestRun | undefined): string | undefined {
+  if (!run) {
+    return undefined;
+  }
+  return `${run.timestamp}|${run.raw_log}|${run.exit_code}`;
+}
+
+function detectActiveRawLog(): string | undefined {
+  const latestRawLog = readLatestRawLogMeta();
+  if (!latestRawLog) {
     return undefined;
   }
 
-  const adapters = ['claude', 'codex', 'cursor', 'kimi', 'aider'];
-  let latestTime = '';
-  let latestAdapter: string | undefined;
+  const latestRun = readLatestRun();
+  const latestRunLog = latestRun?.raw_log ? path.resolve(latestRun.raw_log) : undefined;
+  const rawLogPath = path.resolve(latestRawLog.path);
+  const ageMs = Date.now() - latestRawLog.mtimeMs;
 
-  for (const adapter of adapters) {
-    const events = readRecentEvents(adapter, 1);
-    if (events.length > 0) {
-      const ev = events[0];
-      if (ev.time && ev.time > latestTime) {
-        latestTime = ev.time;
-        latestAdapter = adapter;
-      }
-    }
+  if (ageMs > 15000) {
+    return undefined;
   }
 
-  if (latestAdapter) {
-    return latestAdapter.charAt(0).toUpperCase() + latestAdapter.slice(1);
+  if (!latestRunLog || latestRunLog !== rawLogPath) {
+    return rawLogPath;
+  }
+
+  try {
+    const historyMtime = fs.statSync(path.join(resolveWorkspaceCwd(), '.xit', 'history.jsonl')).mtimeMs;
+    if (latestRawLog.mtimeMs > historyMtime) {
+      return rawLogPath;
+    }
+  } catch {
+    return rawLogPath;
   }
 
   return undefined;
-}
-
-function buildStatusBarText(state: typeof liveState): string {
-  switch (state) {
-    case 'no-binary':
-      return '吸T神功 · 未找到 XiT';
-    case 'running':
-      return '吸T神功 · 正在压缩';
-    case 'missed':
-      return '吸T神功 · 本次未触发压缩';
-    case 'success':
-      return '吸T神功 · ';
-    case 'idle':
-    default:
-      return '吸T神功 · 准备就绪';
-  }
 }
 
 async function updateStatusBar(): Promise<void> {
@@ -72,25 +114,17 @@ async function updateStatusBar(): Promise<void> {
     return;
   }
 
-  // Live transient states take priority over periodic refresh
-  if (liveState === 'running' || liveState === 'missed') {
-    return;
-  }
-
   const status = await fetchStatus();
+  const latestRun = readLatestRun();
+  const latestRunSignature = getRunSignature(latestRun);
+  const activeRawLog = detectActiveRawLog();
 
-  if (!status.available) {
-    if (status.state === 'binary-not-found') {
-      statusBarItem.text = '吸T神功 · 未找到 XiT';
-    } else if (status.state === 'gain-json-failed') {
-      statusBarItem.text = 'XiT · no data';
-    } else {
-      statusBarItem.text = 'XiT · no data';
-    }
+  if (!status.available && status.state === 'binary-not-found') {
+    liveState = 'no-binary';
+    statusBarItem.text = '吸T神功 · 未找到 XiT';
     statusBarItem.tooltip = [
-      status.error || 'XiT status unavailable.',
-      'Shows local XiT data only.',
-      status.cwd ? `cwd: ${status.cwd}` : '',
+      status.error || 'XiT binary not found.',
+      status.cwd ? `workspace: ${status.cwd}` : '',
       status.attempts && status.attempts.length > 0 ? `Attempted: ${status.attempts.join(', ')}` : '',
       'Click to open XiT Dashboard',
     ].filter(Boolean).join('\n');
@@ -98,44 +132,75 @@ async function updateStatusBar(): Promise<void> {
     return;
   }
 
-  // Idle: never show historical gain in status bar text
-  const recentAiSurface = detectRecentAiSurface();
-  statusBarItem.text = buildStatusBarText('idle');
+  if (activeRawLog) {
+    setLiveState('running');
+  } else if (latestRunSignature && latestRunSignature !== lastObservedRunSignature) {
+    lastObservedRunSignature = latestRunSignature;
+    const savedBytes = Math.max(0, (latestRun?.raw_bytes || 0) - (latestRun?.summary_bytes || 0));
+      setLiveState(savedBytes > 0 ? 'success' : 'missed', 25000);
+  }
 
-  const gain = status.gain!;
-  const surfaceLine = recentAiSurface
-    ? `最近记录：${recentAiSurface}`
-    : '';
+  if (liveState === 'running') {
+    statusBarItem.text = '吸T神功 · 正在压缩';
+  } else if (liveState === 'success') {
+    statusBarItem.text = getStatusBarTextFromRun(latestRun);
+  } else if (liveState === 'missed') {
+    statusBarItem.text = '吸T神功 · 本次未触发压缩';
+  } else {
+    statusBarItem.text = '吸T神功 · 准备就绪';
+  }
 
-  const lines = [
-    gain.total_commands_condensed > 0
-      ? `历史累计省: ${gain.saved_tokens_display}`
-      : 'No XiT gain data for this workspace yet.',
-    gain.total_commands_condensed > 0 ? `Estimated reduction: ${(gain.estimated_reduction * 100).toFixed(1)}%` : '',
-    gain.total_commands_condensed > 0 ? `Commands condensed: ${gain.total_commands_condensed}` : '',
-    surfaceLine,
-    'XiT 只显示本地记录，不读取聊天内容或私有 Webview。',
+  const health = computeWorkflowHealth(status, latestRun);
+  statusBarItem.tooltip = [
+    latestRun ? `Latest run: ${latestRun.command}` : 'No XiT run recorded in this workspace yet.',
+    latestRun ? `Latest saved: ${health.latestSavedDisplay}` : '',
+    `Workspace rules: ${health.workspaceRulesInstalled ? 'installed' : 'missing'}`,
+    `Recent routed: ${health.recentHighNoiseRouted}/${health.recentHighNoiseCommands}`,
+    health.recommendation,
     status.binary ? `Binary: ${status.binary}` : '',
-    status.cwd ? `cwd: ${status.cwd}` : '',
-    gain.warnings && gain.warnings.length > 0 ? `Warnings: ${gain.warnings.join('; ')}` : '',
-    `Refreshed: ${status.refreshedAt.toLocaleTimeString()}`,
+    status.cwd ? `workspace: ${status.cwd}` : '',
+    'XiT does not read chat content or private webviews.',
     'Click to open XiT Dashboard',
-  ].filter(Boolean);
-  statusBarItem.tooltip = lines.join('\n');
+  ].filter(Boolean).join('\n');
 
   updateDashboardIfOpen(status);
+}
+
+async function updateStatusBarLive(): Promise<void> {
+  if (!statusBarItem) {
+    return;
+  }
+
+  if (liveState === 'no-binary') {
+    statusBarItem.text = '吸T神功 · 未找到 XiT';
+    return;
+  }
+  if (liveState === 'running') {
+    statusBarItem.text = '吸T神功 · 正在压缩';
+    return;
+  }
+  if (liveState === 'missed') {
+    statusBarItem.text = '吸T神功 · 本次未触发压缩';
+    return;
+  }
+  if (liveState === 'success') {
+    statusBarItem.text = getStatusBarTextFromRun(readLatestRun());
+    return;
+  }
+  statusBarItem.text = '吸T神功 · 准备就绪';
 }
 
 function startRefresh(): void {
   if (refreshTimer) {
     clearInterval(refreshTimer);
-    refreshTimer = undefined;
   }
   if (!isEnabled()) {
     return;
   }
-  updateStatusBar();
-  refreshTimer = setInterval(updateStatusBar, getRefreshIntervalMs());
+  void updateStatusBar();
+  refreshTimer = setInterval(() => {
+    void updateStatusBar();
+  }, getRefreshIntervalMs());
 }
 
 function stopRefresh(): void {
@@ -145,65 +210,55 @@ function stopRefresh(): void {
   }
 }
 
-function setLiveState(state: typeof liveState, durationMs = 5000): void {
-  liveState = state;
-  updateStatusBarLive();
-  if (liveStateTimer) {
-    clearTimeout(liveStateTimer);
-  }
-  if (state !== 'idle' && state !== 'no-binary') {
-    liveStateTimer = setTimeout(() => {
-      liveState = 'idle';
-      updateStatusBarLive();
-    }, durationMs);
-  }
-}
-
-async function updateStatusBarLive(): Promise<void> {
-  if (!statusBarItem) {
-    return;
-  }
-  if (liveState === 'no-binary') {
-    statusBarItem.text = '吸T神功 · 未找到 XiT';
+function registerWorkspaceWatchers(context: vscode.ExtensionContext): void {
+  const workspacePath = getWorkspacePath();
+  if (!workspacePath) {
     return;
   }
 
-  if (liveState === 'running') {
-    statusBarItem.text = buildStatusBarText('running');
-    return;
-  }
-  if (liveState === 'missed') {
-    statusBarItem.text = buildStatusBarText('missed');
-    return;
-  }
-  if (liveState === 'success') {
-    const latest = (await import('./xit')).readLatestRun();
-    if (latest) {
-      const saved = latest.raw_bytes - latest.summary_bytes;
-      const display = saved >= 1000 ? `~${Math.round(saved / 1000)}KB` : `${saved}B`;
-      statusBarItem.text = `吸T神功 · 本次省${display}`;
-    } else {
-      statusBarItem.text = buildStatusBarText('idle');
+  const historyPattern = new vscode.RelativePattern(workspacePath, '.xit/history.jsonl');
+  const rawLogPattern = new vscode.RelativePattern(workspacePath, '.xit/runs/*.raw.log');
+
+  const historyWatcher = vscode.workspace.createFileSystemWatcher(historyPattern);
+  const rawLogWatcher = vscode.workspace.createFileSystemWatcher(rawLogPattern);
+
+  const onHistoryChange = async (): Promise<void> => {
+    const latestRun = readLatestRun();
+    const signature = getRunSignature(latestRun);
+    if (signature && signature !== lastObservedRunSignature) {
+      lastObservedRunSignature = signature;
+      const savedBytes = Math.max(0, (latestRun?.raw_bytes || 0) - (latestRun?.summary_bytes || 0));
+      setLiveState(savedBytes > 0 ? 'success' : 'missed', 25000);
     }
-    return;
-  }
-  // idle: never show historical gain in status bar text
-  statusBarItem.text = buildStatusBarText('idle');
-}
+    await updateStatusBar();
+  };
 
-function isTerminalListenerEnabled(): boolean {
-  const cfg = vscode.workspace.getConfiguration('xit');
-  return cfg.get<boolean>('enableTerminalListener', false);
+  const onRawLogChange = async (): Promise<void> => {
+    const active = detectActiveRawLog();
+    if (active) {
+      setLiveState('running');
+    }
+    await updateStatusBar();
+  };
+
+  historyWatcher.onDidChange(onHistoryChange, null, context.subscriptions);
+  historyWatcher.onDidCreate(onHistoryChange, null, context.subscriptions);
+  rawLogWatcher.onDidChange(onRawLogChange, null, context.subscriptions);
+  rawLogWatcher.onDidCreate(onRawLogChange, null, context.subscriptions);
+
+  context.subscriptions.push(historyWatcher, rawLogWatcher);
 }
 
 function registerTerminalListeners(context: vscode.ExtensionContext): void {
+  terminalListenerDisposable?.dispose();
+  terminalListenerDisposable = undefined;
+
   if (!isTerminalListenerEnabled()) {
     return;
   }
 
-  // VS Code 1.120+ terminal shell execution API
   try {
-    const startDisposable = (vscode.window as any).onDidStartTerminalShellExecution?.((event: any) => {
+    const listener = (vscode.window as any).onDidStartTerminalShellExecution?.((event: any) => {
       const commandLine = event.execution?.commandLine?.value || '';
       const confidence = event.execution?.commandLine?.confidence ?? 0;
       const terminalName = event.terminal?.name || 'unknown';
@@ -212,47 +267,69 @@ function registerTerminalListeners(context: vscode.ExtensionContext): void {
         return;
       }
       writeTerminalEvent({ commandLine, confidence, terminalName, cwd });
-
-      // High-output detection notification
-      (async () => {
-        await handleTerminalHighOutput(commandLine);
-        setLiveState('missed', 4000);
-      })();
+      if (/\bxit\s+auto\b/.test(commandLine)) {
+        setLiveState('running');
+      }
+      void updateStatusBar();
     });
-    if (startDisposable) {
-      context.subscriptions.push(startDisposable);
+    if (listener) {
+      terminalListenerDisposable = listener;
+      context.subscriptions.push(listener);
     }
   } catch {
-    // API not available on this VS Code version
+    // ignore API absence
   }
+}
+
+async function runDiagnose(): Promise<void> {
+  const status = await fetchStatus();
+  const latestRun = readLatestRun();
+  const report = await buildDiagnoseReport(status, latestRun);
+  const lines = [
+    'XiT AI Workflow Diagnose',
+    `workspace: ${report.workspacePath}`,
+    `binary_path: ${report.binaryPath || 'missing'}`,
+    `cli_version: ${report.cliVersion || 'unknown'}`,
+    `has_runs_dir: ${report.hasRunsDir ? 'yes' : 'no'}`,
+    `latest_run_time: ${report.latestRunTime || 'none'}`,
+    `latest_saved_bytes: ${report.latestSavedBytes ?? 'none'}`,
+    `latest_saved_display: ${report.latestSavedDisplay || 'none'}`,
+    `latest_raw_log: ${report.latestRawLogPath || 'none'}`,
+    `recent_high_noise_commands: ${report.recentHighNoiseCommands}`,
+    `recent_routed_through_xit: ${report.recentHighNoiseRouted}`,
+    `routing_hit_rate: ${(report.routingHitRate * 100).toFixed(1)}%`,
+    `workspace_rules_installed: ${report.workspaceRulesInstalled ? 'yes' : 'no'}`,
+    `workspace_rule_files: ${report.workspaceRuleFiles.length > 0 ? report.workspaceRuleFiles.join(', ') : 'none'}`,
+    `recommendation: ${report.recommendation || 'none'}`,
+  ];
+  clearOutput();
+  appendOutput(lines.join('\n'));
+  showOutput();
 }
 
 export function activate(context: vscode.ExtensionContext): void {
   if (isEnabled()) {
     statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
     statusBarItem.command = 'xit.openDashboard';
+    statusBarItem.text = '吸T神功 · 准备就绪';
     statusBarItem.show();
     context.subscriptions.push(statusBarItem);
   }
 
+  lastObservedRunSignature = getRunSignature(readLatestRun());
   startRefresh();
+  registerWorkspaceWatchers(context);
   registerTerminalListeners(context);
 
   context.subscriptions.push(
     vscode.commands.registerCommand('xit.openDashboard', async () => {
       const status = await fetchStatus();
       showDashboard(context, status);
-    })
-  );
-
-  context.subscriptions.push(
+    }),
     vscode.commands.registerCommand('xit.refresh', async () => {
       await updateStatusBar();
       vscode.window.showInformationMessage('XiT status refreshed');
-    })
-  );
-
-  context.subscriptions.push(
+    }),
     vscode.commands.registerCommand('xit.showGain', async () => {
       const status = await fetchStatus();
       if (!status.available || !status.gain) {
@@ -260,49 +337,34 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
       const g = status.gain;
-      const lines = [
-        `Commands condensed: ${g.total_commands_condensed}`,
-        `Saved tokens: ${g.saved_tokens_display}`,
-        `Estimated reduction: ${(g.estimated_reduction * 100).toFixed(1)}%`,
-        `Saved bytes: ${g.saved_bytes}`,
-      ];
-      vscode.window.showInformationMessage(lines.join(' | '));
-    })
-  );
-
-  context.subscriptions.push(
-    vscode.commands.registerCommand('xit.openLatestRawLog', openLatestRawLog)
-  );
-
-  context.subscriptions.push(
-    vscode.commands.registerCommand('xit.showOutput', showOutput)
-  );
-
-  context.subscriptions.push(
+      vscode.window.showInformationMessage(
+        `Commands condensed: ${g.total_commands_condensed} | Saved tokens: ${g.saved_tokens_display} | Estimated reduction: ${(g.estimated_reduction * 100).toFixed(1)}% | Saved bytes: ${g.saved_bytes}`
+      );
+    }),
+    vscode.commands.registerCommand('xit.openLatestRawLog', openLatestRawLog),
+    vscode.commands.registerCommand('xit.showOutput', showOutput),
     vscode.commands.registerCommand('xit.runCommand', async () => {
-      setLiveState('running', 5000);
+      setLiveState('running');
       await promptRunCommand();
-      await refreshAfterRun();
-      setLiveState('success', 5000);
-    })
-  );
-
-  context.subscriptions.push(
+    }),
     vscode.commands.registerCommand('xit.runWithAutoCompression', async () => {
-      setLiveState('running', 5000);
+      setLiveState('running');
       await promptRunWithAutoCompression();
-      await refreshAfterRun();
-      setLiveState('success', 5000);
-    })
-  );
-
-  context.subscriptions.push(
+    }),
     vscode.commands.registerCommand('xit.openXiTTerminal', () => {
       openXiTTerminal();
-    })
-  );
-
-  context.subscriptions.push(
+    }),
+    vscode.commands.registerCommand('xit.installWorkspaceAiRules', async () => {
+      const result = installWorkspaceAiRules();
+      await updateStatusBar();
+      const createdSummary = result.created.length > 0 ? ` Created: ${result.created.join(', ')}` : '';
+      vscode.window.showInformationMessage(
+        `XiT workspace AI rules updated in ${result.files.length} file(s).${createdSummary}`
+      );
+    }),
+    vscode.commands.registerCommand('xit.diagnoseAiWorkflow', async () => {
+      await runDiagnose();
+    }),
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('xit.enableStatusBar')) {
         if (isEnabled()) {
@@ -312,20 +374,18 @@ export function activate(context: vscode.ExtensionContext): void {
             context.subscriptions.push(statusBarItem);
           }
           statusBarItem.show();
+          statusBarItem.text = '吸T神功 · 准备就绪';
           startRefresh();
         } else {
           stopRefresh();
-          if (statusBarItem) {
-            statusBarItem.hide();
-          }
+          statusBarItem?.hide();
         }
       }
       if (e.affectsConfiguration('xit.refreshInterval')) {
         startRefresh();
       }
       if (e.affectsConfiguration('xit.enableTerminalListener')) {
-        // Terminal listener change requires reload; inform user
-        vscode.window.showInformationMessage('XiT: Terminal listener setting changed. Reload window to apply.');
+        registerTerminalListeners(context);
       }
     })
   );
@@ -333,4 +393,5 @@ export function activate(context: vscode.ExtensionContext): void {
 
 export function deactivate(): void {
   stopRefresh();
+  terminalListenerDisposable?.dispose();
 }

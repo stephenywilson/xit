@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import type { AdapterEvent, GlobalActivity, XiTStatus, LatestRun } from './types';
 import { readRecentEvents, readWorkspaceHistory, readTerminalEvents, readLatestRun } from './xit';
+import { computeWorkflowHealth } from './workflow';
 
 let panel: vscode.WebviewPanel | undefined;
 let panelContext: vscode.ExtensionContext | undefined;
@@ -82,6 +83,7 @@ function buildDashboardHtml(
   const hasWorkspaceGain = gain && gain.total_commands_condensed > 0;
   const activity = status.activity || computeActivityFromEvents(events);
   const hasGlobalActivity = activity.eventCount > 0;
+  const health = computeWorkflowHealth(status, latestRun);
 
   // Latest XiT Run section
   const hasLatestRun = latestRun !== undefined;
@@ -97,6 +99,18 @@ function buildDashboardHtml(
       <div class="ga-row"><span class="ga-label">Raw log</span><span class="ga-value ga-cmd">${escapeHtml(latestRun.raw_log)}</span></div>
     </div>
   ` : '<p class="empty">No recent XiT run found. Use <strong>XiT: Run Command</strong> or run <code>xit auto</code> in terminal.</p>';
+
+  const workflowHealthSection = `
+    <div class="global-activity">
+      <div class="ga-row"><span class="ga-label">CLI</span><span class="ga-value">${health.cliStatus}</span></div>
+      <div class="ga-row"><span class="ga-label">Latest run</span><span class="ga-value">${health.latestRunStatus}</span></div>
+      <div class="ga-row"><span class="ga-label">Latest saved</span><span class="ga-value">${health.latestSavedDisplay}</span></div>
+      <div class="ga-row"><span class="ga-label">Workspace rules</span><span class="ga-value">${health.workspaceRulesInstalled ? 'installed' : 'missing'}</span></div>
+      <div class="ga-row"><span class="ga-label">Recent routed</span><span class="ga-value">${health.recentHighNoiseRouted}/${health.recentHighNoiseCommands}</span></div>
+      <div class="ga-row"><span class="ga-label">Recommendation</span><span class="ga-value">${escapeHtml(health.recommendation)}</span></div>
+      ${health.workspaceRuleFiles.length > 0 ? `<div class="ga-row"><span class="ga-label">Rule files</span><span class="ga-value ga-cmd">${escapeHtml(health.workspaceRuleFiles.join(', '))}</span></div>` : ''}
+    </div>
+  `;
 
   // Diagnostic section (binary missing / JSON error)
   const hardErrors: string[] = [];
@@ -390,6 +404,9 @@ ${hardErrors.length > 0 ? `<div class="diagnostic">${escapeHtml(hardErrors.join(
 
 <h2>Latest XiT Run</h2>
 ${latestRunSection}
+
+<h2>XiT Workflow Health</h2>
+${workflowHealthSection}
 
 <h2>Workspace Gain</h2>
 ${workspaceGainSection}

@@ -3,7 +3,7 @@ import * as child_process from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
-import type { GainData, AdapterEvent, GlobalActivity, XiTStatus, LatestRun } from './types';
+import type { GainData, AdapterEvent, GlobalActivity, XiTStatus, LatestRun, LatestRawLogMeta } from './types';
 
 const OUTPUT_CHANNEL = vscode.window.createOutputChannel('XiT Status');
 
@@ -15,11 +15,19 @@ function log(message: string): void {
   OUTPUT_CHANNEL.appendLine(message);
 }
 
+export function appendOutput(message: string): void {
+  OUTPUT_CHANNEL.appendLine(message);
+}
+
+export function clearOutput(): void {
+  OUTPUT_CHANNEL.clear();
+}
+
 function showOutput(): void {
   OUTPUT_CHANNEL.show(true);
 }
 
-function resolveWorkspaceCwd(): string {
+export function resolveWorkspaceCwd(): string {
   const folders = vscode.workspace.workspaceFolders;
   if (folders && folders.length > 0) {
     return folders[0].uri.fsPath;
@@ -354,6 +362,23 @@ export function findLatestRawLog(): string | undefined {
   }
 }
 
+export function readLatestRawLogMeta(): LatestRawLogMeta | undefined {
+  const latestPath = findLatestRawLog();
+  if (!latestPath) {
+    return undefined;
+  }
+  try {
+    const stats = fs.statSync(latestPath);
+    return {
+      path: latestPath,
+      mtimeMs: stats.mtimeMs,
+      size: stats.size,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 export async function openLatestRawLog(): Promise<void> {
   const logPath = findLatestRawLog();
   if (!logPath) {
@@ -415,6 +440,16 @@ export function readTerminalEvents(maxLines = 20): { time: string; commandLine: 
   } catch {
     return [];
   }
+}
+
+export function resolveAvailableBinary(): string | undefined {
+  const candidates = resolveBinaryCandidates();
+  for (const candidate of candidates) {
+    if (isExecutableCandidate(candidate)) {
+      return candidate;
+    }
+  }
+  return undefined;
 }
 
 export function isHighOutputCommand(cmd: string): boolean {

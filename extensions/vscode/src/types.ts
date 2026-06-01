@@ -153,9 +153,11 @@ export interface TokenImpactStats {
 
 export interface AdapterHealthItem {
   adapter: "Codex" | "Claude" | "Gemini" | "Cursor";
-  status: "rules installed" | "unknown" | "not verified";
+  status: "verified" | "rules installed" | "unknown" | "not verified";
   evidence: string;
   ruleFiles: string[];
+  routedCount?: number;
+  observedCount?: number;
 }
 
 export interface VerifyRoutingReport {

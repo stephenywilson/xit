@@ -1,9 +1,11 @@
+import * as path from "path";
 import * as vscode from "vscode";
 import type {
   AdapterEvent,
+  AdapterHealthItem,
   GlobalActivity,
-  XiTStatus,
   LatestRun,
+  XiTStatus,
 } from "./types";
 import {
   readRecentEvents,
@@ -20,7 +22,6 @@ import {
 } from "./workflow";
 
 let panel: vscode.WebviewPanel | undefined;
-let panelContext: vscode.ExtensionContext | undefined;
 
 function escapeHtml(text: string): string {
   return text
@@ -42,12 +43,15 @@ function formatBytes(n: number): string {
 }
 
 function formatReduction(r: number): string {
-  return (r * 100).toFixed(1) + "%";
+  return `${Math.round(r * 100)}%`;
 }
 
 function formatTokenShort(tokens: number): string {
+  if (tokens >= 1000000) {
+    return `~${Math.round(tokens / 100000) / 10}M Token`;
+  }
   if (tokens >= 1000) {
-    return `~${(tokens / 1000).toFixed(1)}k Token`;
+    return `~${Math.round(tokens / 100) / 10}k Token`;
   }
   return `${tokens} Token`;
 }
@@ -63,30 +67,24 @@ function formatTime(iso: string): string {
 function gatherAllEvents(): AdapterEvent[] {
   const adapters = ["cursor", "codex", "claude", "kimi"];
   let allEvents: AdapterEvent[] = [];
-  for (const a of adapters) {
-    allEvents = allEvents.concat(readRecentEvents(a, 10));
+  for (const adapter of adapters) {
+    allEvents = allEvents.concat(readRecentEvents(adapter, 12));
   }
-  const workspaceEvents = readWorkspaceHistory(10);
-  allEvents = allEvents.concat(workspaceEvents);
-  allEvents.sort((a, b) => {
-    const ta = a.time || "";
-    const tb = b.time || "";
-    return tb.localeCompare(ta);
-  });
+  allEvents = allEvents.concat(readWorkspaceHistory(12));
+  allEvents.sort((a, b) => (b.time || "").localeCompare(a.time || ""));
   return allEvents;
 }
 
 function computeActivityFromEvents(events: AdapterEvent[]): GlobalActivity {
   const adapterCounts: Record<string, number> = {};
-  for (const e of events) {
-    if (e.adapter) {
-      adapterCounts[e.adapter] = (adapterCounts[e.adapter] || 0) + 1;
+  for (const event of events) {
+    if (event.adapter) {
+      adapterCounts[event.adapter] = (adapterCounts[event.adapter] || 0) + 1;
     }
   }
-  const sorted = [...events].sort((a, b) =>
+  const latest = [...events].sort((a, b) =>
     (b.time || "").localeCompare(a.time || ""),
-  );
-  const latest = sorted[0];
+  )[0];
   return {
     latestAdapter: latest?.adapter,
     latestTime: latest?.time,
@@ -95,6 +93,178 @@ function computeActivityFromEvents(events: AdapterEvent[]): GlobalActivity {
     eventCount: events.length,
     adapterCounts,
   };
+}
+
+function buildCommandUri(command: string): string {
+  return `command:${command}`;
+}
+
+function buildStatusMeta(
+  status: XiTStatus,
+  latestRun: LatestRun | undefined,
+): {
+  heroTitle: string;
+  heroSubtitle: string;
+  pillLabel: string;
+  pillTone: "running" | "success" | "idle" | "warning";
+} {
+  const currentRunState = readCurrentRunState();
+  if (status.state === "binary-not-found") {
+    return {
+      heroTitle: "XiT 未连接",
+      heroSubtitle: "未找到本地 XiT CLI，Dashboard 只能显示有限状态。",
+      pillLabel: "未找到 XiT",
+      pillTone: "warning",
+    };
+  }
+
+  if (currentRunState?.status === "running") {
+    return {
+      heroTitle: "XiT 正在处理高噪音输出",
+      heroSubtitle: "当前命令正在吸T中，摘要会在 run 完成后更新。",
+      pillLabel: "正在吸T中",
+      pillTone: "running",
+    };
+  }
+
+  if (latestRun) {
+    return {
+      heroTitle: "XiT 最近一次压缩已完成",
+      heroSubtitle: "当前工作区已有可用节省结果与路由记录。",
+      pillLabel: "吸T完成",
+      pillTone: "success",
+    };
+  }
+
+  return {
+    heroTitle: "XiT 正在守护你的高噪音命令",
+    heroSubtitle: "本地降噪 · Token 节省 · AI Agent Routing",
+    pillLabel: "守护中",
+    pillTone: "idle",
+  };
+}
+
+function getCurrentStatusLabel(status: XiTStatus, latestRun: LatestRun | undefined): string {
+  const meta = buildStatusMeta(status, latestRun);
+  if (meta.pillLabel === "守护中") {
+    return "守护你的T";
+  }
+  return meta.pillLabel;
+}
+
+function renderSummaryCard(
+  title: string,
+  value: string,
+  subtitle: string,
+  tone: "neutral" | "accent" | "success" | "warning",
+): string {
+  return `
+    <article class="summary-card ${tone}">
+      <div class="summary-label">${escapeHtml(title)}</div>
+      <div class="summary-value">${escapeHtml(value)}</div>
+      <div class="summary-subtitle">${escapeHtml(subtitle)}</div>
+    </article>
+  `;
+}
+
+function renderMetricItem(label: string, value: string, highlight = false): string {
+  return `
+    <div class="metric-tile ${highlight ? "highlight" : ""}">
+      <div class="metric-label">${escapeHtml(label)}</div>
+      <div class="metric-value">${escapeHtml(value)}</div>
+    </div>
+  `;
+}
+
+function renderKeyValueRow(
+  label: string,
+  value: string,
+  options?: {
+    mono?: boolean;
+    truncate?: boolean;
+    title?: string;
+    href?: string;
+  },
+): string {
+  const classNames = [
+    "kv-value",
+    options?.mono ? "mono" : "",
+    options?.truncate ? "truncate" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const titleAttr = options?.title
+    ? ` title="${escapeHtml(options.title)}"`
+    : "";
+  const content = options?.href
+    ? `<a class="${classNames}" href="${options.href}"${titleAttr}>${escapeHtml(value)}</a>`
+    : `<span class="${classNames}"${titleAttr}>${escapeHtml(value)}</span>`;
+  return `
+    <div class="kv-row">
+      <span class="kv-label">${escapeHtml(label)}</span>
+      ${content}
+    </div>
+  `;
+}
+
+function renderAdapterCard(item: AdapterHealthItem): string {
+  const routed = item.routedCount ?? 0;
+  const observed = item.observedCount ?? 0;
+  const ratio = observed > 0 ? `${routed}/${observed} routed` : "No routed sample";
+  const evidence = item.ruleFiles.length > 0
+    ? `${path.basename(item.ruleFiles[0])}${observed > 0 ? ` · ${ratio}` : ""}`
+    : item.evidence;
+
+  return `
+    <article class="adapter-card">
+      <div class="adapter-topline">
+        <div class="adapter-name">${escapeHtml(item.adapter)}</div>
+        <span class="status-pill ${escapeHtml(item.status).replace(/\s+/g, "-")}">${escapeHtml(item.status)}</span>
+      </div>
+      <div class="adapter-evidence" title="${escapeHtml(item.evidence)}">${escapeHtml(evidence)}</div>
+      <div class="adapter-ratio">${escapeHtml(ratio)}</div>
+    </article>
+  `;
+}
+
+function renderEventRows(events: AdapterEvent[]): string {
+  return events
+    .map((event) => {
+      const time = event.time ? formatTime(event.time) : "-";
+      const command = event.original_command || event.event || event.action || "-";
+      return `
+        <tr>
+          <td>${escapeHtml(time)}</td>
+          <td>${escapeHtml(event.adapter || "-")}</td>
+          <td class="mono truncate-cell" title="${escapeHtml(command)}">${escapeHtml(command)}</td>
+          <td>${escapeHtml(event.policy || "-")}</td>
+        </tr>
+      `;
+    })
+    .join("");
+}
+
+function renderTerminalRows(
+  terminalEvents: {
+    time: string;
+    commandLine: string;
+    terminalName: string;
+    cwd?: string;
+  }[],
+): string {
+  return terminalEvents
+    .map((event) => {
+      const time = event.time ? formatTime(event.time) : "-";
+      return `
+        <tr>
+          <td>${escapeHtml(time)}</td>
+          <td>${escapeHtml(event.terminalName)}</td>
+          <td class="mono truncate-cell" title="${escapeHtml(event.commandLine)}">${escapeHtml(event.commandLine)}</td>
+          <td class="truncate-cell" title="${escapeHtml(event.cwd || "-")}">${escapeHtml(event.cwd || "-")}</td>
+        </tr>
+      `;
+    })
+    .join("");
 }
 
 function buildDashboardHtml(
@@ -108,512 +278,402 @@ function buildDashboardHtml(
   }[],
   latestRun: LatestRun | undefined,
   cspSource: string,
+  stylesheetHref: string,
 ): string {
   const gain = status.gain;
-  const hasWorkspaceGain = gain && gain.total_commands_condensed > 0;
   const activity = status.activity || computeActivityFromEvents(events);
-  const hasGlobalActivity = activity.eventCount > 0;
   const health = computeWorkflowHealth(status, latestRun);
   const tokenImpact = getTokenImpactStats(latestRun);
   const adapterHealth = getAiAdapterHealth();
   const currentRunState = readCurrentRunState();
+  const statusMeta = buildStatusMeta(status, latestRun);
 
-  // Latest XiT Run section
-  const hasLatestRun = latestRun !== undefined;
-  const latestSavedBytes = hasLatestRun
-    ? latestRun.raw_bytes - latestRun.summary_bytes
-    : 0;
-  const latestRunSection = hasLatestRun
-    ? `
-    <div class="latest-run">
-      <div class="ga-row"><span class="ga-label">Command</span><span class="ga-value ga-cmd">${escapeHtml(latestRun.command)}</span></div>
-      <div class="ga-row"><span class="ga-label">Executed</span><span class="ga-value">xit auto ${escapeHtml(latestRun.command)}</span></div>
-      <div class="ga-row"><span class="ga-label">Latest saved</span><span class="ga-value">${formatSavedTokensForRun(latestRun)}</span></div>
-      <div class="ga-row"><span class="ga-label">Exit code</span><span class="ga-value">${latestRun.exit_code}</span></div>
-      <div class="ga-row"><span class="ga-label">Reduction</span><span class="ga-value">${formatReduction(latestRun.estimated_reduction)}</span></div>
-      <div class="ga-row"><span class="ga-label">Saved bytes</span><span class="ga-value">${formatBytes(latestSavedBytes)}</span></div>
-      <div class="ga-row"><span class="ga-label">Current run</span><span class="ga-value">${currentRunState?.status || "none"}</span></div>
-      <div class="ga-row"><span class="ga-label">Duration</span><span class="ga-value">${(latestRun.duration_ms / 1000).toFixed(1)}s</span></div>
-      <div class="ga-row"><span class="ga-label">Raw log</span><span class="ga-value ga-cmd">${escapeHtml(latestRun.raw_log)}</span></div>
-    </div>
-  `
-    : '<p class="empty">No recent XiT run found. Use <strong>XiT: Run Command</strong> or run <code>xit auto</code> in terminal.</p>';
+  const latestCommand = currentRunState?.command || latestRun?.command || "No recent XiT run";
+  const latestRawLog = currentRunState?.raw_log || latestRun?.raw_log;
+  const latestRawTokens =
+    typeof currentRunState?.raw_bytes === "number" && currentRunState.raw_bytes > 0
+      ? Math.max(0, Math.round(currentRunState.raw_bytes / 4))
+      : tokenImpact.latest?.rawTokens;
+  const latestSummaryTokens =
+    typeof currentRunState?.summary_bytes === "number" && currentRunState.summary_bytes > 0
+      ? Math.max(0, Math.round(currentRunState.summary_bytes / 4))
+      : tokenImpact.latest?.summaryTokens;
+  const latestSavedDisplay =
+    currentRunState?.saved_tokens_display ||
+    (typeof currentRunState?.saved_tokens === "number"
+      ? formatTokenShort(currentRunState.saved_tokens)
+      : undefined) ||
+    formatSavedTokensForRun(latestRun);
+  const latestReductionDisplay =
+    typeof currentRunState?.estimated_reduction === "number"
+      ? formatReduction(currentRunState.estimated_reduction)
+      : latestRun
+        ? formatReduction(latestRun.estimated_reduction)
+        : "--";
+  const latestExitCode =
+    typeof currentRunState?.exit_code === "number"
+      ? String(currentRunState.exit_code)
+      : latestRun
+        ? String(latestRun.exit_code)
+        : "--";
+  const latestDuration = latestRun
+    ? `${(latestRun.duration_ms / 1000).toFixed(1)}s`
+    : currentRunState?.started_at && currentRunState.heartbeat_at
+      ? "running"
+      : "--";
 
-  const workflowHealthSection = `
-    <div class="global-activity">
-      <div class="ga-row"><span class="ga-label">CLI</span><span class="ga-value">${health.cliStatus}</span></div>
-      <div class="ga-row"><span class="ga-label">Latest run</span><span class="ga-value">${health.latestRunStatus}</span></div>
-      <div class="ga-row"><span class="ga-label">Latest saved</span><span class="ga-value">${health.latestSavedDisplay}</span></div>
-      <div class="ga-row"><span class="ga-label">Current run</span><span class="ga-value">${currentRunState?.status || "none"}</span></div>
-      <div class="ga-row"><span class="ga-label">Saved bytes</span><span class="ga-value">${formatBytes(health.latestSavedBytes)}</span></div>
-      <div class="ga-row"><span class="ga-label">Workspace rules</span><span class="ga-value">${health.workspaceRulesInstalled ? "installed" : "missing"}</span></div>
-      <div class="ga-row"><span class="ga-label">Recent routed</span><span class="ga-value">${health.recentHighNoiseRouted}/${health.recentHighNoiseCommands}</span></div>
-      <div class="ga-row"><span class="ga-label">Recommendation</span><span class="ga-value">${escapeHtml(health.recommendation)}</span></div>
-      ${health.workspaceRuleFiles.length > 0 ? `<div class="ga-row"><span class="ga-label">Rule files</span><span class="ga-value ga-cmd">${escapeHtml(health.workspaceRuleFiles.join(", "))}</span></div>` : ""}
-    </div>
-  `;
-
-  const tokenImpactSection = tokenImpact.latest
-    ? `
-    <div class="grid">
-      <div class="stat">
-        <div class="value">${formatTokenShort(tokenImpact.latest.rawTokens)}</div>
-        <div class="label">Latest raw tokens</div>
-      </div>
-      <div class="stat">
-        <div class="value">${formatTokenShort(tokenImpact.latest.summaryTokens)}</div>
-        <div class="label">Latest summary tokens</div>
-      </div>
-      <div class="stat">
-        <div class="value">${tokenImpact.latest.savedDisplay}</div>
-        <div class="label">Latest saved tokens</div>
-      </div>
-      <div class="stat">
-        <div class="value">${Math.round(tokenImpact.latest.reductionPct)}%</div>
-        <div class="label">Latest reduction</div>
-      </div>
-      <div class="stat">
-        <div class="value">${tokenImpact.todaySavedDisplay}</div>
-        <div class="label">Today saved tokens</div>
-      </div>
-      <div class="stat">
-        <div class="value">${tokenImpact.workspaceTotalSavedDisplay}</div>
-        <div class="label">Workspace total saved tokens</div>
-      </div>
-    </div>
-    <h2>Top Token-Heavy Commands</h2>
-    ${
-      tokenImpact.topTokenHeavyCommands.length > 0
-        ? `
-    <table>
-      <thead>
-        <tr><th>Command</th><th>Runs</th><th>Saved tokens</th><th>Raw tokens</th><th>Summary tokens</th></tr>
-      </thead>
-      <tbody>
-        ${tokenImpact.topTokenHeavyCommands
-          .map(
-            (entry) => `
-          <tr>
-            <td>${escapeHtml(entry.command)}</td>
-            <td>${entry.runs}</td>
-            <td>${entry.savedDisplay}</td>
-            <td>${formatTokenShort(entry.rawTokens)}</td>
-            <td>${formatTokenShort(entry.summaryTokens)}</td>
-          </tr>
-        `,
-          )
-          .join("")}
-      </tbody>
-    </table>
-    `
-        : '<p class="empty">No token-heavy commands recorded yet.</p>'
-    }
-  `
-    : '<p class="empty">No completed XiT run yet, so token impact is not available.</p>';
-
-  const adapterHealthSection = `
-    <table>
-      <thead>
-        <tr><th>Adapter</th><th>Status</th><th>Evidence</th></tr>
-      </thead>
-      <tbody>
-        ${adapterHealth
-          .map(
-            (item) => `
-          <tr>
-            <td>${escapeHtml(item.adapter)}</td>
-            <td>${escapeHtml(item.status)}</td>
-            <td>${escapeHtml(item.evidence)}</td>
-          </tr>
-        `,
-          )
-          .join("")}
-      </tbody>
-    </table>
-  `;
-
-  // Diagnostic section (binary missing / JSON error)
+  const topCommands = tokenImpact.topTokenHeavyCommands;
+  const topCommandsPrimary = topCommands.slice(0, 5);
+  const topCommandsExtra = topCommands.slice(5);
+  const recentEventsPrimary = events.slice(0, 5);
+  const recentEventsExtra = events.slice(5, 20);
   const hardErrors: string[] = [];
+
   if (status.state === "binary-not-found") {
-    hardErrors.push("XiT binary not found.");
+    hardErrors.push("XiT binary not found");
   }
   if (status.state === "gain-json-failed") {
-    hardErrors.push("xit gain --json did not return valid JSON.");
+    hardErrors.push("xit gain --json did not return valid JSON");
   }
   if (status.error) {
     hardErrors.push(status.error);
   }
-  if (status.binary) {
-    hardErrors.push(`Binary: ${status.binary}`);
-  }
-  if (status.cwd) {
-    hardErrors.push(`cwd: ${status.cwd}`);
-  }
-  if (status.attempts && status.attempts.length > 0) {
-    hardErrors.push(`Attempted: ${status.attempts.join(", ")}`);
-  }
-  if (gain?.warnings && gain.warnings.length > 0) {
-    hardErrors.push(`Warnings: ${gain.warnings.join("; ")}`);
+  if (gain?.warnings?.length) {
+    hardErrors.push(...gain.warnings);
   }
 
-  // Workspace gain stats
-  const topCommandsRows =
-    gain?.top_commands
-      .map(
-        (c) => `
-      <tr>
-        <td>${escapeHtml(c.command)}</td>
-        <td>${c.runs}</td>
-        <td>${c.saved_tokens_display}</td>
-        <td>${formatBytes(c.saved_bytes)}</td>
-      </tr>
-    `,
-      )
-      .join("") || "";
-
-  // Recent events table
-  const eventRows =
-    events
-      .slice(0, 20)
-      .map((e) => {
-        const time = e.time ? escapeHtml(formatTime(e.time)) : "-";
-        const cmd = e.original_command
-          ? escapeHtml(e.original_command)
-          : e.event || e.action || "-";
-        const adapter = e.adapter ? escapeHtml(e.adapter) : "-";
-        const policy = e.policy ? escapeHtml(e.policy) : "";
-        return `
-        <tr>
-          <td>${time}</td>
-          <td>${adapter}</td>
-          <td>${cmd}</td>
-          <td>${policy}</td>
-        </tr>
-      `;
-      })
-      .join("") || "";
-
-  // VS Code Terminal events table
-  const terminalEventRows =
-    terminalEvents
-      .slice(0, 20)
-      .map((e) => {
-        const time = e.time ? escapeHtml(formatTime(e.time)) : "-";
-        const cmd = escapeHtml(e.commandLine);
-        const term = escapeHtml(e.terminalName);
-        const cwd = e.cwd ? escapeHtml(e.cwd) : "";
-        return `
-        <tr>
-          <td>${time}</td>
-          <td>${term}</td>
-          <td><code>${cmd}</code></td>
-          <td>${cwd}</td>
-        </tr>
-      `;
-      })
-      .join("") || "";
-
-  // Adapter cards — active = has events in current session data
-  const adapters = [
-    "Cursor",
-    "Codex",
-    "Claude",
-    "Kimi",
-    "Antigravity",
-    "Aider",
-  ];
-  const adapterCards = adapters
-    .map((a) => {
-      const lower = a.toLowerCase();
-      const count = activity.adapterCounts[lower] || 0;
-      const isActive = count > 0;
-      const statusClass = isActive ? "active" : "inactive";
-      const badge = isActive ? ` <span class="badge">${count}</span>` : "";
-      return `<div class="card adapter ${statusClass}">${escapeHtml(a)}${badge}</div>`;
-    })
-    .join("");
-
-  // Global activity summary block
-  const globalActivityBlock = hasGlobalActivity
-    ? `
-    <div class="global-activity">
-      <div class="ga-row">
-        <span class="ga-label">Latest adapter</span>
-        <span class="ga-value">${activity.latestAdapter ? escapeHtml(activity.latestAdapter) : "-"}</span>
-      </div>
-      <div class="ga-row">
-        <span class="ga-label">Last event</span>
-        <span class="ga-value">${activity.latestTime ? escapeHtml(formatTime(activity.latestTime)) : "-"}</span>
-      </div>
-      <div class="ga-row">
-        <span class="ga-label">Recent events</span>
-        <span class="ga-value">${activity.eventCount}</span>
-      </div>
-      ${
-        activity.latestCommand
-          ? `
-      <div class="ga-row">
-        <span class="ga-label">Last command</span>
-        <span class="ga-value ga-cmd">${escapeHtml(activity.latestCommand)}</span>
-      </div>`
-          : ""
-      }
-    </div>
-  `
-    : '<p class="empty">No global agent events found in ~/.xit.</p>';
-
-  // Workspace gain section
-  const workspaceGainSection = hasWorkspaceGain
-    ? `
-    <div class="grid">
-      <div class="stat">
-        <div class="value">${gain!.total_commands_condensed}</div>
-        <div class="label">Commands condensed</div>
-      </div>
-      <div class="stat">
-        <div class="value">${gain!.saved_tokens_display}</div>
-        <div class="label">Saved tokens</div>
-      </div>
-      <div class="stat">
-        <div class="value">${formatReduction(gain!.estimated_reduction)}</div>
-        <div class="label">Reduction</div>
-      </div>
-      <div class="stat">
-        <div class="value">${formatBytes(gain!.saved_bytes)}</div>
-        <div class="label">Saved bytes</div>
-      </div>
-    </div>
-    <h2>Top Commands</h2>
-    ${
-      gain!.top_commands.length > 0
-        ? `
-    <table>
-      <thead>
-        <tr><th>Command</th><th>Runs</th><th>Saved tokens</th><th>Saved bytes</th></tr>
-      </thead>
-      <tbody>
-        ${topCommandsRows}
-      </tbody>
-    </table>
-    `
-        : '<p class="empty">No condensed commands yet.</p>'
-    }
-  `
-    : `
-    <div class="no-workspace-gain">
-      No XiT gain history for this workspace yet.<br>
-      ${hasGlobalActivity ? "Showing global agent activity from ~/.xit below." : "No global activity found either."}
-    </div>
-  `;
+  const rawLogHref = latestRawLog ? buildCommandUri("xit.openLatestRawLog") : undefined;
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${cspSource}; script-src 'none';">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>XiT Dashboard</title>
-<style>
-body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  color: var(--vscode-foreground, #cccccc);
-  background: var(--vscode-editor-background, #1e1e1e);
-  padding: 16px;
-  line-height: 1.5;
-}
-h1 { font-size: 1.4rem; margin-bottom: 8px; }
-h2 {
-  font-size: 1.1rem;
-  margin-top: 24px;
-  margin-bottom: 8px;
-  border-bottom: 1px solid var(--vscode-panel-border, #333);
-  padding-bottom: 4px;
-}
-.grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: 12px;
-  margin-bottom: 16px;
-}
-.stat {
-  background: var(--vscode-editor-inactiveSelectionBackground, #2a2d2e);
-  border-radius: 6px;
-  padding: 12px;
-}
-.stat .value { font-size: 1.3rem; font-weight: 600; }
-.stat .label { font-size: 0.8rem; opacity: 0.8; }
-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
-th, td {
-  text-align: left;
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--vscode-panel-border, #333);
-}
-th { opacity: 0.7; font-weight: 500; }
-.adapters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
-.card {
-  border-radius: 6px;
-  padding: 8px 12px;
-  font-size: 0.85rem;
-  font-weight: 500;
-}
-.card.adapter.active {
-  background: var(--vscode-testing-iconPassed, #2ea043);
-  color: var(--vscode-editor-background, #0d1117);
-}
-.card.adapter.inactive {
-  background: var(--vscode-editor-inactiveSelectionBackground, #2a2d2e);
-  opacity: 0.6;
-}
-.badge {
-  display: inline-block;
-  background: rgba(0,0,0,0.25);
-  border-radius: 10px;
-  padding: 0 6px;
-  font-size: 0.75rem;
-  margin-left: 4px;
-}
-.privacy {
-  margin-top: 24px;
-  padding: 10px 12px;
-  border-radius: 6px;
-  background: var(--vscode-inputValidation-infoBackground, #1e2a36);
-  font-size: 0.8rem;
-}
-.empty { opacity: 0.6; font-size: 0.9rem; }
-.diagnostic {
-  border: 1px solid var(--vscode-inputValidation-warningBorder, #b89500);
-  background: var(--vscode-inputValidation-warningBackground, #332b00);
-  border-radius: 6px;
-  padding: 10px 12px;
-  margin: 12px 0 16px;
-  font-size: 0.85rem;
-  white-space: pre-wrap;
-}
-.no-workspace-gain {
-  border: 1px solid var(--vscode-panel-border, #333);
-  border-radius: 6px;
-  padding: 12px 14px;
-  font-size: 0.9rem;
-  opacity: 0.8;
-  margin-bottom: 8px;
-}
-.global-activity {
-  background: var(--vscode-editor-inactiveSelectionBackground, #2a2d2e);
-  border-radius: 6px;
-  padding: 12px 14px;
-  margin-bottom: 8px;
-}
-.ga-row {
-  display: flex;
-  gap: 12px;
-  padding: 3px 0;
-  font-size: 0.88rem;
-}
-.ga-label { opacity: 0.65; min-width: 120px; }
-.ga-value { font-weight: 500; }
-.ga-cmd { font-family: monospace; font-size: 0.8rem; opacity: 0.85; word-break: break-all; }
-.boundary-box {
-  border: 1px solid var(--vscode-panel-border, #333);
-  border-radius: 6px;
-  padding: 10px 12px;
-  margin-bottom: 16px;
-  font-size: 0.82rem;
-  opacity: 0.85;
-  line-height: 1.5;
-}
-.boundary-box strong {
-  font-weight: 600;
-  display: block;
-  margin-bottom: 4px;
-}
-code {
-  font-family: monospace;
-  background: var(--vscode-textCodeBlock-background, #2a2d2e);
-  padding: 1px 4px;
-  border-radius: 3px;
-  font-size: 0.8rem;
-}
-</style>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${cspSource}; img-src ${cspSource} data:; font-src ${cspSource};">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>XiT Dashboard</title>
+  <link rel="stylesheet" href="${stylesheetHref}">
 </head>
 <body>
-<h1>XiT Dashboard</h1>
-${hardErrors.length > 0 ? `<div class="diagnostic">${escapeHtml(hardErrors.join("\n"))}</div>` : ""}
+  <main class="dashboard-shell">
+    <section class="hero-card">
+      <div>
+        <div class="eyebrow">吸T神功 Dashboard</div>
+        <h1>吸T神功 Dashboard</h1>
+        <p class="hero-subtitle">${escapeHtml(
+          statusMeta.heroSubtitle || "本地降噪 · Token 节省 · AI Agent Routing",
+        )}</p>
+      </div>
+      <div class="hero-status">
+        <span class="status-pill hero ${statusMeta.pillTone}">${escapeHtml(statusMeta.pillLabel)}</span>
+        <div class="hero-status-copy">${escapeHtml(statusMeta.heroTitle)}</div>
+      </div>
+    </section>
 
-<div class="boundary-box">
-  <strong>Visibility Boundaries</strong><br>
-  XiT Dashboard shows <em>local XiT-recorded events only</em>.<br>
-  It does not read chat content, private Webviews, or current AI conversation state.<br>
-  Tool names shown here are historical local records from XiT adapters and terminal events.
-</div>
+    ${
+      hardErrors.length > 0
+        ? `<section class="banner warning">${escapeHtml(hardErrors.join(" · "))}</section>`
+        : ""
+    }
 
-<h2>Latest XiT Run</h2>
-${latestRunSection}
+    <section class="summary-grid">
+      ${renderSummaryCard(
+        "Current Status",
+        getCurrentStatusLabel(status, latestRun),
+        status.available ? "XiT 工作区守护状态" : "需要本地 XiT CLI",
+        status.state === "binary-not-found" ? "warning" : "accent",
+      )}
+      ${renderSummaryCard(
+        "Latest Saved",
+        latestSavedDisplay || "0 Token",
+        latestReductionDisplay === "--" ? "等待下一次 run" : `降噪 ${latestReductionDisplay}`,
+        "success",
+      )}
+      ${renderSummaryCard(
+        "Today Saved",
+        tokenImpact.todaySavedDisplay,
+        "今日累计",
+        "neutral",
+      )}
+      ${renderSummaryCard(
+        "Workspace Total",
+        tokenImpact.workspaceTotalSavedDisplay,
+        "累计节省",
+        "neutral",
+      )}
+    </section>
 
-<h2>XiT Workflow Health / 吸T状态</h2>
-${workflowHealthSection}
+    <section class="panel">
+      <div class="section-heading">
+        <h2>Current / Latest Run</h2>
+        <span class="section-note">最新一轮命令与压缩结果</span>
+      </div>
+      <div class="run-grid">
+        <div class="run-card">
+          ${renderKeyValueRow("Command", latestCommand, {
+            mono: true,
+            truncate: true,
+            title: latestCommand,
+          })}
+          ${renderKeyValueRow("Status", currentRunState?.status || (latestRun ? "completed" : "idle"))}
+          ${renderKeyValueRow("Exit code", latestExitCode)}
+          ${renderKeyValueRow("Duration", latestDuration)}
+          ${
+            latestRawLog
+              ? renderKeyValueRow("Raw log", latestRawLog, {
+                  mono: true,
+                  truncate: true,
+                  title: latestRawLog,
+                  href: rawLogHref,
+                })
+              : renderKeyValueRow("Raw log", "No raw log yet")
+          }
+        </div>
+        <div class="metrics-grid compact">
+          ${renderMetricItem("原始输出", typeof latestRawTokens === "number" ? formatTokenShort(latestRawTokens) : "--")}
+          ${renderMetricItem("吸后摘要", typeof latestSummaryTokens === "number" ? formatTokenShort(latestSummaryTokens) : "--")}
+          ${renderMetricItem("本次节省", latestSavedDisplay || "0 Token", true)}
+          ${renderMetricItem("降噪率", latestReductionDisplay)}
+        </div>
+      </div>
+    </section>
 
-<h2>Token Impact</h2>
-${tokenImpactSection}
+    <section class="panel">
+      <div class="section-heading">
+        <h2>AI Adapter Health</h2>
+        <span class="section-note">Codex / Claude / Gemini / Cursor</span>
+      </div>
+      <div class="adapter-grid">
+        ${adapterHealth.map(renderAdapterCard).join("")}
+      </div>
+    </section>
 
-<h2>AI Adapter Health</h2>
-${adapterHealthSection}
+    <section class="panel">
+      <div class="section-heading">
+        <h2>Token Impact</h2>
+        <span class="section-note">最近一次、今日和工作区累计</span>
+      </div>
+      <div class="metrics-grid six-up">
+        ${renderMetricItem("Latest raw tokens", tokenImpact.latest ? formatTokenShort(tokenImpact.latest.rawTokens) : "--")}
+        ${renderMetricItem("Latest summary tokens", tokenImpact.latest ? formatTokenShort(tokenImpact.latest.summaryTokens) : "--")}
+        ${renderMetricItem("Latest saved tokens", tokenImpact.latest?.savedDisplay || "0 Token", true)}
+        ${renderMetricItem("Latest reduction %", tokenImpact.latest ? `${Math.round(tokenImpact.latest.reductionPct)}%` : "--")}
+        ${renderMetricItem("Today saved tokens", tokenImpact.todaySavedDisplay)}
+        ${renderMetricItem("Workspace total saved tokens", tokenImpact.workspaceTotalSavedDisplay)}
+      </div>
+    </section>
 
-<h2>Workspace Gain</h2>
-${workspaceGainSection}
+    <section class="panel">
+      <div class="section-heading">
+        <h2>Top Token-Heavy Commands</h2>
+        <span class="section-note">最值得优先使用 XiT 的命令</span>
+      </div>
+      ${
+        topCommandsPrimary.length > 0
+          ? `
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr><th>Command</th><th>Runs</th><th>Saved</th><th>Reduction</th></tr>
+                </thead>
+                <tbody>
+                  ${topCommandsPrimary
+                    .map((entry) => {
+                      const reduction =
+                        entry.rawTokens > 0
+                          ? `${Math.round((entry.savedTokens / entry.rawTokens) * 100)}%`
+                          : "--";
+                      return `
+                        <tr>
+                          <td class="mono truncate-cell" title="${escapeHtml(entry.command)}">${escapeHtml(entry.command)}</td>
+                          <td>${entry.runs}</td>
+                          <td class="saved-emphasis">${escapeHtml(entry.savedDisplay)}</td>
+                          <td>${reduction}</td>
+                        </tr>
+                      `;
+                    })
+                    .join("")}
+                </tbody>
+              </table>
+            </div>
+            ${
+              topCommandsExtra.length > 0
+                ? `
+                  <details class="details-block">
+                    <summary>Show more</summary>
+                    <div class="table-wrap">
+                      <table>
+                        <thead>
+                          <tr><th>Command</th><th>Runs</th><th>Saved</th><th>Reduction</th></tr>
+                        </thead>
+                        <tbody>
+                          ${topCommandsExtra
+                            .map((entry) => {
+                              const reduction =
+                                entry.rawTokens > 0
+                                  ? `${Math.round((entry.savedTokens / entry.rawTokens) * 100)}%`
+                                  : "--";
+                              return `
+                                <tr>
+                                  <td class="mono truncate-cell" title="${escapeHtml(entry.command)}">${escapeHtml(entry.command)}</td>
+                                  <td>${entry.runs}</td>
+                                  <td class="saved-emphasis">${escapeHtml(entry.savedDisplay)}</td>
+                                  <td>${reduction}</td>
+                                </tr>
+                              `;
+                            })
+                            .join("")}
+                        </tbody>
+                      </table>
+                    </div>
+                  </details>
+                `
+                : ""
+            }
+          `
+          : `<p class="empty-state">No token-heavy commands recorded yet.</p>`
+      }
+    </section>
 
-<h2>Global Activity</h2>
-${globalActivityBlock}
+    <section class="panel">
+      <div class="section-heading">
+        <h2>Recent Events</h2>
+        <span class="section-note">默认显示最近 5 条</span>
+      </div>
+      ${
+        recentEventsPrimary.length > 0
+          ? `
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr><th>Time</th><th>Adapter</th><th>Event / Command</th><th>Policy</th></tr>
+                </thead>
+                <tbody>${renderEventRows(recentEventsPrimary)}</tbody>
+              </table>
+            </div>
+            ${
+              recentEventsExtra.length > 0
+                ? `
+                  <details class="details-block">
+                    <summary>Show older events</summary>
+                    <div class="table-wrap">
+                      <table>
+                        <thead>
+                          <tr><th>Time</th><th>Adapter</th><th>Event / Command</th><th>Policy</th></tr>
+                        </thead>
+                        <tbody>${renderEventRows(recentEventsExtra)}</tbody>
+                      </table>
+                    </div>
+                  </details>
+                `
+                : ""
+            }
+          `
+          : `<p class="empty-state">No recent events.</p>`
+      }
+    </section>
 
-<h2>Adapters</h2>
-<div class="adapters">
-  ${adapterCards}
-</div>
+    <details class="debug-panel">
+      <summary>Advanced / Debug</summary>
+      <div class="debug-grid">
+        <div class="debug-card">
+          <h3>Paths</h3>
+          ${renderKeyValueRow("Binary path", status.binary || "Not resolved", {
+            mono: true,
+            truncate: true,
+            title: status.binary || "Not resolved",
+          })}
+          ${renderKeyValueRow("Workspace cwd", status.cwd || "Unknown", {
+            mono: true,
+            truncate: true,
+            title: status.cwd || "Unknown",
+          })}
+          ${
+            latestRawLog
+              ? renderKeyValueRow("Raw log full path", latestRawLog, {
+                  mono: true,
+                  truncate: true,
+                  title: latestRawLog,
+                })
+              : ""
+          }
+          ${renderKeyValueRow(
+            "Attempted paths",
+            status.attempts?.join(" , ") || "None",
+            {
+              mono: true,
+              truncate: true,
+              title: status.attempts?.join("\n") || "None",
+            },
+          )}
+        </div>
 
-<h2>Recent Events</h2>
-${
-  events.length > 0
-    ? `
-<table>
-  <thead>
-    <tr><th>Time</th><th>Adapter</th><th>Command / Event</th><th>Policy</th></tr>
-  </thead>
-  <tbody>
-    ${eventRows}
-  </tbody>
-</table>
-`
-    : '<p class="empty">No recent events.</p>'
-}
+        <div class="debug-card">
+          <h3>Workspace / Global</h3>
+          ${renderKeyValueRow(
+            "Workspace commands condensed",
+            gain ? String(gain.total_commands_condensed) : "0",
+          )}
+          ${renderKeyValueRow(
+            "Workspace saved bytes",
+            gain ? formatBytes(gain.saved_bytes) : "0 B",
+          )}
+          ${renderKeyValueRow(
+            "Recent routed",
+            `${health.recentHighNoiseRouted}/${health.recentHighNoiseCommands}`,
+          )}
+          ${renderKeyValueRow(
+            "Latest adapter",
+            activity.latestAdapter || "None",
+          )}
+          ${renderKeyValueRow(
+            "Latest policy",
+            activity.latestPolicy || "None",
+          )}
+        </div>
 
-<h2>VS Code Terminal Events</h2>
-${
-  terminalEvents.length > 0
-    ? `
-<table>
-  <thead>
-    <tr><th>Time</th><th>Terminal</th><th>Command</th><th>CWD</th></tr>
-  </thead>
-  <tbody>
-    ${terminalEventRows}
-  </tbody>
-</table>
-`
-    : '<p class="empty">No terminal events recorded. Enable <code>xit.enableTerminalListener</code> to capture VS Code terminal shell executions locally.</p>'
-}
+        <div class="debug-card">
+          <h3>Adapters Raw Counts</h3>
+          ${Object.entries(activity.adapterCounts).length > 0
+            ? Object.entries(activity.adapterCounts)
+                .map(([adapter, count]) => renderKeyValueRow(adapter, String(count)))
+                .join("")
+            : '<p class="empty-state">No adapter counts recorded.</p>'}
+        </div>
 
-<div class="privacy">
-  Local only. No telemetry. No network requests.
-</div>
+        <div class="debug-card full-span">
+          <h3>VS Code Terminal Events</h3>
+          ${
+            terminalEvents.length > 0
+              ? `
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr><th>Time</th><th>Terminal</th><th>Command</th><th>CWD</th></tr>
+                    </thead>
+                    <tbody>${renderTerminalRows(terminalEvents.slice(0, 10))}</tbody>
+                  </table>
+                </div>
+              `
+              : '<p class="empty-state">No terminal events recorded.</p>'
+          }
+        </div>
+      </div>
+    </details>
+
+    <footer class="dashboard-footer">
+      <span>Local only. No telemetry. No network requests.</span>
+      <a href="${buildCommandUri("xit.refresh")}">Refresh Dashboard</a>
+    </footer>
+  </main>
 </body>
-</html>
-`;
+</html>`;
 }
 
 export function showDashboard(
   context: vscode.ExtensionContext,
   status: XiTStatus,
 ): void {
-  panelContext = context;
+  const mediaRoot = vscode.Uri.joinPath(context.extensionUri, "media");
   if (panel) {
     panel.reveal(vscode.ViewColumn.One);
   } else {
@@ -623,7 +683,8 @@ export function showDashboard(
       vscode.ViewColumn.One,
       {
         enableScripts: false,
-        localResourceRoots: [],
+        enableCommandUris: true,
+        localResourceRoots: [mediaRoot],
       },
     );
     panel.onDidDispose(
@@ -638,12 +699,16 @@ export function showDashboard(
   const events = gatherAllEvents();
   const terminalEvents = readTerminalEvents(20);
   const latestRun = readLatestRun();
+  const stylesheetHref = panel.webview
+    .asWebviewUri(vscode.Uri.joinPath(mediaRoot, "dashboard.css"))
+    .toString();
   panel.webview.html = buildDashboardHtml(
     status,
     events,
     terminalEvents,
     latestRun,
     panel.webview.cspSource,
+    stylesheetHref,
   );
 }
 
@@ -654,11 +719,15 @@ export function updateDashboardIfOpen(status: XiTStatus): void {
   const events = gatherAllEvents();
   const terminalEvents = readTerminalEvents(20);
   const latestRun = readLatestRun();
+  const stylesheetHref = panel.webview
+    .asWebviewUri(vscode.Uri.joinPath(panel.webview.options.localResourceRoots![0], "dashboard.css"))
+    .toString();
   panel.webview.html = buildDashboardHtml(
     status,
     events,
     terminalEvents,
     latestRun,
     panel.webview.cspSource,
+    stylesheetHref,
   );
 }

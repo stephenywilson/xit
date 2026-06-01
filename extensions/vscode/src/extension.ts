@@ -19,7 +19,6 @@ import {
   buildDiagnoseReport,
   computeWorkflowHealth,
   formatSavedTokensForRun,
-  formatTokenCount,
   installWorkspaceAiRules,
 } from './workflow';
 
@@ -30,6 +29,8 @@ let liveStateTimer: NodeJS.Timeout | undefined;
 let waitingStateTimer: NodeJS.Timeout | undefined;
 let lastObservedRunSignature: string | undefined;
 let terminalListenerDisposable: vscode.Disposable | undefined;
+let activeRunStartedAt: number | undefined;
+let activeRunRawLogPath: string | undefined;
 
 function getRefreshIntervalMs(): number {
   const cfg = vscode.workspace.getConfiguration('xit');
@@ -63,6 +64,43 @@ function getStatusBarTextFromRun(run: LatestRun | undefined): string {
   return `吸T完成 · 本次省${formatSavedTokensForRun(run)}`;
 }
 
+function markActiveRun(startedAt = Date.now(), rawLogPath?: string): void {
+  activeRunStartedAt = startedAt;
+  if (rawLogPath) {
+    activeRunRawLogPath = path.resolve(rawLogPath);
+  }
+}
+
+function clearActiveRun(): void {
+  activeRunStartedAt = undefined;
+  activeRunRawLogPath = undefined;
+}
+
+function parseIsoTimeMs(iso: string | undefined): number | undefined {
+  if (!iso) {
+    return undefined;
+  }
+  const ms = Date.parse(iso);
+  return Number.isNaN(ms) ? undefined : ms;
+}
+
+function isCurrentRunCompletion(run: LatestRun | undefined): boolean {
+  if (!run || activeRunStartedAt === undefined) {
+    return false;
+  }
+  const finishedAt = parseIsoTimeMs(run.timestamp);
+  if (finishedAt === undefined || finishedAt < activeRunStartedAt) {
+    return false;
+  }
+  if (activeRunRawLogPath) {
+    const runRawLogPath = run.raw_log ? path.resolve(run.raw_log) : '';
+    if (runRawLogPath !== activeRunRawLogPath) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function setLiveState(state: typeof liveState, durationMs = 0): void {
   liveState = state;
   if (liveStateTimer) {
@@ -77,6 +115,7 @@ function setLiveState(state: typeof liveState, durationMs = 0): void {
   if (durationMs > 0) {
     liveStateTimer = setTimeout(() => {
       if (state === 'success' || state === 'missed') {
+        clearActiveRun();
         liveState = 'waiting';
         void updateStatusBarLive();
         waitingStateTimer = setTimeout(() => {
@@ -154,8 +193,10 @@ async function updateStatusBar(): Promise<void> {
   }
 
   if (activeRawLog) {
+    const rawLogMeta = readLatestRawLogMeta();
+    markActiveRun(rawLogMeta?.mtimeMs || Date.now(), activeRawLog);
     setLiveState('running');
-  } else if (latestRunSignature && latestRunSignature !== lastObservedRunSignature) {
+  } else if (latestRunSignature && latestRunSignature !== lastObservedRunSignature && isCurrentRunCompletion(latestRun)) {
     lastObservedRunSignature = latestRunSignature;
     const savedBytes = Math.max(0, (latestRun?.raw_bytes || 0) - (latestRun?.summary_bytes || 0));
     setLiveState(savedBytes > 0 ? 'success' : 'missed', 25000);
@@ -164,11 +205,7 @@ async function updateStatusBar(): Promise<void> {
   }
 
   if (liveState === 'running') {
-    const rawLogMeta = readLatestRawLogMeta();
-    const estimatedTokens = rawLogMeta ? Math.round(rawLogMeta.size / 4) : 0;
-    statusBarItem.text = estimatedTokens >= 1000
-      ? `吸T神功 · 已接管${formatTokenCount(estimatedTokens)}`
-      : '吸T神功 · 正在吸T中';
+    statusBarItem.text = '吸T神功 · 正在吸T中';
   } else if (liveState === 'success') {
     statusBarItem.text = getStatusBarTextFromRun(latestRun);
   } else if (liveState === 'missed') {
@@ -183,6 +220,8 @@ async function updateStatusBar(): Promise<void> {
 
   statusBarItem.tooltip = [
     health.workspaceRulesInstalled ? '吸T神功正在守护当前工作区' : '吸T神功已准备好，随时出手',
+    liveState === 'running' ? '正在吸T中' : '',
+    liveState === 'running' ? '当前输出估算仅供参考，完成后显示实际节省' : '',
     latestRun ? `最近吸T：省${health.latestSavedDisplay}` : '最近吸T：尚未出手',
     latestRun?.raw_log ? `原始日志：${latestRun.raw_log}` : '',
     status.binary ? `XiT 本体：${status.binary}` : '',
@@ -203,11 +242,7 @@ async function updateStatusBarLive(): Promise<void> {
     return;
   }
   if (liveState === 'running') {
-    const rawLogMeta = readLatestRawLogMeta();
-    const estimatedTokens = rawLogMeta ? Math.round(rawLogMeta.size / 4) : 0;
-    statusBarItem.text = estimatedTokens >= 1000
-      ? `吸T神功 · 已接管${formatTokenCount(estimatedTokens)}`
-      : '吸T神功 · 正在吸T中';
+    statusBarItem.text = '吸T神功 · 正在吸T中';
     return;
   }
   if (liveState === 'missed') {
@@ -266,7 +301,7 @@ function registerWorkspaceWatchers(context: vscode.ExtensionContext): void {
   const onHistoryChange = async (): Promise<void> => {
     const latestRun = readLatestRun();
     const signature = getRunSignature(latestRun);
-    if (signature && signature !== lastObservedRunSignature) {
+    if (signature && signature !== lastObservedRunSignature && isCurrentRunCompletion(latestRun)) {
       lastObservedRunSignature = signature;
       const savedBytes = Math.max(0, (latestRun?.raw_bytes || 0) - (latestRun?.summary_bytes || 0));
       setLiveState(savedBytes > 0 ? 'success' : 'missed', 25000);
@@ -277,6 +312,8 @@ function registerWorkspaceWatchers(context: vscode.ExtensionContext): void {
   const onRawLogChange = async (): Promise<void> => {
     const active = detectActiveRawLog();
     if (active) {
+      const rawLogMeta = readLatestRawLogMeta();
+      markActiveRun(rawLogMeta?.mtimeMs || Date.now(), active);
       setLiveState('running');
     }
     await updateStatusBar();
@@ -309,6 +346,7 @@ function registerTerminalListeners(context: vscode.ExtensionContext): void {
       }
       writeTerminalEvent({ commandLine, confidence, terminalName, cwd });
       if (/\bxit\s+auto\b/.test(commandLine)) {
+        markActiveRun(Date.now());
         setLiveState('running');
       }
       void updateStatusBar();

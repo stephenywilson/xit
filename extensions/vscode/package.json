@@ -1,8 +1,8 @@
 {
   "name": "xit-vscode",
   "displayName": "吸T神功（XiT）",
-  "description": "帮你给 Claude、Codex、Gemini、Cursor 等 AI 编程助手省 token、减少噪音、提升命中率。",
-  "version": "0.0.7",
+  "description": "为 Claude、Codex、Gemini、Cursor 等 AI 编程工作流压缩高噪音终端输出，减少 token 浪费。",
+  "version": "0.0.8",
   "publisher": "XiT",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -113,7 +113,7 @@
         "xit.showActiveAiSurface": {
           "type": "boolean",
           "default": true,
-          "description": "Show the detected active AI coding tool (Claude, Codex, Cursor, etc.) in the status bar. XiT does not read chat content."
+          "description": "Show recent XiT-recorded AI tool source in XiT tooltip and dashboard. XiT does not read chat content or private Webviews."
         }
       }
     },

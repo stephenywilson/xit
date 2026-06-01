@@ -24,84 +24,6 @@ function isShowActiveAiSurface(): boolean {
   return cfg.get<boolean>('showActiveAiSurface', true);
 }
 
-type SurfaceResult =
-  | { kind: 'connected'; name: string }
-  | { kind: 'recent'; name: string }
-  | undefined;
-
-/**
- * Detect currently focused/connected AI surface from active VS Code UI.
- * Only uses real-time active terminal, editor, or focused tab.
- * Never reads chat content.
- */
-function detectConnectedAiSurface(): string | undefined {
-  if (!isShowActiveAiSurface()) {
-    return undefined;
-  }
-
-  // 1. Active terminal first
-  const activeTerminal = vscode.window.activeTerminal;
-  if (activeTerminal) {
-    const name = activeTerminal.name.toLowerCase();
-    if (name.includes('claude')) { return 'Claude'; }
-    if (name.includes('codex')) { return 'Codex'; }
-    if (name.includes('gemini')) { return 'Gemini'; }
-    if (name.includes('cursor')) { return 'Cursor'; }
-    if (name.includes('kimi')) { return 'Kimi'; }
-    if (name.includes('aider')) { return 'Aider'; }
-  }
-
-  // 2. All terminals (background AI terminals still count as connected)
-  const terminals = vscode.window.terminals;
-  for (const t of terminals) {
-    const name = t.name.toLowerCase();
-    if (name.includes('claude')) { return 'Claude'; }
-    if (name.includes('codex')) { return 'Codex'; }
-    if (name.includes('gemini')) { return 'Gemini'; }
-    if (name.includes('cursor')) { return 'Cursor'; }
-    if (name.includes('kimi')) { return 'Kimi'; }
-    if (name.includes('aider')) { return 'Aider'; }
-  }
-
-  // 3. Active editor
-  const activeEditor = vscode.window.activeTextEditor;
-  if (activeEditor) {
-    const doc = activeEditor.document;
-    const fileName = doc.fileName.toLowerCase();
-    const uriScheme = doc.uri.scheme.toLowerCase();
-
-    if (fileName.includes('claude') || uriScheme.includes('claude')) { return 'Claude'; }
-    if (fileName.includes('codex') || uriScheme.includes('codex')) { return 'Codex'; }
-    if (fileName.includes('gemini') || uriScheme.includes('gemini')) { return 'Gemini'; }
-    if (fileName.includes('cursor') || uriScheme.includes('cursor')) { return 'Cursor'; }
-    if (uriScheme === 'vscode-chat' || uriScheme === 'chat') { return 'VS Code Chat'; }
-  }
-
-  // 4. Active/focused tab only (VS Code 1.67+)
-  try {
-    const tabGroups = (vscode.window as any).tabGroups;
-    const activeTab = tabGroups?.activeTabGroup?.activeTab;
-    if (activeTab) {
-      const label = (activeTab.label || '').toLowerCase();
-      if (label.includes('claude')) { return 'Claude'; }
-      if (label.includes('codex')) { return 'Codex'; }
-      if (label.includes('gemini')) { return 'Gemini'; }
-      if (label.includes('cursor')) { return 'Cursor'; }
-      if (label.includes('kimi')) { return 'Kimi'; }
-      if (label.includes('aider')) { return 'Aider'; }
-      if (label.includes('chat') && !label.includes('xit')) { return 'VS Code Chat'; }
-    }
-  } catch {
-    // tabGroups API not available on this VS Code version
-  }
-
-  return undefined;
-}
-
-/**
- * Detect recently used AI surface from XiT adapter events.
- * This is historical inference, NOT a real-time connection.
- */
 function detectRecentAiSurface(): string | undefined {
   if (!isShowActiveAiSurface()) {
     return undefined;
@@ -129,21 +51,7 @@ function detectRecentAiSurface(): string | undefined {
   return undefined;
 }
 
-function detectAiSurface(): SurfaceResult {
-  const connected = detectConnectedAiSurface();
-  if (connected) {
-    return { kind: 'connected', name: connected };
-  }
-  const recent = detectRecentAiSurface();
-  if (recent) {
-    return { kind: 'recent', name: recent };
-  }
-  return undefined;
-}
-
-function buildStatusBarText(state: typeof liveState, surface?: SurfaceResult): string {
-  const recentName = surface?.kind === 'recent' ? surface.name : undefined;
-
+function buildStatusBarText(state: typeof liveState): string {
   switch (state) {
     case 'no-binary':
       return '吸T神功 · 未找到 XiT';
@@ -155,9 +63,6 @@ function buildStatusBarText(state: typeof liveState, surface?: SurfaceResult): s
       return '吸T神功 · ';
     case 'idle':
     default:
-      if (recentName) {
-        return `吸T神功 · 最近 ${recentName} · 准备就绪`;
-      }
       return '吸T神功 · 准备就绪';
   }
 }
@@ -194,12 +99,12 @@ async function updateStatusBar(): Promise<void> {
   }
 
   // Idle: never show historical gain in status bar text
-  const surface = detectAiSurface();
-  statusBarItem.text = buildStatusBarText('idle', surface);
+  const recentAiSurface = detectRecentAiSurface();
+  statusBarItem.text = buildStatusBarText('idle');
 
   const gain = status.gain!;
-  const surfaceLine = surface?.kind === 'recent'
-    ? `最近 AI: ${surface.name} (从 XiT adapter 事件推断)`
+  const surfaceLine = recentAiSurface
+    ? `最近记录：${recentAiSurface}`
     : '';
 
   const lines = [
@@ -209,7 +114,7 @@ async function updateStatusBar(): Promise<void> {
     gain.total_commands_condensed > 0 ? `Estimated reduction: ${(gain.estimated_reduction * 100).toFixed(1)}%` : '',
     gain.total_commands_condensed > 0 ? `Commands condensed: ${gain.total_commands_condensed}` : '',
     surfaceLine,
-    'XiT does not read chat content.',
+    'XiT 只显示本地记录，不读取聊天内容或私有 Webview。',
     status.binary ? `Binary: ${status.binary}` : '',
     status.cwd ? `cwd: ${status.cwd}` : '',
     gain.warnings && gain.warnings.length > 0 ? `Warnings: ${gain.warnings.join('; ')}` : '',
@@ -263,14 +168,12 @@ async function updateStatusBarLive(): Promise<void> {
     return;
   }
 
-  const surface = detectAiSurface();
-
   if (liveState === 'running') {
-    statusBarItem.text = buildStatusBarText('running', surface);
+    statusBarItem.text = buildStatusBarText('running');
     return;
   }
   if (liveState === 'missed') {
-    statusBarItem.text = buildStatusBarText('missed', surface);
+    statusBarItem.text = buildStatusBarText('missed');
     return;
   }
   if (liveState === 'success') {
@@ -280,12 +183,12 @@ async function updateStatusBarLive(): Promise<void> {
       const display = saved >= 1000 ? `~${Math.round(saved / 1000)}KB` : `${saved}B`;
       statusBarItem.text = `吸T神功 · 本次省${display}`;
     } else {
-      statusBarItem.text = buildStatusBarText('idle', surface);
+      statusBarItem.text = buildStatusBarText('idle');
     }
     return;
   }
   // idle: never show historical gain in status bar text
-  statusBarItem.text = buildStatusBarText('idle', surface);
+  statusBarItem.text = buildStatusBarText('idle');
 }
 
 function isTerminalListenerEnabled(): boolean {

@@ -289,8 +289,8 @@ func TestVersionOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("xit --version failed: %v", err)
 	}
-	if !strings.Contains(string(out), "0.2.44") {
-		t.Errorf("expected version 0.2.44, got: %s", out)
+	if !strings.Contains(string(out), "0.2.45") {
+		t.Errorf("expected version 0.2.45, got: %s", out)
 	}
 }
 

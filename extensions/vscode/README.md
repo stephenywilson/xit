@@ -1,4 +1,4 @@
-# XiT Status
+# XiT Token Saver
 
 A VS Code companion for [XiT](https://github.com/stephenywilson/xit) — a local terminal output compression layer that prevents AI coding agents from being overwhelmed by high-noise commands.
 

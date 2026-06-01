@@ -1,7 +1,7 @@
 {
   "name": "xit-vscode",
   "displayName": "XiT Token Saver",
-  "description": "Save AI coding tokens by compressing noisy terminal output for Claude Code, Codex, Cursor, and VS Code workflows.",
+  "description": "Save tokens and improve AI coding accuracy by compressing noisy terminal output for Claude Code, Codex, Cursor, Gemini Code Assist, and VS Code workflows.",
   "version": "0.0.4",
   "publisher": "XiT",
   "license": "MIT",
@@ -109,6 +109,11 @@
           "type": "boolean",
           "default": false,
           "description": "Listen to VS Code terminal shell executions and record them locally in ~/.xit/vscode-terminal/events.jsonl. No command output is captured."
+        },
+        "xit.showActiveAiSurface": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the detected active AI coding tool (Claude, Codex, Cursor, etc.) in the status bar. XiT does not read chat content."
         }
       }
     },

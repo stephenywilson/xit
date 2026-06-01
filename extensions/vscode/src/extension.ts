@@ -16,8 +16,10 @@ import {
   writeTerminalEvent,
 } from './xit';
 import {
+  buildVerifyRoutingReport,
   buildDiagnoseReport,
   computeWorkflowHealth,
+  getTokenMetricsForRun,
   formatSavedTokensForRun,
   installWorkspaceAiRules,
 } from './workflow';
@@ -61,7 +63,7 @@ function getStatusBarTextFromRun(run: LatestRun | undefined): string {
   if (savedBytes <= 0) {
     return '吸T神功 · 无需发功';
   }
-  return `吸T完成 · 本次省${formatSavedTokensForRun(run)}`;
+  return `吸T完成 · 省${formatSavedTokensForRun(run)}`;
 }
 
 function markActiveRun(startedAt = Date.now(), rawLogPath?: string): void {
@@ -219,11 +221,25 @@ async function updateStatusBar(): Promise<void> {
   }
 
   statusBarItem.tooltip = [
-    health.workspaceRulesInstalled ? '吸T神功正在守护当前工作区' : '吸T神功已准备好，随时出手',
-    liveState === 'running' ? '正在吸T中' : '',
-    liveState === 'running' ? '当前输出估算仅供参考，完成后显示实际节省' : '',
-    latestRun ? `最近吸T：省${health.latestSavedDisplay}` : '最近吸T：尚未出手',
-    latestRun?.raw_log ? `原始日志：${latestRun.raw_log}` : '',
+    ...(liveState === 'running'
+      ? [
+          '正在吸T中',
+          '完成后显示实际节省',
+        ]
+      : (() => {
+          const metrics = getTokenMetricsForRun(latestRun);
+          if (!metrics || !latestRun) {
+            return [health.workspaceRulesInstalled ? '吸T神功正在守护当前工作区' : '吸T神功已准备好，随时出手'];
+          }
+          return [
+            '本次吸T',
+            `原始输出：${metrics.rawTokens >= 1000 ? `~${(metrics.rawTokens / 1000).toFixed(1)}k Token` : `${metrics.rawTokens} Token`}`,
+            `吸后摘要：${metrics.summaryTokens >= 1000 ? `~${(metrics.summaryTokens / 1000).toFixed(1)}k Token` : `${metrics.summaryTokens} Token`}`,
+            `本次节省：${metrics.savedDisplay}`,
+            `降噪率：${Math.round(metrics.reductionPct)}%`,
+          ];
+        })()),
+    latestRun?.raw_log ? `raw log：${latestRun.raw_log}` : '',
     status.binary ? `XiT 本体：${status.binary}` : '',
     '本地处理，无遥测，无网络请求',
     '点击打开 XiT Dashboard',
@@ -386,6 +402,26 @@ async function runDiagnose(): Promise<void> {
   showOutput();
 }
 
+async function runVerifyRouting(): Promise<void> {
+  const report = buildVerifyRoutingReport();
+  const lines = [
+    'XiT Verify AI Agent Routing',
+    `workspace: ${report.workspacePath}`,
+    `rules_files_installed: ${report.rulesFilesInstalled.length > 0 ? report.rulesFilesInstalled.join(', ') : 'none'}`,
+    `latest_high_noise_commands: ${report.latestHighNoiseCommands.length > 0 ? report.latestHighNoiseCommands.join(' | ') : 'none'}`,
+    `latest_xit_auto_commands: ${report.latestXiTAutoCommands.length > 0 ? report.latestXiTAutoCommands.join(' | ') : 'none'}`,
+    `recent_high_noise_commands_routed_through_xit: ${report.recentHighNoiseRouted}/${report.recentHighNoiseCommands}`,
+    `Codex: ${report.codex.status} | ${report.codex.evidence}`,
+    `Claude: ${report.claude.status} | ${report.claude.evidence}`,
+    `Gemini: ${report.gemini.status} | ${report.gemini.evidence}`,
+    `Cursor: ${report.cursor.status} | ${report.cursor.evidence}`,
+    `recommendation: ${report.recommendation}`,
+  ];
+  clearOutput();
+  appendOutput(lines.join('\n'));
+  showOutput();
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   if (isEnabled()) {
     statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
@@ -443,6 +479,9 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand('xit.diagnoseAiWorkflow', async () => {
       await runDiagnose();
+    }),
+    vscode.commands.registerCommand('xit.verifyAiAgentRouting', async () => {
+      await runVerifyRouting();
     }),
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('xit.enableStatusBar')) {

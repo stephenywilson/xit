@@ -108,6 +108,51 @@ export interface WorkflowHealth {
   recommendation: string;
 }
 
+export interface TokenMetrics {
+  rawTokens: number;
+  summaryTokens: number;
+  savedTokens: number;
+  savedDisplay: string;
+  reductionPct: number;
+}
+
+export interface TokenImpactStats {
+  latest?: TokenMetrics;
+  todaySavedTokens: number;
+  todaySavedDisplay: string;
+  workspaceTotalSavedTokens: number;
+  workspaceTotalSavedDisplay: string;
+  topTokenHeavyCommands: Array<{
+    command: string;
+    runs: number;
+    savedTokens: number;
+    savedDisplay: string;
+    rawTokens: number;
+    summaryTokens: number;
+  }>;
+}
+
+export interface AdapterHealthItem {
+  adapter: 'Codex' | 'Claude' | 'Gemini' | 'Cursor';
+  status: 'rules installed' | 'unknown' | 'not verified';
+  evidence: string;
+  ruleFiles: string[];
+}
+
+export interface VerifyRoutingReport {
+  workspacePath: string;
+  rulesFilesInstalled: string[];
+  latestHighNoiseCommands: string[];
+  latestXiTAutoCommands: string[];
+  recentHighNoiseCommands: number;
+  recentHighNoiseRouted: number;
+  codex: AdapterHealthItem;
+  claude: AdapterHealthItem;
+  gemini: AdapterHealthItem;
+  cursor: AdapterHealthItem;
+  recommendation: string;
+}
+
 export interface DiagnoseReport {
   binaryPath?: string;
   cliVersion?: string;

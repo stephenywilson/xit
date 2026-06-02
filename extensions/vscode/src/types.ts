@@ -198,6 +198,24 @@ export type AgentTurnStatus =
   | "stopped"
   | "unknown";
 
+export interface LatestActivityInfo {
+  adapter: string;
+  timestamp: string;
+  eventType: string;
+  command?: string;
+  cwd?: string;
+  routedThroughXit: boolean;
+  reason: string;
+  sourceFile: string;
+}
+
+export interface StaleTurnRecord {
+  adapter: string;
+  stoppedAt?: string;
+  ageHours: number;
+  reason: string;
+}
+
 export interface AgentTurnView {
   adapter: "claude" | "codex" | "kimi" | "gemini" | "cursor" | "unknown";
   status: AgentTurnStatus;
@@ -209,6 +227,12 @@ export interface AgentTurnView {
   savedTokensThisTurn: number;
   savedTokensDisplay: string;
   evidence: string[];
+  isFreshActive: boolean;
+  staleTurnReason?: string;
+  latestActivity?: LatestActivityInfo;
+  selectedTurnSource?: string;
+  selectedActivitySource?: string;
+  ignoredStaleTurns: StaleTurnRecord[];
 }
 
 export interface AdapterHookInfo {

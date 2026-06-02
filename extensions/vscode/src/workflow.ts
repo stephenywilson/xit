@@ -9,8 +9,10 @@ import type {
   AgentTurnView,
   AgentTurnStatus,
   DiagnoseReport,
+  LatestActivityInfo,
   LatestRun,
   CurrentRunState,
+  StaleTurnRecord,
   TerminalEventRecord,
   TokenImpactStats,
   TokenMetrics,
@@ -852,11 +854,24 @@ export function buildVerifyRoutingReport(): VerifyRoutingReport {
 
 // === Agent Turn Awareness ===
 
-const TURN_WINDOW_MS = 30 * 60 * 1000;
-const FRESH_ACTIVITY_MS = 5 * 60 * 1000;
+const ACTIVE_TURN_STALE_MS = 2 * 60 * 1000;  // active turn: no event for 2min → stale
+const SUCCESS_HOLD_MS = 25 * 1000;             // completed turn shown for 25s after stop
+const RECENT_ACTIVITY_MS = 10 * 60 * 1000;    // command routing mode window
 
-function isFreshMs(ms: number | undefined): boolean {
-  return ms !== undefined && Date.now() - ms <= FRESH_ACTIVITY_MS;
+function resolveActivityReason(event: AdapterEvent): string {
+  const cmd = event.original_command || "";
+  if (event.action === "reroute" || /\bxit\s+auto\b/.test(event.recommended_command || "") || /\bxit\s+auto\b/.test(cmd)) {
+    return "routed";
+  }
+  if (event.event && !cmd) {
+    return "lifecycle event";
+  }
+  if (cmd) {
+    const normalized = cmd.replace(/\bxit\s+auto\s+/, "").trim();
+    if (isHighOutputCommand(normalized)) return "high-noise / not routed";
+    return "low-noise";
+  }
+  return "unknown";
 }
 
 export function buildAgentTurnView(): AgentTurnView {
@@ -870,50 +885,105 @@ export function buildAgentTurnView(): AgentTurnView {
     adapterEvents.set(adapter, readRecentEvents(adapter, 50));
   }
 
-  // Find adapter with most recent event
-  let primaryAdapter: AgentTurnView["adapter"] = "unknown";
-  let mostRecentEventMs: number | undefined;
-  for (const [adapter, events] of adapterEvents) {
-    const latest = events[0];
-    if (!latest?.time) continue;
-    const ms = parseIsoTimeMs(latest.time);
-    if (ms !== undefined && (mostRecentEventMs === undefined || ms > mostRecentEventMs)) {
-      mostRecentEventMs = ms;
-      primaryAdapter = adapter as AgentTurnView["adapter"];
+  // === Stale turn detection ===
+  const ignoredStaleTurns: StaleTurnRecord[] = [];
+  let freshKimiTurnState: TurnState | undefined;
+
+  if (turnState) {
+    const finishedMs = parseIsoTimeMs(turnState.finished_at);
+    const startedMs = parseIsoTimeMs(turnState.started_at);
+
+    if (finishedMs !== undefined) {
+      // Turn has a finished_at — check how long ago it stopped
+      const ageMs = Date.now() - finishedMs;
+      if (ageMs > SUCCESS_HOLD_MS) {
+        ignoredStaleTurns.push({
+          adapter: "kimi",
+          stoppedAt: turnState.finished_at,
+          ageHours: Math.round((ageMs / 3600000) * 10) / 10,
+          reason: `turn stopped ${Math.round(ageMs / 3600000 * 10) / 10}h ago, exceeds hold window (${SUCCESS_HOLD_MS / 1000}s)`,
+        });
+      } else {
+        freshKimiTurnState = turnState;
+      }
+    } else if (startedMs !== undefined) {
+      // No finished_at — turn started but never recorded a stop
+      const ageMs = Date.now() - startedMs;
+      if (ageMs > ACTIVE_TURN_STALE_MS) {
+        ignoredStaleTurns.push({
+          adapter: "kimi",
+          stoppedAt: turnState.started_at,
+          ageHours: Math.round((ageMs / 3600000) * 10) / 10,
+          reason: `turn active since ${Math.round(ageMs / 60000)}min ago with no finished_at, exceeds active stale threshold (${ACTIVE_TURN_STALE_MS / 1000}s)`,
+        });
+      } else {
+        freshKimiTurnState = turnState;
+      }
     }
   }
 
+  // === Collect latest activity across all adapters (workspace-filtered) ===
+  let latestActivity: LatestActivityInfo | undefined;
+  let latestActivityMs: number | undefined;
+
+  for (const [adapter, events] of adapterEvents) {
+    for (const event of events) {
+      if (!event.time) continue;
+      if (event.cwd && path.resolve(event.cwd) !== path.resolve(workspacePath)) continue;
+      const eventMs = parseIsoTimeMs(event.time);
+      if (eventMs === undefined) continue;
+      if (latestActivityMs === undefined || eventMs > latestActivityMs) {
+        latestActivityMs = eventMs;
+        const command = event.original_command || event.event || event.action || "";
+        const isRouted = event.action === "reroute" ||
+          /\bxit\s+auto\b/.test(event.recommended_command || "") ||
+          /\bxit\s+auto\b/.test(event.original_command || "");
+        latestActivity = {
+          adapter,
+          timestamp: event.time,
+          eventType: event.event || event.action || event.policy || "command",
+          command: (event.original_command || event.event) || undefined,
+          cwd: event.cwd,
+          routedThroughXit: isRouted,
+          reason: resolveActivityReason(event),
+          sourceFile: `~/.xit/${adapter}-hooks/events.jsonl`,
+        };
+      }
+    }
+  }
+
+  // === Determine current turn (fresh lifecycle only) ===
+  let primaryAdapter: AgentTurnView["adapter"] = "unknown";
   let turnStartMs: number | undefined;
   let turnStatus: AgentTurnStatus = "idle";
   let latestEvent: string | undefined;
   let turnStartedAt: string | undefined;
   let turnUpdatedAt: string | undefined;
+  let isFreshActive = false;
+  let staleTurnReason: string | undefined;
+  let selectedTurnSource: string | undefined;
 
-  if (turnState) {
-    // turn.json is written by Kimi hooks — authoritative turn lifecycle
+  if (freshKimiTurnState) {
     primaryAdapter = "kimi";
-    latestEvent = turnState.event;
-    turnStartedAt = turnState.started_at;
-    turnStartMs = parseIsoTimeMs(turnState.started_at);
-    const stateUpdatedMs = parseIsoTimeMs(turnState.finished_at || turnState.started_at);
-    turnUpdatedAt = turnState.finished_at || turnState.started_at;
+    latestEvent = freshKimiTurnState.event;
+    turnStartedAt = freshKimiTurnState.started_at;
+    turnStartMs = parseIsoTimeMs(freshKimiTurnState.started_at);
+    turnUpdatedAt = freshKimiTurnState.finished_at || freshKimiTurnState.started_at;
+    isFreshActive = true;
 
-    if ((turnState.status === "thinking" || turnState.status === "active") && isFreshMs(stateUpdatedMs)) {
-      turnStatus = "working";
-    } else if (turnState.status === "turn_completed" || turnState.status === "turn_stopped") {
+    if (freshKimiTurnState.finished_at) {
       turnStatus = "completed";
+    } else if (freshKimiTurnState.status === "thinking" || freshKimiTurnState.status === "active" ||
+               freshKimiTurnState.event === "UserPromptSubmit") {
+      turnStatus = "working";
     } else {
-      turnStatus = "idle";
-    }
-  } else if (mostRecentEventMs !== undefined) {
-    // No turn lifecycle — use 30-min window heuristic
-    turnStartMs = Date.now() - TURN_WINDOW_MS;
-    turnUpdatedAt = new Date(mostRecentEventMs).toISOString();
-    if (isFreshMs(mostRecentEventMs)) {
-      turnStatus = "working";
-    } else if (Date.now() - mostRecentEventMs <= TURN_WINDOW_MS) {
       turnStatus = "completed";
     }
+    selectedTurnSource = `turn.json (kimi, status=${freshKimiTurnState.status}, started=${freshKimiTurnState.started_at})`;
+  } else if (ignoredStaleTurns.length > 0) {
+    staleTurnReason = ignoredStaleTurns[0].reason;
+    isFreshActive = false;
+    selectedTurnSource = "none (stale turn ignored)";
   }
 
   // Override with xit_running if xit auto is actively running
@@ -922,10 +992,11 @@ export function buildAgentTurnView(): AgentTurnView {
     const heartbeatMs = parseIsoTimeMs(currentRun.heartbeat_at || currentRun.started_at);
     if (heartbeatMs !== undefined && Date.now() - heartbeatMs <= 15000) {
       turnStatus = "xit_running";
+      isFreshActive = true;
     }
   }
 
-  // Count commands and xit routes in turn window, filtered by workspace cwd
+  // === Count commands in turn window, filtered by workspace cwd ===
   const evidence: string[] = [];
   let commandsObserved = 0;
   let routedThroughXit = 0;
@@ -955,16 +1026,21 @@ export function buildAgentTurnView(): AgentTurnView {
     }
   }
 
-  // Saved tokens from history entries within turn window
+  // === Saved tokens: only from credible fresh turn window ===
   let savedTokensThisTurn = 0;
-  for (const run of allRuns) {
-    if (turnStartMs !== undefined) {
+  const hasCreditWindow = isFreshActive && turnStartMs !== undefined;
+  if (hasCreditWindow) {
+    for (const run of allRuns) {
       const runMs = parseIsoTimeMs(run.timestamp);
-      if (runMs === undefined || runMs < turnStartMs) continue;
+      if (runMs === undefined || runMs < turnStartMs!) continue;
+      const metrics = getTokenMetricsForRun(run);
+      if (metrics) savedTokensThisTurn += metrics.savedTokens;
     }
-    const metrics = getTokenMetricsForRun(run);
-    if (metrics) savedTokensThisTurn += metrics.savedTokens;
   }
+
+  const savedTokensDisplay = hasCreditWindow && savedTokensThisTurn > 0
+    ? formatTokenCount(savedTokensThisTurn)
+    : "—";
 
   return {
     adapter: primaryAdapter,
@@ -975,8 +1051,16 @@ export function buildAgentTurnView(): AgentTurnView {
     commandsObserved,
     routedThroughXit,
     savedTokensThisTurn,
-    savedTokensDisplay: savedTokensThisTurn > 0 ? formatTokenCount(savedTokensThisTurn) : "0 Token",
+    savedTokensDisplay,
     evidence,
+    isFreshActive,
+    staleTurnReason,
+    latestActivity,
+    selectedTurnSource,
+    selectedActivitySource: latestActivity
+      ? `${latestActivity.adapter} events (last=${latestActivity.timestamp})`
+      : "none",
+    ignoredStaleTurns,
   };
 }
 

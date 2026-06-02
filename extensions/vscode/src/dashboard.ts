@@ -7,6 +7,7 @@ import type {
   AgentTurnView,
   CurrentRunState,
   GlobalActivity,
+  LatestActivityInfo,
   LatestRun,
   XiTStatus,
 } from "./types";
@@ -371,24 +372,27 @@ function agentTurnStatusTone(status: AgentTurnView["status"]): string {
   }
 }
 
-function renderAgentTurnSection(turn: AgentTurnView, hasAnyXitData: boolean): string {
-  if (!hasAnyXitData || (turn.status === "idle" && turn.commandsObserved === 0)) {
-    return `<p class="empty-state">当前 workspace 暂无 agent turn 记录 — 已安装 workspace rules 后，让 Claude/Codex 正常执行一次任务即可生成记录</p>`;
+function renderCurrentAgentTurn(turn: AgentTurnView): string {
+  if (!turn.isFreshActive) {
+    let noTurnMsg = "当前没有活跃 AI 对话轮次";
+    if (turn.staleTurnReason) {
+      noTurnMsg += ` — Ignored stale turn: ${turn.staleTurnReason}`;
+    }
+    return `<p class="empty-state">${escapeHtml(noTurnMsg)}</p>`;
   }
 
   const tone = agentTurnStatusTone(turn.status);
   const statusLabel = agentTurnStatusLabel(turn.status);
   const adapterLabel = turn.adapter === "unknown" ? "—" : turn.adapter;
   const updatedLabel = turn.updatedAt ? new Date(turn.updatedAt).toLocaleTimeString() : "—";
-  const startedLabel = turn.startedAt ? new Date(turn.startedAt).toLocaleTimeString() : "—";
-  const hasTurnLifecycle = turn.adapter === "kimi";
+  const startedLabel = turn.startedAt ? new Date(turn.startedAt).toLocaleString() : "—";
+  const savedIsReal = turn.savedTokensDisplay !== "—" && turn.savedTokensThisTurn > 0;
 
   return `
     <div class="agent-turn-card">
       <div class="agent-turn-header">
         <div class="agent-turn-adapter">${escapeHtml(adapterLabel.toUpperCase())}</div>
         <span class="status-pill ${escapeHtml(tone)}">${escapeHtml(statusLabel)}</span>
-        ${!hasTurnLifecycle ? `<span class="turn-no-lifecycle" title="仅有命令路由事件，无 UserPromptSubmit/Stop lifecycle">命令路由模式</span>` : ""}
       </div>
       <div class="agent-turn-metrics">
         <div class="metric-tile">
@@ -399,7 +403,7 @@ function renderAgentTurnSection(turn: AgentTurnView, hasAnyXitData: boolean): st
           <div class="metric-label">路由 XiT</div>
           <div class="metric-value">${turn.routedThroughXit} / ${turn.commandsObserved}</div>
         </div>
-        <div class="metric-tile ${turn.savedTokensThisTurn > 0 ? "highlight" : ""}">
+        <div class="metric-tile ${savedIsReal ? "highlight" : ""}">
           <div class="metric-label">本轮节省</div>
           <div class="metric-value">${escapeHtml(turn.savedTokensDisplay)}</div>
         </div>
@@ -408,23 +412,37 @@ function renderAgentTurnSection(turn: AgentTurnView, hasAnyXitData: boolean): st
           <div class="metric-value">${escapeHtml(updatedLabel)}</div>
         </div>
       </div>
-      ${turn.latestEvent ? `
-      <div class="kv-row">
-        <span class="kv-label">Latest event</span>
-        <span class="kv-value">${escapeHtml(turn.latestEvent)}</span>
-      </div>` : ""}
-      ${turn.startedAt ? `
-      <div class="kv-row">
-        <span class="kv-label">Turn started</span>
-        <span class="kv-value">${escapeHtml(startedLabel)}</span>
-      </div>` : ""}
+      ${turn.latestEvent ? renderKeyValueRow("Latest event", turn.latestEvent) : ""}
+      ${turn.startedAt ? renderKeyValueRow("Started at", startedLabel) : ""}
+      ${turn.evidence.length > 0 ? renderKeyValueRow("Evidence", turn.evidence.join(" · "), { truncate: true, title: turn.evidence.join("\n") }) : ""}
     </div>
-    ${!hasTurnLifecycle ? `
-    <p class="turn-note">
-      ${escapeHtml(adapterLabel)} conversation hooks: 命令路由模式（PreToolUse 级别）。
-      无 UserPromptSubmit / Stop lifecycle 记录。
-      Kimi hooks 有完整 turn lifecycle；Claude/Codex/Cursor 仅记录命令路由事件。
-    </p>` : ""}
+  `;
+}
+
+function renderLatestAgentActivity(activity: LatestActivityInfo | undefined): string {
+  if (!activity) {
+    return `<p class="empty-state">无最近 adapter 活动记录</p>`;
+  }
+
+  const timeLabel = formatTime(activity.timestamp);
+  const adapterUpper = activity.adapter.toUpperCase();
+  const routedBadge = activity.routedThroughXit
+    ? `<span class="status-pill success">XiT routed</span>`
+    : `<span class="status-pill idle">not routed</span>`;
+
+  return `
+    <div class="agent-turn-card">
+      <div class="agent-turn-header">
+        <div class="agent-turn-adapter">${escapeHtml(adapterUpper)}</div>
+        ${routedBadge}
+      </div>
+      ${renderKeyValueRow("Latest event time", timeLabel)}
+      ${renderKeyValueRow("Event type", activity.eventType)}
+      ${activity.command ? renderKeyValueRow("Command", activity.command, { mono: true, truncate: true, title: activity.command }) : ""}
+      ${activity.cwd ? renderKeyValueRow("CWD", activity.cwd, { mono: true, truncate: true, title: activity.cwd }) : ""}
+      ${renderKeyValueRow("Reason", activity.reason)}
+      ${renderKeyValueRow("Source", activity.sourceFile, { mono: true })}
+    </div>
   `;
 }
 
@@ -571,35 +589,49 @@ function buildDashboardHtml(
       ${renderSummaryCard(
         "Current Status",
         getCurrentStatusLabel(status, latestRun),
-        status.available ? "XiT 工作区守护状态" : "需要本地 XiT CLI",
+        status.available
+          ? `source: ${workspaceWatchInfo.stateExists ? "current-run.json" : "history.jsonl"}`
+          : "需要本地 XiT CLI",
         status.state === "binary-not-found" ? "warning" : "accent",
       )}
       ${(() => {
         if (!workspaceWatchInfo.hasAnyXitData) {
           return renderSummaryCard("Latest Saved", "—", "当前工作区没有记录", "muted-zero" as const);
         }
-        // Use the latest history entry with positive savings — never let a stale zero-gain run override it.
         const positiveSavedVal = latestPositiveSavedRun
           ? formatSavedTokensForRun(latestPositiveSavedRun)
           : undefined;
         const savedVal = positiveSavedVal || "0 Token";
         const isZero = savedVal === "0 Token" || savedVal === "0";
         const tone = isZero ? ("muted-zero" as const) : ("success" as const);
-        const positiveReduction = latestPositiveSavedRun
-          ? `降噪 ${formatReduction(latestPositiveSavedRun.estimated_reduction)}`
-          : "等待下一次 run";
-        return renderSummaryCard("Latest Saved", savedVal, positiveReduction, tone);
+        let subtitle = "等待下一次 run";
+        if (latestPositiveSavedRun) {
+          const cmdShort = latestPositiveSavedRun.command.split(/\s+/).slice(0, 3).join(" ");
+          const completedAt = latestPositiveSavedRun.timestamp
+            ? new Date(latestPositiveSavedRun.timestamp).toLocaleTimeString()
+            : "";
+          const reduction = `降噪 ${formatReduction(latestPositiveSavedRun.estimated_reduction)}`;
+          subtitle = [cmdShort, completedAt, reduction].filter(Boolean).join(" · ");
+        }
+        return renderSummaryCard("Latest Saved", savedVal, subtitle, tone);
       })()}
       ${renderSummaryCard(
         "Today Saved",
         workspaceWatchInfo.hasAnyXitData ? tokenImpact.todaySavedDisplay : "—",
-        workspaceWatchInfo.hasAnyXitData ? "今日累计" : "当前工作区没有记录",
+        workspaceWatchInfo.hasAnyXitData
+          ? `今日 ${allRuns.filter(r => {
+              const ms = r.timestamp ? Date.parse(r.timestamp) : 0;
+              return ms >= new Date().setHours(0,0,0,0);
+            }).length} runs`
+          : "当前工作区没有记录",
         "neutral",
       )}
       ${renderSummaryCard(
         "Workspace Total",
         workspaceWatchInfo.hasAnyXitData ? workspaceTotalSavedDisplay : "—",
-        workspaceWatchInfo.hasAnyXitData ? "累计节省" : "当前工作区没有记录",
+        workspaceWatchInfo.hasAnyXitData
+          ? `${allRuns.length} compressed commands`
+          : "当前工作区没有记录",
         "neutral",
       )}
     </section>
@@ -607,9 +639,17 @@ function buildDashboardHtml(
     <section class="panel">
       <div class="section-heading">
         <h2>Current Agent Turn</h2>
-        <span class="section-note">AI 对话轮次感知（基于本地 hook 事件，不读取聊天内容）</span>
+        <span class="section-note">仅在有 fresh active lifecycle 时显示（不读取聊天内容）</span>
       </div>
-      ${renderAgentTurnSection(agentTurn, workspaceWatchInfo.hasAnyXitData)}
+      ${renderCurrentAgentTurn(agentTurn)}
+    </section>
+
+    <section class="panel">
+      <div class="section-heading">
+        <h2>Latest Agent Activity</h2>
+        <span class="section-note">最近 adapter hook 事件（命令路由或 lifecycle，无论是否有完整 turn）</span>
+      </div>
+      ${renderLatestAgentActivity(agentTurn.latestActivity)}
     </section>
 
     <section class="panel">
@@ -875,6 +915,25 @@ function buildDashboardHtml(
               Claude/Codex/Cursor = 命令路由; Kimi = 完整 turn lifecycle。
             </span>
           </div>
+        </div>
+
+        <div class="debug-card full-span">
+          <h3>Turn Selection Debug</h3>
+          ${renderKeyValueRow("Selected current turn source", agentTurn.selectedTurnSource || "none")}
+          ${renderKeyValueRow("Selected latest activity source", agentTurn.selectedActivitySource || "none")}
+          ${renderKeyValueRow("Turn is fresh active", agentTurn.isFreshActive ? "yes" : "no")}
+          ${agentTurn.staleTurnReason ? renderKeyValueRow("Stale turn reason", agentTurn.staleTurnReason) : ""}
+          ${agentTurn.ignoredStaleTurns.length > 0
+            ? agentTurn.ignoredStaleTurns.map(t =>
+                renderKeyValueRow(
+                  `Ignored stale turn (${t.adapter})`,
+                  `stopped ${t.ageHours}h ago — ${t.reason}`,
+                  { truncate: true, title: t.reason }
+                )
+              ).join("")
+            : renderKeyValueRow("Ignored stale turns", "none")}
+          ${renderKeyValueRow("Workspace event filter", `workspace: ${workspaceWatchInfo.workspaceRoot}`)}
+          ${renderKeyValueRow("Selected latest run source", latestPositiveSavedRun ? "history.jsonl (latest positive saved)" : "none")}
         </div>
 
         <div class="debug-card full-span">

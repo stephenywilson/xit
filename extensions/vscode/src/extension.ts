@@ -356,15 +356,25 @@ async function updateStatusBar(): Promise<void> {
     idle: "空闲",
     unknown: "未知",
   };
-  const turnLines =
-    agentTurn.status !== "idle" || agentTurn.commandsObserved > 0
-      ? [
-          `当前对话：${agentTurn.adapter === "unknown" ? "未知" : agentTurn.adapter}`,
-          `Turn 状态：${turnStatusMap[agentTurn.status] || agentTurn.status}`,
-          `本轮命令：${agentTurn.commandsObserved} 个，路由 XiT：${agentTurn.routedThroughXit}`,
-          agentTurn.savedTokensThisTurn > 0 ? `本轮节省：${agentTurn.savedTokensDisplay}` : "",
-        ].filter(Boolean)
-      : [];
+  const turnLines: string[] = [];
+  if (agentTurn.isFreshActive) {
+    turnLines.push(
+      `当前对话：${agentTurn.adapter === "unknown" ? "未知" : agentTurn.adapter}`,
+      `Turn 状态：${turnStatusMap[agentTurn.status] || agentTurn.status}`,
+      `本轮命令：${agentTurn.commandsObserved} 个，路由 XiT：${agentTurn.routedThroughXit}`,
+    );
+    if (agentTurn.savedTokensDisplay !== "—" && agentTurn.savedTokensThisTurn > 0) {
+      turnLines.push(`本轮节省：${agentTurn.savedTokensDisplay}`);
+    }
+  } else if (agentTurn.ignoredStaleTurns.length > 0) {
+    const stale = agentTurn.ignoredStaleTurns[0];
+    turnLines.push(`Ignored stale turn: ${stale.adapter}, stopped ${stale.ageHours}h ago`);
+  }
+  if (agentTurn.latestActivity) {
+    const act = agentTurn.latestActivity;
+    const actTime = new Date(act.timestamp).toLocaleTimeString();
+    turnLines.push(`Latest activity: ${act.adapter} · ${act.command || act.eventType} · ${actTime}`);
+  }
 
   statusBarItem.tooltip = [
     ...(liveState === "running"
@@ -387,10 +397,11 @@ async function updateStatusBar(): Promise<void> {
           ];
         })()),
     ...(turnLines.length > 0 ? ["─".repeat(20), ...turnLines] : []),
+    "─".repeat(20),
     `Workspace: ${workspaceRoot}`,
-    `State: ${watchedStatePath}`,
-    `Current run: ${currentRunStatus}`,
-    latestRun?.timestamp ? `Latest run: ${new Date(latestRun.timestamp).toLocaleString()}` : "Latest run: none",
+    `Current XiT run: ${currentRunStatus}`,
+    latestRun?.timestamp ? `Latest XiT run: ${new Date(latestRun.timestamp).toLocaleString()}` : "Latest XiT run: none",
+    `Current turn: ${agentTurn.isFreshActive ? agentTurn.adapter : "none"}`,
     `Rules: ${health.workspaceRulesInstalled ? "installed" : "not installed"}`,
     latestRun?.raw_log ? `raw log：${latestRun.raw_log}` : "",
     status.binary ? `XiT 本体：${status.binary}` : "",
@@ -660,10 +671,32 @@ async function runDiagnose(): Promise<void> {
     ...hookLines,
     ...cannotReadChatNote,
     "─".repeat(50),
-    "Latest agent turn:",
-    `  adapter:            ${agentTurn.adapter}`,
-    `  turn status:        ${agentTurn.status}`,
-    `  latest event:       ${agentTurn.latestEvent || "none"}`,
+    "Selected current turn:",
+    `  adapter:   ${agentTurn.isFreshActive ? agentTurn.adapter : "none"}`,
+    `  status:    ${agentTurn.isFreshActive ? agentTurn.status : "—"}`,
+    `  source:    ${agentTurn.selectedTurnSource || "none"}`,
+    `  freshness: ${agentTurn.isFreshActive ? "fresh" : "stale/none"}`,
+    `  reason:    ${agentTurn.staleTurnReason || (agentTurn.isFreshActive ? "active lifecycle" : "no turn state")}`,
+    "",
+    "Selected latest activity:",
+    `  adapter:   ${agentTurn.latestActivity?.adapter || "none"}`,
+    `  timestamp: ${agentTurn.latestActivity?.timestamp || "none"}`,
+    `  cwd:       ${agentTurn.latestActivity?.cwd || "(no cwd in event)"}`,
+    `  command:   ${agentTurn.latestActivity?.command || agentTurn.latestActivity?.eventType || "none"}`,
+    `  source:    ${agentTurn.selectedActivitySource || "none"}`,
+    "",
+    `Ignored stale turns: ${agentTurn.ignoredStaleTurns.length}`,
+    ...agentTurn.ignoredStaleTurns.map(t =>
+      `  adapter: ${t.adapter}  stopped_at: ${t.stoppedAt || "unknown"}  age: ${t.ageHours}h  reason: ${t.reason}`
+    ),
+    "",
+    "Selected latest xit run:",
+    `  command:     ${report.latestHistoryTimestamp ? latestRun?.command || "—" : "none"}`,
+    `  completed_at:${report.latestHistoryTimestamp || "none"}`,
+    `  saved:       ${report.latestSavedDisplay || "none"}`,
+    `  source:      ${report.historyFileExists ? "history.jsonl" : "none"}`,
+    "",
+    "Current turn detail:",
     `  commands observed:  ${agentTurn.commandsObserved}`,
     `  routed through XiT: ${agentTurn.routedThroughXit}`,
     `  saved this turn:    ${agentTurn.savedTokensDisplay}`,

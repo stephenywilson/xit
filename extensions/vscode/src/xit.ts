@@ -328,6 +328,7 @@ export function readRecentEvents(
         try {
           const obj = JSON.parse(line) as AdapterEvent;
           obj.adapter = adapter;
+          obj.source_file = p;
           events.push(obj);
         } catch {
           // skip malformed lines

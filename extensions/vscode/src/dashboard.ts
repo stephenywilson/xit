@@ -9,6 +9,7 @@ import type {
   GlobalActivity,
   LatestActivityInfo,
   LatestRun,
+  LiveStatusView,
   XiTStatus,
 } from "./types";
 import {
@@ -21,6 +22,7 @@ import {
 } from "./xit";
 import {
   buildAgentTurnView,
+  buildLiveStatusView,
   computeWorkflowHealth,
   formatSavedTokensForRun,
   getAiAdapterHealth,
@@ -185,14 +187,13 @@ function renderWorkspaceWatchBanner(info: WorkspaceWatchInfo): string {
 
 function buildStatusMeta(
   status: XiTStatus,
-  latestRun: LatestRun | undefined,
+  liveStatus: LiveStatusView,
 ): {
   heroTitle: string;
   heroSubtitle: string;
   pillLabel: string;
   pillTone: "running" | "success" | "idle" | "warning";
 } {
-  const currentRunState = readCurrentRunState();
   if (status.state === "binary-not-found") {
     return {
       heroTitle: "XiT 未连接",
@@ -202,19 +203,38 @@ function buildStatusMeta(
     };
   }
 
-  if (currentRunState?.status === "running") {
+  if (liveStatus.kind === "xit_running" || liveStatus.kind === "agent_routed_pending_state") {
     return {
-      heroTitle: "XiT 正在处理高噪音输出",
-      heroSubtitle: "当前命令正在吸T中，摘要会在 run 完成后更新。",
-      pillLabel: "正在吸T中",
+      heroTitle: liveStatus.kind === "xit_running"
+        ? "XiT 正在处理高噪音输出"
+        : "XiT 已观察到接管信号",
+      heroSubtitle: liveStatus.source
+        ? `source: ${liveStatus.source}`
+        : "当前命令正在吸T中，摘要会在 run 完成后更新。",
+      pillLabel: liveStatus.kind === "xit_running" ? "正在吸T中" : "接管中",
       pillTone: "running",
     };
   }
 
-  if (latestRun) {
+  if (liveStatus.kind === "agent_observing" || liveStatus.kind === "agent_not_routed") {
+    return {
+      heroTitle: liveStatus.kind === "agent_observing"
+        ? "XiT 正在观察 AI agent 活动"
+        : "最近一轮未触发吸T",
+      heroSubtitle: liveStatus.source
+        ? `source: ${liveStatus.source}`
+        : "本地 hook metadata 已更新。",
+      pillLabel: liveStatus.label,
+      pillTone: liveStatus.kind === "agent_observing" ? "idle" : "warning",
+    };
+  }
+
+  if (liveStatus.kind === "xit_completed") {
     return {
       heroTitle: "XiT 最近一次压缩已完成",
-      heroSubtitle: "当前工作区已有可用节省结果与路由记录。",
+      heroSubtitle: liveStatus.source
+        ? `source: ${liveStatus.source}`
+        : "当前工作区已有可用节省结果与路由记录。",
       pillLabel: "吸T完成",
       pillTone: "success",
     };
@@ -228,8 +248,8 @@ function buildStatusMeta(
   };
 }
 
-function getCurrentStatusLabel(status: XiTStatus, latestRun: LatestRun | undefined): string {
-  const meta = buildStatusMeta(status, latestRun);
+function getCurrentStatusLabel(status: XiTStatus, liveStatus: LiveStatusView): string {
+  const meta = buildStatusMeta(status, liveStatus);
   if (meta.pillLabel === "守护中") {
     return "守护你的T";
   }
@@ -465,7 +485,15 @@ function buildDashboardHtml(
   const tokenImpact = getTokenImpactStats(latestRun);
   const adapterHealth = getAiAdapterHealth();
   const currentRunState = readCurrentRunState();
-  const statusMeta = buildStatusMeta(status, latestRun);
+  const liveStatus = status.state === "binary-not-found"
+    ? {
+        kind: "missing" as const,
+        label: "未找到 XiT",
+        reason: "binary not found",
+        source: "extension status",
+      }
+    : buildLiveStatusView();
+  const statusMeta = buildStatusMeta(status, liveStatus);
   const agentTurn = buildAgentTurnView();
   const hookConnectivity = getAdapterHookConnectivity();
 
@@ -588,9 +616,9 @@ function buildDashboardHtml(
     <section class="summary-grid">
       ${renderSummaryCard(
         "Current Status",
-        getCurrentStatusLabel(status, latestRun),
+        getCurrentStatusLabel(status, liveStatus),
         status.available
-          ? `source: ${workspaceWatchInfo.stateExists ? "current-run.json" : "history.jsonl"}`
+          ? `source: ${liveStatus.source || "live status"}`
           : "需要本地 XiT CLI",
         status.state === "binary-not-found" ? "warning" : "accent",
       )}

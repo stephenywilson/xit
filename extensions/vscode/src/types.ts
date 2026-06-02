@@ -34,6 +34,7 @@ export interface AdapterEvent {
   time?: string;
   mode?: string;
   reason?: string;
+  source_file?: string;
   // turn-event fields (kimi turn-events.jsonl)
   status?: string;
   session_id?: string;
@@ -214,6 +215,26 @@ export interface StaleTurnRecord {
   stoppedAt?: string;
   ageHours: number;
   reason: string;
+}
+
+export type LiveStatusKind =
+  | "xit_running"
+  | "xit_completed"
+  | "agent_observing"
+  | "agent_not_routed"
+  | "agent_routed_pending_state"
+  | "idle"
+  | "missing";
+
+export interface LiveStatusView {
+  kind: LiveStatusKind;
+  label: string;
+  adapter?: string;
+  command?: string;
+  reason?: string;
+  source?: string;
+  updatedAt?: string;
+  savedTokensDisplay?: string;
 }
 
 export interface AgentTurnView {

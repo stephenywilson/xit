@@ -1,4 +1,5 @@
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
 import { showDashboard, updateDashboardIfOpen } from "./dashboard";
@@ -7,7 +8,7 @@ import {
   promptRunCommand,
   promptRunWithAutoCompression,
 } from "./runner";
-import type { LatestRun, XiTStatus } from "./types";
+import type { LatestRun, LiveStatusView, XiTStatus } from "./types";
 import {
   appendOutput,
   clearOutput,
@@ -22,6 +23,7 @@ import {
 } from "./xit";
 import {
   buildAgentTurnView,
+  buildLiveStatusView,
   buildVerifyRoutingReport,
   buildDiagnoseReport,
   computeWorkflowHealth,
@@ -79,6 +81,43 @@ function getStatusBarTextFromRun(run: LatestRun | undefined): string {
     return "吸T神功 · 无需发功";
   }
   return `吸T完成 · 省${formatSavedTokensForRun(run)}`;
+}
+
+function getStatusBarTextFromLiveStatus(view: LiveStatusView): string {
+  switch (view.kind) {
+    case "xit_running":
+      return "吸T神功 · 正在吸T中";
+    case "agent_routed_pending_state":
+      return "吸T神功 · 接管中";
+    case "agent_observing":
+      return `吸T神功 · ${view.label}`;
+    case "agent_not_routed":
+      return "吸T神功 · 本轮未触发吸T";
+    case "xit_completed":
+      return `吸T完成 · 省${view.savedTokensDisplay || "0 Token"}`;
+    case "missing":
+      return "吸T神功 · 未找到 XiT";
+    case "idle":
+    default:
+      return "吸T神功 · 守护你的T";
+  }
+}
+
+function getLiveStatusTooltipLines(view: LiveStatusView): string[] {
+  const lines = [
+    `Live status: ${view.label}`,
+    view.adapter ? `Latest activity: ${view.adapter}` : "",
+    view.command ? `Command: ${view.command}` : "",
+    view.reason ? `Reason: ${view.reason}` : "",
+    view.kind === "xit_running" || view.kind === "agent_routed_pending_state"
+      ? "XiT auto: triggered"
+      : view.kind === "agent_observing" || view.kind === "agent_not_routed"
+        ? "XiT auto: not triggered"
+        : "",
+    view.source ? `Source: ${view.source}` : "",
+    view.updatedAt ? `Updated: ${new Date(view.updatedAt).toLocaleString()}` : "",
+  ];
+  return lines.filter(Boolean);
 }
 
 function markActiveRun(startedAt = Date.now(), rawLogPath?: string): void {
@@ -270,10 +309,6 @@ async function updateStatusBar(): Promise<void> {
 
   const status = await fetchStatus();
   const latestRun = getCompletedRunFromStateOrHistory();
-  const latestRunSignature = getRunSignature(latestRun);
-  const stateSignature = getCurrentRunStateSignature();
-  const state = readCurrentRunState();
-  const activeRawLog = detectActiveRawLog();
   const health = computeWorkflowHealth(status, latestRun);
 
   if (!status.available && status.state === "binary-not-found") {
@@ -293,50 +328,8 @@ async function updateStatusBar(): Promise<void> {
     return;
   }
 
-  if (isFreshRunningState() || activeRawLog) {
-    const rawLogPath = state?.raw_log || activeRawLog;
-    markActiveRun(parseIsoTimeMs(state?.started_at) || Date.now(), rawLogPath);
-    setLiveState("running");
-  } else if (
-    state &&
-    (state.status === "completed" || state.status === "failed") &&
-    stateSignature &&
-    stateSignature !== currentRunStateSignature
-  ) {
-    currentRunStateSignature = stateSignature;
-    lastObservedRunSignature = latestRunSignature;
-    const savedBytes = Math.max(
-      0,
-      (latestRun?.raw_bytes || 0) - (latestRun?.summary_bytes || 0),
-    );
-    setLiveState(savedBytes > 0 ? "success" : "missed", 25000);
-  } else if (
-    latestRunSignature &&
-    latestRunSignature !== lastObservedRunSignature
-  ) {
-    lastObservedRunSignature = latestRunSignature;
-    const savedBytes = Math.max(
-      0,
-      (latestRun?.raw_bytes || 0) - (latestRun?.summary_bytes || 0),
-    );
-    setLiveState(savedBytes > 0 ? "success" : "missed", 25000);
-  } else if (liveState === "idle" && health.workspaceRulesInstalled) {
-    liveState = "guarding";
-  }
-
-  if (liveState === "running") {
-    statusBarItem.text = "吸T神功 · 正在吸T中";
-  } else if (liveState === "success") {
-    statusBarItem.text = getStatusBarTextFromRun(latestRun);
-  } else if (liveState === "missed") {
-    statusBarItem.text = "吸T神功 · 无需发功";
-  } else if (liveState === "waiting") {
-    statusBarItem.text = "吸T神功 · 等待下轮发功";
-  } else if (liveState === "guarding") {
-    statusBarItem.text = "吸T神功 · 守护你的T";
-  } else {
-    statusBarItem.text = "吸T神功 · 准备就绪";
-  }
+  const liveStatus = buildLiveStatusView();
+  statusBarItem.text = getStatusBarTextFromLiveStatus(liveStatus);
 
   const workspaceRoot = getWorkspacePath() || "unknown";
   const watchedStatePath = `${workspaceRoot}/.xit/state/current-run.json`;
@@ -377,7 +370,8 @@ async function updateStatusBar(): Promise<void> {
   }
 
   statusBarItem.tooltip = [
-    ...(liveState === "running"
+    ...getLiveStatusTooltipLines(liveStatus),
+    ...(liveStatus.kind === "xit_running"
       ? ["正在吸T中", "完成后显示实际节省"]
       : (() => {
           const metrics = getTokenMetricsForRun(latestRun);
@@ -424,34 +418,7 @@ async function updateStatusBarLive(): Promise<void> {
     statusBarItem.text = "吸T神功 · 未找到 XiT";
     return;
   }
-  if (liveState === "running") {
-    statusBarItem.text = "吸T神功 · 正在吸T中";
-    return;
-  }
-  if (liveState === "missed") {
-    statusBarItem.text = "吸T神功 · 无需发功";
-    return;
-  }
-  if (liveState === "success") {
-    statusBarItem.text = getStatusBarTextFromRun(
-      getCompletedRunFromStateOrHistory(),
-    );
-    return;
-  }
-  if (liveState === "waiting") {
-    statusBarItem.text = "吸T神功 · 等待下轮发功";
-    return;
-  }
-  if (liveState === "guarding") {
-    statusBarItem.text = "吸T神功 · 守护你的T";
-    return;
-  }
-  statusBarItem.text = computeWorkflowHealth(
-    await fetchStatus(),
-    readLatestRun(),
-  ).workspaceRulesInstalled
-    ? "吸T神功 · 守护你的T"
-    : "吸T神功 · 准备就绪";
+  statusBarItem.text = getStatusBarTextFromLiveStatus(buildLiveStatusView());
 }
 
 function startRefresh(): void {
@@ -578,6 +545,60 @@ function registerWorkspaceWatchers(context: vscode.ExtensionContext): void {
     legacyStateWatcher,
     rawLogWatcher,
   );
+}
+
+function resolveXiTHome(): string {
+  const configured = vscode.workspace.getConfiguration("xit").get<string>("home", "");
+  if (configured) {
+    if (configured === "~") {
+      return os.homedir();
+    }
+    if (configured.startsWith("~/")) {
+      return path.join(os.homedir(), configured.slice(2));
+    }
+    return configured;
+  }
+  return path.join(os.homedir(), ".xit");
+}
+
+function registerAdapterHookWatchers(context: vscode.ExtensionContext): void {
+  const home = resolveXiTHome();
+  const hookFiles = [
+    path.join(home, "claude-hooks", "events.jsonl"),
+    path.join(home, "codex-hooks", "events.jsonl"),
+    path.join(home, "kimi-hooks", "events.jsonl"),
+    path.join(home, "cursor-hooks", "events.jsonl"),
+    path.join(home, "kimi-hooks", "turn-events.jsonl"),
+  ];
+
+  let pendingRefresh: NodeJS.Timeout | undefined;
+  const scheduleRefresh = (): void => {
+    if (pendingRefresh) {
+      clearTimeout(pendingRefresh);
+    }
+    pendingRefresh = setTimeout(() => {
+      pendingRefresh = undefined;
+      void updateStatusBar();
+    }, 100);
+  };
+
+  for (const hookFile of hookFiles) {
+    const watcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(path.dirname(hookFile), path.basename(hookFile)),
+    );
+    watcher.onDidChange(scheduleRefresh, null, context.subscriptions);
+    watcher.onDidCreate(scheduleRefresh, null, context.subscriptions);
+    context.subscriptions.push(watcher);
+  }
+
+  context.subscriptions.push({
+    dispose: () => {
+      if (pendingRefresh) {
+        clearTimeout(pendingRefresh);
+        pendingRefresh = undefined;
+      }
+    },
+  });
 }
 
 function registerTerminalListeners(context: vscode.ExtensionContext): void {
@@ -749,6 +770,7 @@ export function activate(context: vscode.ExtensionContext): void {
   currentRunStateSignature = getCurrentRunStateSignature();
   startRefresh();
   registerWorkspaceWatchers(context);
+  registerAdapterHookWatchers(context);
   registerTerminalListeners(context);
 
   context.subscriptions.push(

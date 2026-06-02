@@ -54,15 +54,19 @@ npm install -g xitsg
 | ------------------------ | ------------------------------- |
 | `吸T神功 · 准备就绪`     | 插件已启动，等待任务            |
 | `吸T神功 · 守护你的T`    | 当前工作区已启用 XiT 规则       |
+| `吸T神功 · 观察 Codex`   | 观察到 AI agent 正在执行低噪音命令，未触发 XiT |
+| `吸T神功 · 接管中`       | 观察到 agent 已路由到 `xit auto`，等待 run state |
 | `吸T神功 · 正在吸T中`    | 正在接管高噪音命令输出          |
 | `吸T完成 · 省~9k Token`  | 本次命令已完成，节省约 9k Token |
 | `吸T神功 · 等待下轮发功` | 本轮完成，等待下一次任务        |
-| `吸T神功 · 无需发功`     | 当前命令不需要 XiT 介入         |
+| `吸T神功 · 本轮未触发吸T` | 最近 agent 活动没有产生 `xit auto` run |
 | `吸T神功 · 未找到 XiT`   | 没找到本地 XiT CLI              |
 
-鼠标悬停在状态栏上可查看更多信息，包括最近一次吸T节省、原始日志路径，以及当前工作区是否处于守护状态。运行中主状态栏只显示“正在吸T中”；任何当前输出估算都不会在主状态栏里冒充实际节省结果。
+鼠标悬停在状态栏上可查看更多信息，包括最近一次吸T节省、原始日志路径、最新 agent activity 的 adapter / command / reason / source，以及当前工作区是否处于守护状态。运行中主状态栏只显示“正在吸T中”；任何当前输出估算都不会在主状态栏里冒充实际节省结果。
 
 XiT CLI 在运行 `xit auto` 时还会把当前 active run 写到工作区 `.xit/state/current-run.json`（兼容保留 `.xit/state/current.json`）。扩展优先监听这个 state 文件来感知 running / completed 状态，再用 `.xit/history.jsonl` 做完成态与历史回放兜底。
+
+从 0.0.22 起，状态栏和 Dashboard 顶部 Current Status 共用同一个 live status 视图。除了 `.xit/state/current-run.json` 和 `.xit/history.jsonl`，扩展还会监听本地 adapter hook metadata（`~/.xit/codex-hooks/events.jsonl`、`~/.xit/claude-hooks/events.jsonl`、`~/.xit/kimi-hooks/events.jsonl`、`~/.xit/cursor-hooks/events.jsonl`、`~/.xit/kimi-hooks/turn-events.jsonl`），用来显示“观察中 / 接管中 / 本轮未触发吸T”等实时状态。扩展不会读取 Claude、Codex、Gemini 或 Cursor 的聊天内容。
 
 ## Dashboard 0.0.17
 

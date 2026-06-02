@@ -11,6 +11,7 @@ import type {
   DiagnoseReport,
   LatestActivityInfo,
   LatestRun,
+  LiveStatusView,
   CurrentRunState,
   StaleTurnRecord,
   TerminalEventRecord,
@@ -857,6 +858,16 @@ export function buildVerifyRoutingReport(): VerifyRoutingReport {
 const ACTIVE_TURN_STALE_MS = 2 * 60 * 1000;  // active turn: no event for 2min → stale
 const SUCCESS_HOLD_MS = 25 * 1000;             // completed turn shown for 25s after stop
 const RECENT_ACTIVITY_MS = 10 * 60 * 1000;    // command routing mode window
+const LIVE_AGENT_FRESH_MS = 30 * 1000;
+const LIVE_AGENT_MISSED_HOLD_MS = 45 * 1000;
+const XIT_RUNNING_HEARTBEAT_MS = 15 * 1000;
+
+function adapterDisplayName(adapter: string | undefined): string | undefined {
+  if (!adapter) {
+    return undefined;
+  }
+  return adapter.charAt(0).toUpperCase() + adapter.slice(1);
+}
 
 function resolveActivityReason(event: AdapterEvent): string {
   const cmd = event.original_command || "";
@@ -946,7 +957,9 @@ export function buildAgentTurnView(): AgentTurnView {
           cwd: event.cwd,
           routedThroughXit: isRouted,
           reason: resolveActivityReason(event),
-          sourceFile: `~/.xit/${adapter}-hooks/events.jsonl`,
+          sourceFile: event.source_file
+            ? event.source_file.replace(process.env.HOME || "", "~")
+            : `~/.xit/${adapter}-hooks/events.jsonl`,
         };
       }
     }
@@ -1061,6 +1074,107 @@ export function buildAgentTurnView(): AgentTurnView {
       ? `${latestActivity.adapter} events (last=${latestActivity.timestamp})`
       : "none",
     ignoredStaleTurns,
+  };
+}
+
+export function buildLiveStatusView(options?: {
+  xitCompletedHoldMs?: number;
+  agentFreshMs?: number;
+  agentMissedHoldMs?: number;
+}): LiveStatusView {
+  const xitCompletedHoldMs = options?.xitCompletedHoldMs ?? SUCCESS_HOLD_MS;
+  const agentFreshMs = options?.agentFreshMs ?? LIVE_AGENT_FRESH_MS;
+  const agentMissedHoldMs = options?.agentMissedHoldMs ?? LIVE_AGENT_MISSED_HOLD_MS;
+  const currentRun = readCurrentRunState();
+  const now = Date.now();
+
+  if (currentRun?.status === "running") {
+    const heartbeatMs = parseIsoTimeMs(currentRun.heartbeat_at || currentRun.started_at);
+    if (heartbeatMs !== undefined && now - heartbeatMs <= XIT_RUNNING_HEARTBEAT_MS) {
+      return {
+        kind: "xit_running",
+        label: "正在吸T中",
+        command: currentRun.command,
+        reason: "fresh current-run heartbeat",
+        source: "current-run.json",
+        updatedAt: currentRun.heartbeat_at || currentRun.started_at,
+      };
+    }
+  }
+
+  const latestRun = readAllWorkspaceRuns().slice(-1)[0];
+  const latestRunMs = parseIsoTimeMs(latestRun?.timestamp);
+  const latestRunMetrics = getTokenMetricsForRun(latestRun);
+  const agentTurn = buildAgentTurnView();
+  const activity = agentTurn.latestActivity;
+  const activityMs = parseIsoTimeMs(activity?.timestamp);
+
+  if (activity && activityMs !== undefined && now - activityMs <= agentFreshMs) {
+    const adapter = adapterDisplayName(activity.adapter);
+    if (activity.routedThroughXit) {
+      return {
+        kind: "agent_routed_pending_state",
+        label: "接管中",
+        adapter,
+        command: activity.command,
+        reason: activity.reason || "routed",
+        source: activity.sourceFile,
+        updatedAt: activity.timestamp,
+      };
+    }
+    return {
+      kind: "agent_observing",
+      label: adapter ? `观察 ${adapter}` : "守护中",
+      adapter,
+      command: activity.command,
+      reason: activity.reason || "not routed",
+      source: activity.sourceFile,
+      updatedAt: activity.timestamp,
+    };
+  }
+
+  if (
+    activity &&
+    activityMs !== undefined &&
+    now - activityMs <= agentMissedHoldMs &&
+    !activity.routedThroughXit &&
+    (latestRunMs === undefined || latestRunMs < activityMs)
+  ) {
+    const adapter = adapterDisplayName(activity.adapter);
+    return {
+      kind: "agent_not_routed",
+      label: "本轮未触发吸T",
+      adapter,
+      command: activity.command,
+      reason: activity.reason || "not routed",
+      source: activity.sourceFile,
+      updatedAt: activity.timestamp,
+    };
+  }
+
+  if (
+    latestRun &&
+    latestRunMs !== undefined &&
+    latestRunMetrics &&
+    now - latestRunMs <= xitCompletedHoldMs
+  ) {
+    const hasSavings = latestRunMetrics.savedTokens > 0;
+    return {
+      kind: hasSavings ? "xit_completed" : "agent_not_routed",
+      label: hasSavings ? "吸T完成" : "本轮未触发吸T",
+      command: latestRun.command,
+      reason: hasSavings ? "history append with savings" : "history append without savings",
+      source: "history.jsonl",
+      updatedAt: latestRun.timestamp,
+      savedTokensDisplay: latestRunMetrics.savedDisplay,
+    };
+  }
+
+  return {
+    kind: "idle",
+    label: "守护你的T",
+    reason: "waiting for agent activity",
+    source: "workspace rules",
   };
 }
 

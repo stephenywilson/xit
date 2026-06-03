@@ -29,6 +29,7 @@ import {
   readTerminalEvents,
   readTurnState,
   readWorkspaceHistory,
+  resolveActiveXitWorkspace,
   resolveAvailableBinary,
   readCurrentRunState,
   resolveWorkspaceCwd,
@@ -159,7 +160,11 @@ export function getExistingRuleTargets(): string[] {
 
 function getWorkspaceHistoryPath(): string | undefined {
   const root = getWorkspaceRoot();
-  return root ? path.join(root, ".xit", "history.jsonl") : undefined;
+  if (!root) return undefined;
+  // Exclude home directory — ~/.xit/ is the XiT system home, not a project workspace.
+  // Returning undefined lets readAllWorkspaceRuns fall through to hook-CWD scanning.
+  if (path.resolve(root) === path.resolve(os.homedir())) return undefined;
+  return path.join(root, ".xit", "history.jsonl");
 }
 
 function parseIsoTimeMs(iso: string | undefined): number | undefined {
@@ -192,15 +197,15 @@ function readRunsFromHistoryFile(historyPath: string): LatestRun[] {
   }
 }
 
-function collectRecentActivityCwds(): string[] {
-  const cutoffMs = Date.now() - RECENT_ACTIVITY_MS;
+function collectRecentActivityCwds(cutoffMs?: number): string[] {
+  const actualCutoff = cutoffMs ?? Date.now() - RECENT_ACTIVITY_MS;
   const cwds = new Set<string>();
   const ADAPTERS = ["claude", "codex", "cursor", "kimi"] as const;
   for (const adapter of ADAPTERS) {
     for (const event of readRecentEvents(adapter, 50)) {
       if (event.time) {
         const ms = parseIsoTimeMs(event.time);
-        if (ms === undefined || ms < cutoffMs) {
+        if (ms === undefined || ms < actualCutoff) {
           continue;
         }
       }
@@ -227,21 +232,11 @@ function collectRecentActivityCwds(): string[] {
 }
 
 export function readAllWorkspaceRuns(): LatestRun[] {
-  const primaryPath = getWorkspaceHistoryPath();
-  const primaryRuns = primaryPath ? readRunsFromHistoryFile(primaryPath) : [];
-  if (primaryRuns.length > 0) {
-    return primaryRuns;
-  }
-  // Fallback: when workspace history is empty, scan cwds from recent hook events.
-  // This covers the case where VS Code workspace root differs from where xit auto ran.
-  for (const cwd of collectRecentActivityCwds()) {
-    const fallbackPath = path.join(cwd, ".xit", "history.jsonl");
-    const fallbackRuns = readRunsFromHistoryFile(fallbackPath);
-    if (fallbackRuns.length > 0) {
-      return fallbackRuns;
-    }
-  }
-  return [];
+  // Use the same authoritative workspace as readCurrentRunState() and readLatestRun().
+  // Never fall back to hook CWD scanning — that can pull data from a different project.
+  const activeWorkspace = resolveActiveXitWorkspace();
+  const historyPath = path.join(activeWorkspace, ".xit", "history.jsonl");
+  return readRunsFromHistoryFile(historyPath);
 }
 
 export function installWorkspaceAiRules(): RuleInstallResult {

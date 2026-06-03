@@ -1,11 +1,17 @@
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import * as vscode from "vscode";
 import type {
+  CurrentRunState,
   LatestRun,
   LiveStatusView,
   XiTStatus,
 } from "./types";
 import {
+  readCurrentRunState,
   readLatestRun,
+  resolveActiveXitWorkspace,
 } from "./xit";
 import {
   buildLiveStatusView,
@@ -16,16 +22,76 @@ import {
 let panel: vscode.WebviewPanel | undefined;
 
 // ──────────────────────────────────────────────────────────────────
-// MODULE-LEVEL CACHE — 功力累计 never clears once loaded
+// PERSISTENT CUMULATIVE CACHE
+// Keyed by absolute workspace path so one project's stats never
+// appear in another project's Dashboard.
+// Falls back to disk cache when history read returns empty
+// (e.g., VS Code workspace ≠ XiT project, or transient read failure).
 // ──────────────────────────────────────────────────────────────────
+
 interface CumulativeStats {
-  totalRuns: number;       // all history rows (口径 = totalRows)
+  totalRuns: number;
   todayCount: number;
-  todaySaved: number;
-  totalSaved: number;
+  todaySaved: number;   // tokens
+  totalSaved: number;   // tokens
 }
 
-let lastGoodCumulative: CumulativeStats | undefined;
+interface CumulativeCacheEntry extends CumulativeStats {
+  cachedAt: string;
+}
+
+type CumulativeCacheFile = Record<string, CumulativeCacheEntry>;
+
+const CUMULATIVE_CACHE_FILE = path.join(os.homedir(), ".xit", "vscode-cumulative-cache.json");
+
+// Fast in-memory layer — reset on extension host restart, backed by disk below
+let memCumulative: { workspace: string; stats: CumulativeStats } | undefined;
+
+function readCacheFile(): CumulativeCacheFile {
+  try {
+    if (!fs.existsSync(CUMULATIVE_CACHE_FILE)) return {};
+    return JSON.parse(fs.readFileSync(CUMULATIVE_CACHE_FILE, "utf-8")) as CumulativeCacheFile;
+  } catch {
+    return {};
+  }
+}
+
+function writeCacheEntry(workspacePath: string, stats: CumulativeStats): void {
+  try {
+    const cache = readCacheFile();
+    cache[workspacePath] = { ...stats, cachedAt: new Date().toISOString() };
+    fs.mkdirSync(path.dirname(CUMULATIVE_CACHE_FILE), { recursive: true });
+    fs.writeFileSync(CUMULATIVE_CACHE_FILE, JSON.stringify(cache, null, 2), "utf-8");
+  } catch {
+    // ignore write failures — cache is best-effort
+  }
+}
+
+function loadCacheEntry(workspacePath: string): CumulativeStats | undefined {
+  // 1. fast path: memory
+  if (memCumulative && path.resolve(memCumulative.workspace) === path.resolve(workspacePath)) {
+    return memCumulative.stats;
+  }
+  // 2. disk
+  try {
+    const cache = readCacheFile();
+    const entry = cache[workspacePath];
+    if (!entry) return undefined;
+    return {
+      totalRuns: entry.totalRuns,
+      todayCount: entry.todayCount,
+      todaySaved: entry.todaySaved,
+      totalSaved: entry.totalSaved,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function updateCache(workspacePath: string, stats: CumulativeStats): void {
+  memCumulative = { workspace: workspacePath, stats };
+  writeCacheEntry(workspacePath, stats);
+}
 
 function escapeHtml(text: string): string {
   return text
@@ -40,35 +106,23 @@ function escapeHtml(text: string): string {
 // DISPLAY FORMAT HELPERS
 // ──────────────────────────────────────────────────────────────────
 
-// Precise token display: 10367 → "10.4k Token", 486 → "486 Token"
 function formatTokensPrecise(tokens: number): string {
   if (tokens <= 0) return "—";
-  if (tokens >= 1_000_000) {
-    return `${(tokens / 1_000_000).toFixed(1)}M Token`;
-  }
-  if (tokens >= 1000) {
-    return `${(tokens / 1000).toFixed(1)}k Token`;
-  }
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M Token`;
+  if (tokens >= 1000) return `${(tokens / 1000).toFixed(1)}k Token`;
   return `${tokens} Token`;
 }
 
-// Cumulative display: same precision but allows 0
 function formatTokensCumulative(tokens: number): string {
-  if (tokens >= 1_000_000) {
-    return `${(tokens / 1_000_000).toFixed(1)}M Token`;
-  }
-  if (tokens >= 1000) {
-    return `${(tokens / 1000).toFixed(1)}k Token`;
-  }
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M Token`;
+  if (tokens >= 1000) return `${(tokens / 1000).toFixed(1)}k Token`;
   return `${tokens} Token`;
 }
 
-// One decimal reduction: 0.986 → "98.6%", 0.99 → "99.0%"
-function formatReductionPrecise(reductionPct: number): string {
-  return `${reductionPct.toFixed(1)}%`;
+function formatReductionPrecise(pct: number): string {
+  return `${pct.toFixed(1)}%`;
 }
 
-// Honest hit-lift range based on reduction bracket
 function formatHitLiftRange(reductionPct: number): string {
   if (reductionPct >= 95) return "预计 +24–28%";
   if (reductionPct >= 90) return "预计 +18–24%";
@@ -77,13 +131,12 @@ function formatHitLiftRange(reductionPct: number): string {
   return "预计 +0–6%";
 }
 
-// Compressed essence: summary_tokens → "78 Token"
-function formatEssenceTokens(summaryTokens: number): string {
-  if (summaryTokens <= 0) return "—";
-  if (summaryTokens >= 1000) {
-    return `${(summaryTokens / 1000).toFixed(1)}k Token`;
-  }
-  return `${summaryTokens} Token`;
+// summary_bytes / 4 is an estimate, marked with ~
+function formatEssenceApprox(summaryBytes: number): string {
+  if (summaryBytes <= 0) return "—";
+  const approxTokens = Math.round(summaryBytes / 4);
+  if (approxTokens >= 1000) return `~${(approxTokens / 1000).toFixed(1)}k Token`;
+  return `~${approxTokens} Token`;
 }
 
 function renderMetricItem(label: string, value: string, highlight = false): string {
@@ -96,97 +149,146 @@ function renderMetricItem(label: string, value: string, highlight = false): stri
 }
 
 // ──────────────────────────────────────────────────────────────────
-// CUMULATIVE AGGREGATE — independent of live state
-// Always reads history.jsonl; updates cache on success; uses cache on failure
+// SAVED TOKENS PER RUN — best available field priority
 // ──────────────────────────────────────────────────────────────────
-function computeCumulativeStats(runs: LatestRun[]): CumulativeStats {
+function savedTokensFromRun(run: LatestRun): number {
+  // 1. explicit saved_tokens
+  if (typeof run.saved_tokens === "number" && run.saved_tokens > 0) {
+    return run.saved_tokens;
+  }
+  // 2. raw_bytes - summary_bytes / 4
+  const rawTokens = Math.round((run.raw_bytes ?? 0) / 4);
+  const summaryTokens = Math.round((run.summary_bytes ?? 0) / 4);
+  if (rawTokens > 0 && summaryTokens >= 0 && rawTokens > summaryTokens) {
+    return rawTokens - summaryTokens;
+  }
+  return 0;
+}
+
+// ──────────────────────────────────────────────────────────────────
+// CUMULATIVE AGGREGATE — reads all rows from history, no filtering
+// ──────────────────────────────────────────────────────────────────
+function computeCumulative(runs: LatestRun[]): CumulativeStats {
   const todayStart = new Date().setHours(0, 0, 0, 0);
   let todayCount = 0;
   let todaySaved = 0;
   let totalSaved = 0;
 
   for (const run of runs) {
-    const metrics = getTokenMetricsForRun(run);
-    if (!metrics) continue;
-    totalSaved += metrics.savedTokens;
+    const saved = savedTokensFromRun(run);
+    totalSaved += saved;
     const ts = run.timestamp ? Date.parse(run.timestamp) : 0;
     if (ts >= todayStart) {
       todayCount++;
-      todaySaved += metrics.savedTokens;
+      todaySaved += saved;
     }
   }
 
+  return { totalRuns: runs.length, todayCount, todaySaved, totalSaved };
+}
+
+// ──────────────────────────────────────────────────────────────────
+// LIVE RESULT METRICS from current-run.json
+// Uses estimated_reduction (authoritative from CLI) over byte estimates.
+// ──────────────────────────────────────────────────────────────────
+function liveMetricsFromCurrentRun(state: CurrentRunState): {
+  savedTokens: number;
+  reductionPct: number;
+  summaryBytes: number;
+} {
+  const savedTokens = typeof state.saved_tokens === "number" && state.saved_tokens > 0
+    ? state.saved_tokens
+    : Math.max(0, Math.round(((state.raw_bytes ?? 0) - (state.summary_bytes ?? 0)) / 4));
+
+  const reductionPct = typeof state.estimated_reduction === "number" && state.estimated_reduction > 0
+    ? state.estimated_reduction * 100
+    : savedTokens > 0 && (state.raw_bytes ?? 0) > 0
+      ? (savedTokens / Math.round((state.raw_bytes ?? 0) / 4)) * 100
+      : 0;
+
   return {
-    totalRuns: runs.length,  // totalRows — all rows, regardless of saved_tokens field
-    todayCount,
-    todaySaved,
-    totalSaved,
+    savedTokens,
+    reductionPct,
+    summaryBytes: state.summary_bytes ?? 0,
   };
 }
 
 function buildDashboardHtml(
   status: XiTStatus,
-  latestRun: LatestRun | undefined,
+  _latestRun: LatestRun | undefined,   // kept for signature compat, not used for live result
   cspSource: string,
   stylesheetHref: string,
   liveOverride?: LiveStatusView,
 ): string {
+  // ──────────────────────────────────────────────────────────────────
+  // SINGLE AUTHORITY: active XiT workspace
+  // All reads use this path — never mix workspace roots.
+  // ──────────────────────────────────────────────────────────────────
+  const activeWorkspace = resolveActiveXitWorkspace();
+
   const liveStatus = liveOverride ?? (status.state === "binary-not-found"
-    ? {
-        kind: "missing" as const,
-        label: "未找到 XiT",
-        reason: "binary not found",
-        source: "extension status",
-      }
+    ? { kind: "missing" as const, label: "未找到 XiT", reason: "binary not found", source: "extension status" }
     : buildLiveStatusView());
 
   // ──────────────────────────────────────────────────────────────────
   // LIVE STATE FLAGS
   // ──────────────────────────────────────────────────────────────────
-  const isRunning = liveStatus.kind === "xit_running";
+  const isRunning  = liveStatus.kind === "xit_running";
   const isCompleted = liveStatus.kind === "xit_completed";
   const reportPanelActive = isRunning || isCompleted;
 
   // ──────────────────────────────────────────────────────────────────
-  // LIVE RESULT METRICS (发功效果)
-  // Source: latestRun only within completed hold window. Never from history.
+  // LIVE RESULT METRICS — source: current-run.json only
+  // Never reads from history for 发功效果.
   // ──────────────────────────────────────────────────────────────────
-  const liveResultMetrics = isCompleted && latestRun
-    ? getTokenMetricsForRun(latestRun)
+  const currentRunState = readCurrentRunState();
+  const completedRun = isCompleted && currentRunState?.status === "completed"
+    ? currentRunState
     : undefined;
 
-  const liveReductionPct = liveResultMetrics?.reductionPct ?? 0;
-  const liveSavedTokens = liveResultMetrics?.savedTokens ?? 0;
-  const liveSummaryTokens = liveResultMetrics?.summaryTokens ?? 0;
+  let liveSavedDisplay = "—";
+  let liveReductionDisplay = "—";
+  let liveHitLiftDisplay = "—";
+  let liveEssenceDisplay = "—";
+  let liveSavedHighlight = false;
+  let liveReductionHighlight = false;
+  let liveHitHighlight = false;
+  let liveEssenceHighlight = false;
 
-  const liveSavedDisplay = liveResultMetrics
-    ? formatTokensPrecise(liveSavedTokens)
-    : isRunning ? "计算中" : "—";
-  const liveReductionDisplay = liveResultMetrics && liveReductionPct > 0
-    ? formatReductionPrecise(liveReductionPct)
-    : isRunning ? "计算中" : "—";
-  const liveHitLiftDisplay = liveResultMetrics && liveReductionPct > 0
-    ? formatHitLiftRange(liveReductionPct)
-    : "—";
-  const liveEssenceDisplay = liveResultMetrics
-    ? formatEssenceTokens(liveSummaryTokens)
-    : "—";
+  if (completedRun) {
+    const m = liveMetricsFromCurrentRun(completedRun);
+    liveSavedDisplay      = formatTokensPrecise(m.savedTokens);
+    liveReductionDisplay  = m.reductionPct > 0 ? formatReductionPrecise(m.reductionPct) : "—";
+    liveHitLiftDisplay    = m.reductionPct > 0 ? formatHitLiftRange(m.reductionPct) : "—";
+    liveEssenceDisplay    = formatEssenceApprox(m.summaryBytes);
+    liveSavedHighlight     = m.savedTokens > 0;
+    liveReductionHighlight = m.reductionPct > 0;
+    liveHitHighlight       = m.reductionPct > 0;
+    liveEssenceHighlight   = m.summaryBytes > 0;
+  } else if (isRunning) {
+    liveSavedDisplay = liveReductionDisplay = "计算中";
+  }
 
   // ──────────────────────────────────────────────────────────────────
   // CUMULATIVE AGGREGATE (功力累计)
-  // Reads history.jsonl independently. Never mixed with live state.
-  // Updates module-level cache on success; uses last-good cache on failure.
+  // Reads history.jsonl via readAllWorkspaceRuns() which uses activeWorkspace.
+  // On success: update persistent cache keyed by activeWorkspace.
+  // On failure: use cache for the same workspace (never cross-project).
   // ──────────────────────────────────────────────────────────────────
   const allRuns = readAllWorkspaceRuns();
+  let cum: CumulativeStats | undefined;
+
   if (allRuns.length > 0) {
-    lastGoodCumulative = computeCumulativeStats(allRuns);
+    cum = computeCumulative(allRuns);
+    updateCache(activeWorkspace, cum);
+  } else {
+    cum = loadCacheEntry(activeWorkspace);
   }
-  const cum = lastGoodCumulative;
 
   const todaySavedValue  = cum && cum.todaySaved  > 0 ? formatTokensCumulative(cum.todaySaved)  : "—";
-  const todayRunsValue   = cum && cum.todayCount  > 0 ? `${cum.todayCount} 次`                  : "—";
+  const todayRunsValue   = cum && cum.todayCount  > 0 ? `${cum.todayCount} 次`                   : "—";
   const totalSavedValue  = cum && cum.totalSaved  > 0 ? formatTokensCumulative(cum.totalSaved)  : "—";
-  const totalRunsValue   = cum && cum.totalRuns   > 0 ? `${cum.totalRuns} 次`                   : "—";
+  const totalRunsValue   = cum && cum.totalRuns   > 0 ? `${cum.totalRuns} 次`                    : "—";
 
   // Critical errors
   const hardErrors: string[] = [];
@@ -226,10 +328,10 @@ function buildDashboardHtml(
       </div>
       ${isRunning || isCompleted
         ? `<div class="metrics-grid report-grid">
-          ${renderMetricItem("本次吸T",  liveSavedDisplay,    isCompleted && liveSavedTokens > 0)}
-          ${renderMetricItem("降噪率",   liveReductionDisplay, isCompleted && liveReductionPct > 0)}
-          ${renderMetricItem("命中加成", liveHitLiftDisplay,   isCompleted && liveReductionPct > 0)}
-          ${renderMetricItem("保留精华", liveEssenceDisplay,   isCompleted && liveSummaryTokens > 0)}
+          ${renderMetricItem("本次吸T",  liveSavedDisplay,     liveSavedHighlight)}
+          ${renderMetricItem("降噪率",   liveReductionDisplay,  liveReductionHighlight)}
+          ${renderMetricItem("命中加成", liveHitLiftDisplay,    liveHitHighlight)}
+          ${renderMetricItem("保留精华", liveEssenceDisplay,    liveEssenceHighlight)}
         </div>`
         : `<div class="empty-state">
           <div class="empty-state-title">等待发功</div>
@@ -279,13 +381,7 @@ export function showDashboard(
         localResourceRoots: [mediaRoot],
       },
     );
-    panel.onDidDispose(
-      () => {
-        panel = undefined;
-      },
-      null,
-      context.subscriptions,
-    );
+    panel.onDidDispose(() => { panel = undefined; }, null, context.subscriptions);
   }
 
   const latestRun = readLatestRun();
@@ -293,27 +389,17 @@ export function showDashboard(
     .asWebviewUri(vscode.Uri.joinPath(mediaRoot, "dashboard.css"))
     .toString();
   panel.webview.html = buildDashboardHtml(
-    status,
-    latestRun,
-    panel.webview.cspSource,
-    stylesheetHref,
-    liveOverride,
+    status, latestRun, panel.webview.cspSource, stylesheetHref, liveOverride,
   );
 }
 
 export function updateDashboardIfOpen(status: XiTStatus, liveOverride?: LiveStatusView): void {
-  if (!panel) {
-    return;
-  }
+  if (!panel) return;
   const latestRun = readLatestRun();
   const stylesheetHref = panel.webview
     .asWebviewUri(vscode.Uri.joinPath(panel.webview.options.localResourceRoots![0], "dashboard.css"))
     .toString();
   panel.webview.html = buildDashboardHtml(
-    status,
-    latestRun,
-    panel.webview.cspSource,
-    stylesheetHref,
-    liveOverride,
+    status, latestRun, panel.webview.cspSource, stylesheetHref, liveOverride,
   );
 }

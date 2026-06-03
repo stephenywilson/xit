@@ -578,6 +578,22 @@ async function updateStatusBar(): Promise<void> {
   }
 
   if (liveState === "turn_active" || liveState === "running") {
+    // Safety net: file watchers may be registered against the wrong workspace path at
+    // activation time (before any hook events arrive). On every periodic refresh, check
+    // if the run actually completed and transition immediately if so.
+    if (liveState === "running") {
+      const currentState = readCurrentRunState();
+      if (currentState?.status === "completed" || currentState?.status === "failed") {
+        const latestRun = getCompletedRunFromStateOrHistory();
+        const savedBytes = Math.max(
+          0,
+          (latestRun?.raw_bytes || 0) - (latestRun?.summary_bytes || 0),
+        );
+        enterSuccessPhase(savedBytes > 0, latestRun);
+        updateDashboardIfOpen(status, buildLiveStatusOverride());
+        return;
+      }
+    }
     statusBarItem.text = "吸T神功 · 正在吸T中";
     statusBarItem.tooltip = [
       "当前状态：正在吸T中",
@@ -795,6 +811,7 @@ function registerWorkspaceWatchers(context: vscode.ExtensionContext): void {
         state.raw_log,
       );
       setLiveState("running");
+      startActiveRunPoller();
     } else if (
       state &&
       (state.status === "completed" || state.status === "failed") &&
@@ -933,6 +950,7 @@ function registerTerminalListeners(context: vscode.ExtensionContext): void {
         if (/\bxit\s+auto\b/.test(commandLine)) {
           markActiveRun(Date.now());
           setLiveState("running");
+          startActiveRunPoller();
         }
         void updateStatusBar();
       },

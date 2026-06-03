@@ -47,6 +47,29 @@ function hasXitData(dir: string): boolean {
   }
 }
 
+const WORKSPACE_CACHE_PATH = path.join(os.homedir(), ".xit", "active-workspace");
+
+function loadWorkspaceCache(): string | undefined {
+  try {
+    if (!fs.existsSync(WORKSPACE_CACHE_PATH)) return undefined;
+    const cached = fs.readFileSync(WORKSPACE_CACHE_PATH, "utf-8").trim();
+    if (!cached || path.resolve(cached) === path.resolve(os.homedir())) return undefined;
+    if (!hasXitData(cached)) return undefined;
+    return cached;
+  } catch {
+    return undefined;
+  }
+}
+
+function saveWorkspaceCache(workspacePath: string): void {
+  try {
+    if (path.resolve(workspacePath) === path.resolve(os.homedir())) return;
+    fs.writeFileSync(WORKSPACE_CACHE_PATH, workspacePath, "utf-8");
+  } catch {
+    // ignore write failures
+  }
+}
+
 function parseXitCwdsFromHookCommands(): string[] {
   const home = resolveXiTHome();
   const hookFiles = [
@@ -55,7 +78,9 @@ function parseXitCwdsFromHookCommands(): string[] {
     path.join(home, "cursor-hooks", "events.jsonl"),
     path.join(home, "kimi-hooks", "events.jsonl"),
   ];
-  const cutoffMs = Date.now() - 10 * 60 * 1000;
+  // Use a 60-minute window for workspace detection (hook events from the active project
+  // may come via "cd /project && xit auto ..." patterns which age quickly)
+  const cutoffMs = Date.now() - 60 * 60 * 1000;
   const found: string[] = [];
 
   for (const hookFile of hookFiles) {
@@ -64,7 +89,7 @@ function parseXitCwdsFromHookCommands(): string[] {
         continue;
       }
       const content = fs.readFileSync(hookFile, "utf-8");
-      const lines = content.trim().split("\n").filter(Boolean).slice(-30).reverse();
+      const lines = content.trim().split("\n").filter(Boolean).slice(-100).reverse();
       for (const line of lines) {
         try {
           const event = JSON.parse(line) as {
@@ -103,24 +128,29 @@ function parseXitCwdsFromHookCommands(): string[] {
 
 export function resolveActiveXitWorkspace(): string {
   const folders = vscode.workspace.workspaceFolders;
+  const homeDir = os.homedir();
 
-  // 1. VS Code workspace root if it has .xit data
+  // 1. VS Code workspace root if it has .xit data, but skip home dir.
+  // ~/.xit/ is the XiT system home (hooks, sessions, global state) — not a project workspace.
   if (folders && folders.length > 0) {
     const wsRoot = folders[0].uri.fsPath;
-    if (hasXitData(wsRoot)) {
+    if (path.resolve(wsRoot) !== path.resolve(homeDir) && hasXitData(wsRoot)) {
       return wsRoot;
     }
   }
 
-  // 2. Scan recent hook commands/cwds for paths with .xit data
+  // 2. Scan recent hook commands/cwds for paths with .xit data (skip home dir)
   for (const candidate of parseXitCwdsFromHookCommands()) {
     const resolved = candidate.startsWith("~/")
-      ? path.join(os.homedir(), candidate.slice(2))
+      ? path.join(homeDir, candidate.slice(2))
       : candidate === "~"
-        ? os.homedir()
+        ? homeDir
         : candidate;
+    // Home dir is the XiT system home, not a project workspace — skip it here too
+    if (path.resolve(resolved) === path.resolve(homeDir)) continue;
     try {
       if (hasXitData(resolved)) {
+        saveWorkspaceCache(resolved);
         return resolved;
       }
     } catch {
@@ -128,12 +158,16 @@ export function resolveActiveXitWorkspace(): string {
     }
   }
 
-  // 3. Fall back to VS Code workspace root even if no .xit data there
+  // 3. Use cached workspace from a previous successful resolution
+  const cached = loadWorkspaceCache();
+  if (cached) return cached;
+
+  // 4. Fall back to VS Code workspace root even if no .xit data there
   if (folders && folders.length > 0) {
     return folders[0].uri.fsPath;
   }
 
-  return os.homedir();
+  return homeDir;
 }
 
 export function resolveWorkspaceCwd(): string {

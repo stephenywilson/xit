@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import { execFile } from "child_process";
 import type {
@@ -169,9 +170,8 @@ function parseIsoTimeMs(iso: string | undefined): number | undefined {
   return Number.isNaN(ms) ? undefined : ms;
 }
 
-export function readAllWorkspaceRuns(): LatestRun[] {
-  const historyPath = getWorkspaceHistoryPath();
-  if (!historyPath || !fs.existsSync(historyPath)) {
+function readRunsFromHistoryFile(historyPath: string): LatestRun[] {
+  if (!fs.existsSync(historyPath)) {
     return [];
   }
   try {
@@ -190,6 +190,58 @@ export function readAllWorkspaceRuns(): LatestRun[] {
   } catch {
     return [];
   }
+}
+
+function collectRecentActivityCwds(): string[] {
+  const cutoffMs = Date.now() - RECENT_ACTIVITY_MS;
+  const cwds = new Set<string>();
+  const ADAPTERS = ["claude", "codex", "cursor", "kimi"] as const;
+  for (const adapter of ADAPTERS) {
+    for (const event of readRecentEvents(adapter, 50)) {
+      if (event.time) {
+        const ms = parseIsoTimeMs(event.time);
+        if (ms === undefined || ms < cutoffMs) {
+          continue;
+        }
+      }
+      if (event.cwd) {
+        cwds.add(path.resolve(event.cwd));
+      }
+      // Parse embedded "cd /some/path &&" compound commands
+      if (event.original_command) {
+        const m = event.original_command.match(
+          /(?:^|;|\s&&)\s*cd\s+([^\s;&|"'`\\]+)/,
+        );
+        if (m && m[1]) {
+          const cdPath = m[1].startsWith("~/")
+            ? path.join(os.homedir(), m[1].slice(2))
+            : m[1] === "~"
+              ? os.homedir()
+              : m[1];
+          cwds.add(path.resolve(cdPath));
+        }
+      }
+    }
+  }
+  return [...cwds];
+}
+
+export function readAllWorkspaceRuns(): LatestRun[] {
+  const primaryPath = getWorkspaceHistoryPath();
+  const primaryRuns = primaryPath ? readRunsFromHistoryFile(primaryPath) : [];
+  if (primaryRuns.length > 0) {
+    return primaryRuns;
+  }
+  // Fallback: when workspace history is empty, scan cwds from recent hook events.
+  // This covers the case where VS Code workspace root differs from where xit auto ran.
+  for (const cwd of collectRecentActivityCwds()) {
+    const fallbackPath = path.join(cwd, ".xit", "history.jsonl");
+    const fallbackRuns = readRunsFromHistoryFile(fallbackPath);
+    if (fallbackRuns.length > 0) {
+      return fallbackRuns;
+    }
+  }
+  return [];
 }
 
 export function installWorkspaceAiRules(): RuleInstallResult {
@@ -866,7 +918,7 @@ export function buildVerifyRoutingReport(): VerifyRoutingReport {
 // === Agent Turn Awareness ===
 
 const ACTIVE_TURN_STALE_MS = 2 * 60 * 1000;  // active turn: no event for 2min → stale
-const SUCCESS_HOLD_MS = 25 * 1000;             // completed turn shown for 25s after stop
+const SUCCESS_HOLD_MS = 120 * 1000;            // completed turn shown for 2min after stop
 const RECENT_ACTIVITY_MS = 10 * 60 * 1000;    // command routing mode window
 const LIVE_AGENT_FRESH_MS = 30 * 1000;
 const LIVE_AGENT_MISSED_HOLD_MS = 45 * 1000;
@@ -946,11 +998,19 @@ export function buildAgentTurnView(): AgentTurnView {
   // === Collect latest activity across all adapters (workspace-filtered) ===
   let latestActivity: LatestActivityInfo | undefined;
   let latestActivityMs: number | undefined;
+  const resolvedWorkspace = path.resolve(workspacePath);
 
   for (const [adapter, events] of adapterEvents) {
     for (const event of events) {
       if (!event.time) continue;
-      if (event.cwd && path.resolve(event.cwd) !== path.resolve(workspacePath)) continue;
+      if (event.cwd) {
+        const resolvedEventCwd = path.resolve(event.cwd);
+        // Accept: exact match, OR hook cwd is a parent of the workspace (cd happened inside cmd)
+        const cwdMatches =
+          resolvedEventCwd === resolvedWorkspace ||
+          resolvedWorkspace.startsWith(resolvedEventCwd + path.sep);
+        if (!cwdMatches) continue;
+      }
       const eventMs = parseIsoTimeMs(event.time);
       if (eventMs === undefined) continue;
       if (latestActivityMs === undefined || eventMs > latestActivityMs) {
@@ -1028,7 +1088,13 @@ export function buildAgentTurnView(): AgentTurnView {
     let countForAdapter = 0;
     for (const event of events) {
       if (!event.time || !event.original_command) continue;
-      if (event.cwd && path.resolve(event.cwd) !== path.resolve(workspacePath)) continue;
+      if (event.cwd) {
+        const resolvedEventCwd = path.resolve(event.cwd);
+        const cwdMatches =
+          resolvedEventCwd === resolvedWorkspace ||
+          resolvedWorkspace.startsWith(resolvedEventCwd + path.sep);
+        if (!cwdMatches) continue;
+      }
       const eventMs = parseIsoTimeMs(event.time);
       if (eventMs === undefined) continue;
       if (turnStartMs !== undefined && eventMs < turnStartMs) continue;
@@ -1043,7 +1109,12 @@ export function buildAgentTurnView(): AgentTurnView {
         routedThroughXit++;
       }
     }
-    const latestForAdapter = events.find(e => e.time && (!e.cwd || path.resolve(e.cwd) === path.resolve(workspacePath)));
+    const latestForAdapter = events.find(e => {
+      if (!e.time) return false;
+      if (!e.cwd) return true;
+      const r = path.resolve(e.cwd);
+      return r === resolvedWorkspace || resolvedWorkspace.startsWith(r + path.sep);
+    });
     if (countForAdapter > 0 || latestForAdapter?.time) {
       evidence.push(`${adapter}: ${countForAdapter} cmd(s)${latestForAdapter?.time ? `, last ${latestForAdapter.time}` : ""}`);
     }
@@ -1120,11 +1191,32 @@ export function buildLiveStatusView(options?: {
   const activityMs = parseIsoTimeMs(activity?.timestamp);
 
   if (activity && activityMs !== undefined && now - activityMs <= agentFreshMs) {
+    // If xit completed more recently than the latest observe event with real savings,
+    // show xit_completed instead of agent_observing so the result isn't overwritten.
+    if (
+      latestRun &&
+      latestRunMs !== undefined &&
+      latestRunMetrics &&
+      latestRunMetrics.savedTokens > 0 &&
+      latestRunMs > activityMs &&
+      now - latestRunMs <= xitCompletedHoldMs
+    ) {
+      return {
+        kind: "xit_completed",
+        label: "吸T完成",
+        command: latestRun.command,
+        reason: "xit run more recent than observe event",
+        source: "history.jsonl",
+        updatedAt: latestRun.timestamp,
+        savedTokensDisplay: latestRunMetrics.savedDisplay,
+      };
+    }
+
     const adapter = adapterDisplayName(activity.adapter);
     if (activity.routedThroughXit) {
       return {
         kind: "agent_routed_pending_state",
-        label: "接管中",
+        label: "守护你的T",
         adapter,
         command: activity.command,
         reason: activity.reason || "routed",
@@ -1134,7 +1226,7 @@ export function buildLiveStatusView(options?: {
     }
     return {
       kind: "agent_observing",
-      label: adapter ? `观察 ${adapter}` : "守护中",
+      label: "守护你的T",
       adapter,
       command: activity.command,
       reason: activity.reason || "not routed",

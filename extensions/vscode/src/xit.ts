@@ -36,12 +36,108 @@ function showOutput(): void {
   OUTPUT_CHANNEL.show(true);
 }
 
-export function resolveWorkspaceCwd(): string {
+function hasXitData(dir: string): boolean {
+  try {
+    return (
+      fs.existsSync(path.join(dir, ".xit", "history.jsonl")) ||
+      fs.existsSync(path.join(dir, ".xit", "state", "current-run.json"))
+    );
+  } catch {
+    return false;
+  }
+}
+
+function parseXitCwdsFromHookCommands(): string[] {
+  const home = resolveXiTHome();
+  const hookFiles = [
+    path.join(home, "claude-hooks", "events.jsonl"),
+    path.join(home, "codex-hooks", "events.jsonl"),
+    path.join(home, "cursor-hooks", "events.jsonl"),
+    path.join(home, "kimi-hooks", "events.jsonl"),
+  ];
+  const cutoffMs = Date.now() - 10 * 60 * 1000;
+  const found: string[] = [];
+
+  for (const hookFile of hookFiles) {
+    try {
+      if (!fs.existsSync(hookFile)) {
+        continue;
+      }
+      const content = fs.readFileSync(hookFile, "utf-8");
+      const lines = content.trim().split("\n").filter(Boolean).slice(-30).reverse();
+      for (const line of lines) {
+        try {
+          const event = JSON.parse(line) as {
+            time?: string;
+            original_command?: string;
+            cwd?: string;
+          };
+          if (event.time) {
+            const ms = Date.parse(event.time);
+            if (!Number.isNaN(ms) && ms < cutoffMs) {
+              continue;
+            }
+          }
+          if (event.original_command) {
+            // Extract path from "cd /some/path &&" or "; cd /some/path"
+            const m = event.original_command.match(
+              /(?:^|;|\s&&)\s*cd\s+([^\s;&|"'`\\]+)/,
+            );
+            if (m && m[1] && !found.includes(m[1])) {
+              found.push(m[1]);
+            }
+          }
+          if (event.cwd && !found.includes(event.cwd)) {
+            found.push(event.cwd);
+          }
+        } catch {
+          // skip
+        }
+      }
+    } catch {
+      // skip
+    }
+  }
+  return found;
+}
+
+export function resolveActiveXitWorkspace(): string {
   const folders = vscode.workspace.workspaceFolders;
+
+  // 1. VS Code workspace root if it has .xit data
+  if (folders && folders.length > 0) {
+    const wsRoot = folders[0].uri.fsPath;
+    if (hasXitData(wsRoot)) {
+      return wsRoot;
+    }
+  }
+
+  // 2. Scan recent hook commands/cwds for paths with .xit data
+  for (const candidate of parseXitCwdsFromHookCommands()) {
+    const resolved = candidate.startsWith("~/")
+      ? path.join(os.homedir(), candidate.slice(2))
+      : candidate === "~"
+        ? os.homedir()
+        : candidate;
+    try {
+      if (hasXitData(resolved)) {
+        return resolved;
+      }
+    } catch {
+      // skip
+    }
+  }
+
+  // 3. Fall back to VS Code workspace root even if no .xit data there
   if (folders && folders.length > 0) {
     return folders[0].uri.fsPath;
   }
+
   return os.homedir();
+}
+
+export function resolveWorkspaceCwd(): string {
+  return resolveActiveXitWorkspace();
 }
 
 function resolveXiTHome(): string {
@@ -343,11 +439,7 @@ export function readRecentEvents(
 }
 
 export function readWorkspaceHistory(maxLines = 20): AdapterEvent[] {
-  const folders = vscode.workspace.workspaceFolders;
-  if (!folders || folders.length === 0) {
-    return [];
-  }
-  const historyPath = path.join(folders[0].uri.fsPath, ".xit", "history.jsonl");
+  const historyPath = path.join(resolveActiveXitWorkspace(), ".xit", "history.jsonl");
   try {
     if (!fs.existsSync(historyPath)) {
       return [];
@@ -371,11 +463,7 @@ export function readWorkspaceHistory(maxLines = 20): AdapterEvent[] {
 }
 
 export function findLatestRawLog(): string | undefined {
-  const folders = vscode.workspace.workspaceFolders;
-  if (!folders || folders.length === 0) {
-    return undefined;
-  }
-  const runsDir = path.join(folders[0].uri.fsPath, ".xit", "runs");
+  const runsDir = path.join(resolveActiveXitWorkspace(), ".xit", "runs");
   try {
     if (!fs.existsSync(runsDir)) {
       return undefined;
@@ -417,11 +505,7 @@ export function readLatestRawLogMeta(): LatestRawLogMeta | undefined {
 }
 
 function getCurrentRunStateCandidates(): string[] {
-  const folders = vscode.workspace.workspaceFolders;
-  if (!folders || folders.length === 0) {
-    return [];
-  }
-  const root = folders[0].uri.fsPath;
+  const root = resolveActiveXitWorkspace();
   return [
     path.join(root, ".xit", "state", "current-run.json"),
     path.join(root, ".xit", "state", "current.json"),
@@ -429,25 +513,39 @@ function getCurrentRunStateCandidates(): string[] {
 }
 
 export function readCurrentRunState(): CurrentRunState | undefined {
+  let best: CurrentRunState | undefined;
+  let bestMs = -1;
+
   for (const candidate of getCurrentRunStateCandidates()) {
     try {
       if (!fs.existsSync(candidate)) {
         continue;
       }
-      return JSON.parse(fs.readFileSync(candidate, "utf-8")) as CurrentRunState;
+      const state = JSON.parse(
+        fs.readFileSync(candidate, "utf-8"),
+      ) as CurrentRunState;
+      // Pick the freshest state across both files. Running states use
+      // heartbeat_at; completed states use completed_at / finished_at.
+      const ts =
+        state.heartbeat_at ||
+        state.completed_at ||
+        state.finished_at ||
+        state.started_at ||
+        "";
+      const ms = ts ? new Date(ts).getTime() : 0;
+      if (!best || ms > bestMs) {
+        best = state;
+        bestMs = ms;
+      }
     } catch {
       continue;
     }
   }
-  return undefined;
+  return best;
 }
 
 export function readTurnState(): TurnState | undefined {
-  const folders = vscode.workspace.workspaceFolders;
-  if (!folders || folders.length === 0) {
-    return undefined;
-  }
-  const workspacePath = folders[0].uri.fsPath;
+  const workspacePath = resolveActiveXitWorkspace();
   const turnPath = path.join(workspacePath, ".xit", "state", "turn.json");
   try {
     if (!fs.existsSync(turnPath)) {
@@ -623,11 +721,7 @@ export function isHighOutputCommand(cmd: string): boolean {
 }
 
 export function readLatestRun(): LatestRun | undefined {
-  const folders = vscode.workspace.workspaceFolders;
-  if (!folders || folders.length === 0) {
-    return undefined;
-  }
-  const historyPath = path.join(folders[0].uri.fsPath, ".xit", "history.jsonl");
+  const historyPath = path.join(resolveActiveXitWorkspace(), ".xit", "history.jsonl");
   try {
     if (!fs.existsSync(historyPath)) {
       return undefined;

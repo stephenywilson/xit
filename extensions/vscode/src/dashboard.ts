@@ -85,20 +85,19 @@ function buildStatusMeta(
     };
   }
 
-  if (liveStatus.kind === "xit_running" || liveStatus.kind === "agent_routed_pending_state") {
+  if (liveStatus.kind === "xit_running") {
+    const isTurnActive = liveStatus.reason === "turn active";
     return {
-      heroTitle: liveStatus.kind === "xit_running"
-        ? "当前命令正在吸T中，摘要会在 run 完成后更新"
-        : "已观察到接管信号，正在处理中",
-      pillLabel: liveStatus.kind === "xit_running" ? "正在吸T" : "接管中",
+      heroTitle: isTurnActive ? "XiT 正在守护当前 AI 工作流" : "XiT 正在处理高噪音输出",
+      pillLabel: "正在吸T中",
       pillTone: "running",
     };
   }
 
-  if (liveStatus.kind === "agent_observing") {
+  if (liveStatus.kind === "agent_routed_pending_state" || liveStatus.kind === "agent_observing") {
     return {
-      heroTitle: "XiT 正在守护当前 AI 编程工作流",
-      pillLabel: "守护中",
+      heroTitle: "XiT 正在守护你的高噪音命令",
+      pillLabel: "守护你的T",
       pillTone: "idle",
     };
   }
@@ -106,14 +105,14 @@ function buildStatusMeta(
   if (liveStatus.kind === "agent_not_routed") {
     return {
       heroTitle: "本轮 AI 活动已监测，命令无需压缩",
-      pillLabel: "未触发",
+      pillLabel: "无需发功",
       pillTone: "warning",
     };
   }
 
   if (liveStatus.kind === "xit_completed") {
     return {
-      heroTitle: "当前工作区已有可用节省结果",
+      heroTitle: "刚刚完成的吸T结果",
       pillLabel: "吸T完成",
       pillTone: "success",
     };
@@ -121,7 +120,7 @@ function buildStatusMeta(
 
   return {
     heroTitle: "XiT 正在守护你的高噪音命令",
-    pillLabel: "守护中",
+    pillLabel: "守护你的T",
     pillTone: "idle",
   };
 }
@@ -192,18 +191,19 @@ function buildDashboardHtml(
   latestRun: LatestRun | undefined,
   cspSource: string,
   stylesheetHref: string,
+  liveOverride?: LiveStatusView,
 ): string {
   const gain = status.gain;
   const tokenImpact = getTokenImpactStats(latestRun);
   const currentRunState = readCurrentRunState();
-  const liveStatus = status.state === "binary-not-found"
+  const liveStatus = liveOverride ?? (status.state === "binary-not-found"
     ? {
         kind: "missing" as const,
         label: "未找到 XiT",
         reason: "binary not found",
         source: "extension status",
       }
-    : buildLiveStatusView();
+    : buildLiveStatusView());
   const statusMeta = buildStatusMeta(status, liveStatus);
 
   const validCurrentRun = isCurrentRunFreshAndRunning(currentRunState ?? undefined)
@@ -360,6 +360,7 @@ function buildDashboardHtml(
 export function showDashboard(
   context: vscode.ExtensionContext,
   status: XiTStatus,
+  liveOverride?: LiveStatusView,
 ): void {
   const mediaRoot = vscode.Uri.joinPath(context.extensionUri, "media");
   if (panel) {
@@ -393,10 +394,11 @@ export function showDashboard(
     latestRun,
     panel.webview.cspSource,
     stylesheetHref,
+    liveOverride,
   );
 }
 
-export function updateDashboardIfOpen(status: XiTStatus): void {
+export function updateDashboardIfOpen(status: XiTStatus, liveOverride?: LiveStatusView): void {
   if (!panel) {
     return;
   }
@@ -409,5 +411,6 @@ export function updateDashboardIfOpen(status: XiTStatus): void {
     latestRun,
     panel.webview.cspSource,
     stylesheetHref,
+    liveOverride,
   );
 }

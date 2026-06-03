@@ -701,13 +701,43 @@ tbody tr:hover {
   font-size: 13px;
 }
 
+/* Impact Grid (4-col metric tiles) */
+.impact-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+/* AI Coverage Grid */
+.coverage-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.coverage-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.coverage-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+}
+
 /* Responsive */
 @media (max-width: 900px) {
   .summary-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .adapter-grid {
+  .adapter-grid,
+  .coverage-grid,
+  .impact-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -733,6 +763,8 @@ tbody tr:hover {
 
   .summary-grid,
   .adapter-grid,
+  .coverage-grid,
+  .impact-grid,
   .metrics-grid.compact,
   .metrics-grid.six-up,
   .debug-grid {

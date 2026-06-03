@@ -26,7 +26,7 @@ import {
   buildLiveStatusView,
   buildVerifyRoutingReport,
   buildDiagnoseReport,
-  computeWorkflowHealth,
+  estimateHitRateLift,
   getAdapterHookConnectivity,
   getTokenMetricsForRun,
   formatSavedTokensForRun,
@@ -86,38 +86,34 @@ function getStatusBarTextFromRun(run: LatestRun | undefined): string {
 function getStatusBarTextFromLiveStatus(view: LiveStatusView): string {
   switch (view.kind) {
     case "xit_running":
-      return "吸T神功 · 正在吸T中";
+      return "吸T神功 · 正在吸T";
     case "agent_routed_pending_state":
       return "吸T神功 · 接管中";
     case "agent_observing":
-      return `吸T神功 · ${view.label}`;
+      return "吸T神功 · 守护中";
     case "agent_not_routed":
-      return "吸T神功 · 本轮未触发吸T";
+      return "吸T神功 · 本轮未触发";
     case "xit_completed":
       return `吸T完成 · 省${view.savedTokensDisplay || "0 Token"}`;
     case "missing":
-      return "吸T神功 · 未找到 XiT";
+      return "吸T神功 · 未接入";
     case "idle":
     default:
-      return "吸T神功 · 守护你的T";
+      return "吸T神功 · 守护中";
   }
 }
 
-function getLiveStatusTooltipLines(view: LiveStatusView): string[] {
-  const lines = [
-    `Live status: ${view.label}`,
-    view.adapter ? `Latest activity: ${view.adapter}` : "",
-    view.command ? `Command: ${view.command}` : "",
-    view.reason ? `Reason: ${view.reason}` : "",
-    view.kind === "xit_running" || view.kind === "agent_routed_pending_state"
-      ? "XiT auto: triggered"
-      : view.kind === "agent_observing" || view.kind === "agent_not_routed"
-        ? "XiT auto: not triggered"
-        : "",
-    view.source ? `Source: ${view.source}` : "",
-    view.updatedAt ? `Updated: ${new Date(view.updatedAt).toLocaleString()}` : "",
-  ];
-  return lines.filter(Boolean);
+function getLiveStatusLabel(view: LiveStatusView): string {
+  const labelMap: Partial<Record<string, string>> = {
+    xit_running: "正在吸T",
+    agent_routed_pending_state: "接管中",
+    agent_observing: "守护中",
+    agent_not_routed: "未触发",
+    xit_completed: "吸T完成",
+    missing: "未接入",
+    idle: "守护中",
+  };
+  return labelMap[view.kind] ?? "守护中";
 }
 
 function markActiveRun(startedAt = Date.now(), rawLogPath?: string): void {
@@ -309,21 +305,17 @@ async function updateStatusBar(): Promise<void> {
 
   const status = await fetchStatus();
   const latestRun = getCompletedRunFromStateOrHistory();
-  const health = computeWorkflowHealth(status, latestRun);
 
   if (!status.available && status.state === "binary-not-found") {
     liveState = "no-binary";
-    statusBarItem.text = "吸T神功 · 未找到 XiT";
+    statusBarItem.text = "吸T神功 · 未接入";
     statusBarItem.tooltip = [
-      "吸T神功尚未找到本地 XiT。",
-      status.cwd ? `当前工作区：${status.cwd}` : "",
-      status.attempts && status.attempts.length > 0
-        ? `已尝试：${status.attempts.join(", ")}`
-        : "",
+      "当前状态：未接入",
+      "请安装本地 XiT CLI 以启用降噪功能",
+      "─".repeat(20),
+      "本地处理 · 不读取聊天内容 · 无遥测",
       "点击打开 XiT Dashboard",
-    ]
-      .filter(Boolean)
-      .join("\n");
+    ].join("\n");
     updateDashboardIfOpen(status);
     return;
   }
@@ -331,76 +323,23 @@ async function updateStatusBar(): Promise<void> {
   const liveStatus = buildLiveStatusView();
   statusBarItem.text = getStatusBarTextFromLiveStatus(liveStatus);
 
-  const workspaceRoot = getWorkspacePath() || "unknown";
-  const watchedStatePath = `${workspaceRoot}/.xit/state/current-run.json`;
-  const watchedHistoryPath = `${workspaceRoot}/.xit/history.jsonl`;
-  const currentRunStatus = readCurrentRunState()?.status || "none";
-  const lastUpdateStr = status.refreshedAt
-    ? status.refreshedAt.toLocaleTimeString()
-    : "—";
-
-  // Build turn-aware tooltip lines
-  const agentTurn = buildAgentTurnView();
-  const turnStatusMap: Record<string, string> = {
-    working: "AI 正在工作",
-    xit_running: "正在吸T中",
-    completed: "本轮已完成",
-    stopped: "已停止",
-    idle: "空闲",
-    unknown: "未知",
-  };
-  const turnLines: string[] = [];
-  if (agentTurn.isFreshActive) {
-    turnLines.push(
-      `当前对话：${agentTurn.adapter === "unknown" ? "未知" : agentTurn.adapter}`,
-      `Turn 状态：${turnStatusMap[agentTurn.status] || agentTurn.status}`,
-      `本轮命令：${agentTurn.commandsObserved} 个，路由 XiT：${agentTurn.routedThroughXit}`,
-    );
-    if (agentTurn.savedTokensDisplay !== "—" && agentTurn.savedTokensThisTurn > 0) {
-      turnLines.push(`本轮节省：${agentTurn.savedTokensDisplay}`);
-    }
-  } else if (agentTurn.ignoredStaleTurns.length > 0) {
-    const stale = agentTurn.ignoredStaleTurns[0];
-    turnLines.push(`Ignored stale turn: ${stale.adapter}, stopped ${stale.ageHours}h ago`);
-  }
-  if (agentTurn.latestActivity) {
-    const act = agentTurn.latestActivity;
-    const actTime = new Date(act.timestamp).toLocaleTimeString();
-    turnLines.push(`Latest activity: ${act.adapter} · ${act.command || act.eventType} · ${actTime}`);
-  }
+  const metrics = getTokenMetricsForRun(latestRun);
+  const savedDisplay = liveStatus.savedTokensDisplay || metrics?.savedDisplay;
+  const reductionLabel = metrics && metrics.reductionPct > 0
+    ? `${Math.round(metrics.reductionPct)}%`
+    : "--";
+  const hitLift = metrics ? estimateHitRateLift(metrics.reductionPct, metrics.savedTokens) : 0;
+  const hitLiftLabel = hitLift > 0 ? `预计 +${hitLift}%` : "--";
 
   statusBarItem.tooltip = [
-    ...getLiveStatusTooltipLines(liveStatus),
-    ...(liveStatus.kind === "xit_running"
-      ? ["正在吸T中", "完成后显示实际节省"]
-      : (() => {
-          const metrics = getTokenMetricsForRun(latestRun);
-          if (!metrics || !latestRun) {
-            return [
-              health.workspaceRulesInstalled
-                ? "吸T神功正在守护当前工作区"
-                : "吸T神功已准备好，随时出手",
-            ];
-          }
-          return [
-            "本次吸T",
-            `原始输出：${metrics.rawTokens >= 1000 ? `~${(metrics.rawTokens / 1000).toFixed(1)}k Token` : `${metrics.rawTokens} Token`}`,
-            `吸后摘要：${metrics.summaryTokens >= 1000 ? `~${(metrics.summaryTokens / 1000).toFixed(1)}k Token` : `${metrics.summaryTokens} Token`}`,
-            `本次节省：${metrics.savedDisplay}`,
-            `降噪率：${Math.round(metrics.reductionPct)}%`,
-          ];
-        })()),
-    ...(turnLines.length > 0 ? ["─".repeat(20), ...turnLines] : []),
+    `当前状态：${getLiveStatusLabel(liveStatus)}`,
+    savedDisplay && metrics && metrics.savedTokens > 0
+      ? `本次节省：${savedDisplay}`
+      : "本次节省：—",
+    `降噪率：${reductionLabel}`,
+    `预计命中率提升：${hitLiftLabel}`,
     "─".repeat(20),
-    `Workspace: ${workspaceRoot}`,
-    `Current XiT run: ${currentRunStatus}`,
-    latestRun?.timestamp ? `Latest XiT run: ${new Date(latestRun.timestamp).toLocaleString()}` : "Latest XiT run: none",
-    `Current turn: ${agentTurn.isFreshActive ? agentTurn.adapter : "none"}`,
-    `Rules: ${health.workspaceRulesInstalled ? "installed" : "not installed"}`,
-    latestRun?.raw_log ? `raw log：${latestRun.raw_log}` : "",
-    status.binary ? `XiT 本体：${status.binary}` : "",
-    `Last update: ${lastUpdateStr}`,
-    "本地处理，无遥测，无网络请求",
+    "本地处理 · 不读取聊天内容 · 无遥测",
     "点击打开 XiT Dashboard",
   ]
     .filter(Boolean)
@@ -415,7 +354,7 @@ async function updateStatusBarLive(): Promise<void> {
   }
 
   if (liveState === "no-binary") {
-    statusBarItem.text = "吸T神功 · 未找到 XiT";
+    statusBarItem.text = "吸T神功 · 未接入";
     return;
   }
   statusBarItem.text = getStatusBarTextFromLiveStatus(buildLiveStatusView());

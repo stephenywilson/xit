@@ -2,7 +2,7 @@
   "name": "xit-vscode",
   "displayName": "吸T神功（XiT）",
   "description": "为 Claude、Codex、Gemini、Cursor 等 AI 编程工作流压缩高噪音终端输出，减少 token 浪费。",
-  "version": "0.0.22",
+  "version": "0.0.23",
   "publisher": "XiT",
   "license": "MIT",
   "icon": "media/icon.png",

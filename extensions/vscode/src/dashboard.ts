@@ -1,33 +1,22 @@
-import * as fs from "fs";
-import * as path from "path";
 import * as vscode from "vscode";
 import type {
-  AdapterEvent,
-  AdapterHealthItem,
-  AgentTurnView,
   CurrentRunState,
-  GlobalActivity,
-  LatestActivityInfo,
   LatestRun,
   LiveStatusView,
   XiTStatus,
 } from "./types";
 import {
-  readRecentEvents,
-  readWorkspaceHistory,
-  readTerminalEvents,
   readLatestRun,
   readCurrentRunState,
-  resolveWorkspaceCwd,
 } from "./xit";
 import {
-  buildAgentTurnView,
   buildLiveStatusView,
-  computeWorkflowHealth,
+  estimateHitRateLift,
   formatSavedTokensForRun,
   getAiAdapterHealth,
   getAdapterHookConnectivity,
   getTokenImpactStats,
+  getTokenMetricsForRun,
   readAllWorkspaceRuns,
 } from "./workflow";
 
@@ -42,20 +31,6 @@ function escapeHtml(text: string): string {
     .replace(/'/g, "&#039;");
 }
 
-function formatBytes(n: number): string {
-  if (n >= 1000000) {
-    return (n / 1000000).toFixed(1) + " MB";
-  }
-  if (n >= 1000) {
-    return (n / 1000).toFixed(1) + " kB";
-  }
-  return n + " B";
-}
-
-function formatReduction(r: number): string {
-  return `${Math.round(r * 100)}%`;
-}
-
 function formatTokenShort(tokens: number): string {
   if (tokens >= 1000000) {
     return `~${Math.round(tokens / 100000) / 10}M Token`;
@@ -66,51 +41,10 @@ function formatTokenShort(tokens: number): string {
   return `${tokens} Token`;
 }
 
-function formatTime(iso: string): string {
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
-  }
-}
-
-function gatherAllEvents(): AdapterEvent[] {
-  const adapters = ["cursor", "codex", "claude", "kimi"];
-  let allEvents: AdapterEvent[] = [];
-  for (const adapter of adapters) {
-    allEvents = allEvents.concat(readRecentEvents(adapter, 12));
-  }
-  allEvents = allEvents.concat(readWorkspaceHistory(12));
-  allEvents.sort((a, b) => (b.time || "").localeCompare(a.time || ""));
-  return allEvents;
-}
-
-function computeActivityFromEvents(events: AdapterEvent[]): GlobalActivity {
-  const adapterCounts: Record<string, number> = {};
-  for (const event of events) {
-    if (event.adapter) {
-      adapterCounts[event.adapter] = (adapterCounts[event.adapter] || 0) + 1;
-    }
-  }
-  const latest = [...events].sort((a, b) =>
-    (b.time || "").localeCompare(a.time || ""),
-  )[0];
-  return {
-    latestAdapter: latest?.adapter,
-    latestTime: latest?.time,
-    latestCommand: latest?.original_command,
-    latestPolicy: latest?.policy,
-    eventCount: events.length,
-    adapterCounts,
-  };
-}
-
 function buildCommandUri(command: string): string {
   return `command:${command}`;
 }
 
-// True only when current-run.json is actively running with a fresh heartbeat (≤15s).
-// A stale completed state must never override history.jsonl as the latest run source.
 function isCurrentRunFreshAndRunning(state: CurrentRunState | undefined): boolean {
   if (!state || state.status !== "running") {
     return false;
@@ -123,7 +57,6 @@ function isCurrentRunFreshAndRunning(state: CurrentRunState | undefined): boolea
   return !Number.isNaN(ms) && Date.now() - ms <= 15000;
 }
 
-// Walk history newest-first and return the first entry with positive saved bytes/tokens.
 function selectLatestSavedRun(runs: LatestRun[]): LatestRun | undefined {
   for (let i = runs.length - 1; i >= 0; i--) {
     const run = runs[i];
@@ -136,69 +69,18 @@ function selectLatestSavedRun(runs: LatestRun[]): LatestRun | undefined {
   return undefined;
 }
 
-interface WorkspaceWatchInfo {
-  workspaceRoot: string;
-  statePath: string;
-  historyPath: string;
-  stateExists: boolean;
-  historyExists: boolean;
-  hasAnyXitData: boolean;
-}
-
-function getWorkspaceWatchInfo(): WorkspaceWatchInfo {
-  const workspaceRoot = resolveWorkspaceCwd();
-  const statePath = path.join(workspaceRoot, ".xit", "state", "current-run.json");
-  const historyPath = path.join(workspaceRoot, ".xit", "history.jsonl");
-  const runsDir = path.join(workspaceRoot, ".xit", "runs");
-  const stateExists = fs.existsSync(statePath);
-  const historyExists = fs.existsSync(historyPath);
-  const hasAnyXitData = stateExists || historyExists || fs.existsSync(runsDir);
-  return { workspaceRoot, statePath, historyPath, stateExists, historyExists, hasAnyXitData };
-}
-
-function renderWorkspaceWatchBanner(info: WorkspaceWatchInfo): string {
-  const stateLabel = info.stateExists ? "found" : "not found";
-  const historyLabel = info.historyExists ? "found" : "not found";
-  const stateClass = info.stateExists ? "watch-path-ok" : "watch-path-missing";
-  const historyClass = info.historyExists ? "watch-path-ok" : "watch-path-missing";
-
-  const noDataWarning = !info.hasAnyXitData ? `
-    <div class="workspace-no-data">
-      当前工作区没有记录 — No XiT run state found in this workspace.<br>
-      Open the xit project folder or run <code>xit auto &lt;command&gt;</code> inside this workspace.
-    </div>` : "";
-
-  return `
-    <section class="workspace-watch-banner">
-      <div class="workspace-watch-header">Watching workspace</div>
-      <div class="workspace-watch-root mono">${escapeHtml(info.workspaceRoot)}</div>
-      <div class="workspace-watch-paths">
-        <span class="watch-path-item ${stateClass}">
-          State: <span class="mono">.xit/state/current-run.json</span> — ${stateLabel}
-        </span>
-        <span class="watch-path-item ${historyClass}">
-          History: <span class="mono">.xit/history.jsonl</span> — ${historyLabel}
-        </span>
-      </div>
-      ${noDataWarning}
-    </section>
-  `;
-}
-
 function buildStatusMeta(
   status: XiTStatus,
   liveStatus: LiveStatusView,
 ): {
   heroTitle: string;
-  heroSubtitle: string;
   pillLabel: string;
   pillTone: "running" | "success" | "idle" | "warning";
 } {
   if (status.state === "binary-not-found") {
     return {
-      heroTitle: "XiT 未连接",
-      heroSubtitle: "未找到本地 XiT CLI，Dashboard 只能显示有限状态。",
-      pillLabel: "未找到 XiT",
+      heroTitle: "请安装本地 XiT CLI 以启用降噪功能",
+      pillLabel: "未接入",
       pillTone: "warning",
     };
   }
@@ -206,35 +88,32 @@ function buildStatusMeta(
   if (liveStatus.kind === "xit_running" || liveStatus.kind === "agent_routed_pending_state") {
     return {
       heroTitle: liveStatus.kind === "xit_running"
-        ? "XiT 正在处理高噪音输出"
-        : "XiT 已观察到接管信号",
-      heroSubtitle: liveStatus.source
-        ? `source: ${liveStatus.source}`
-        : "当前命令正在吸T中，摘要会在 run 完成后更新。",
-      pillLabel: liveStatus.kind === "xit_running" ? "正在吸T中" : "接管中",
+        ? "当前命令正在吸T中，摘要会在 run 完成后更新"
+        : "已观察到接管信号，正在处理中",
+      pillLabel: liveStatus.kind === "xit_running" ? "正在吸T" : "接管中",
       pillTone: "running",
     };
   }
 
-  if (liveStatus.kind === "agent_observing" || liveStatus.kind === "agent_not_routed") {
+  if (liveStatus.kind === "agent_observing") {
     return {
-      heroTitle: liveStatus.kind === "agent_observing"
-        ? "XiT 正在观察 AI agent 活动"
-        : "最近一轮未触发吸T",
-      heroSubtitle: liveStatus.source
-        ? `source: ${liveStatus.source}`
-        : "本地 hook metadata 已更新。",
-      pillLabel: liveStatus.label,
-      pillTone: liveStatus.kind === "agent_observing" ? "idle" : "warning",
+      heroTitle: "XiT 正在守护当前 AI 编程工作流",
+      pillLabel: "守护中",
+      pillTone: "idle",
+    };
+  }
+
+  if (liveStatus.kind === "agent_not_routed") {
+    return {
+      heroTitle: "本轮 AI 活动已监测，命令无需压缩",
+      pillLabel: "未触发",
+      pillTone: "warning",
     };
   }
 
   if (liveStatus.kind === "xit_completed") {
     return {
-      heroTitle: "XiT 最近一次压缩已完成",
-      heroSubtitle: liveStatus.source
-        ? `source: ${liveStatus.source}`
-        : "当前工作区已有可用节省结果与路由记录。",
+      heroTitle: "当前工作区已有可用节省结果",
       pillLabel: "吸T完成",
       pillTone: "success",
     };
@@ -242,18 +121,9 @@ function buildStatusMeta(
 
   return {
     heroTitle: "XiT 正在守护你的高噪音命令",
-    heroSubtitle: "本地降噪 · Token 节省 · AI Agent Routing",
     pillLabel: "守护中",
     pillTone: "idle",
   };
-}
-
-function getCurrentStatusLabel(status: XiTStatus, liveStatus: LiveStatusView): string {
-  const meta = buildStatusMeta(status, liveStatus);
-  if (meta.pillLabel === "守护中") {
-    return "守护你的T";
-  }
-  return meta.pillLabel;
 }
 
 function renderSummaryCard(
@@ -280,210 +150,51 @@ function renderMetricItem(label: string, value: string, highlight = false): stri
   `;
 }
 
-function renderKeyValueRow(
-  label: string,
-  value: string,
-  options?: {
-    mono?: boolean;
-    truncate?: boolean;
-    title?: string;
-    href?: string;
-  },
-): string {
-  const classNames = [
-    "kv-value",
-    options?.mono ? "mono" : "",
-    options?.truncate ? "truncate" : "",
-  ]
-    .filter(Boolean)
-    .join(" ");
-  const titleAttr = options?.title
-    ? ` title="${escapeHtml(options.title)}"`
-    : "";
-  const content = options?.href
-    ? `<a class="${classNames}" href="${options.href}"${titleAttr}>${escapeHtml(value)}</a>`
-    : `<span class="${classNames}"${titleAttr}>${escapeHtml(value)}</span>`;
+type CoverageStatus = "protected" | "not_verified";
+
+function renderCoverageItem(name: string, status: CoverageStatus): string {
+  const labelCn = status === "protected" ? "已守护" : "未验证";
+  const pillClass = status === "protected" ? "verified" : "not-verified";
   return `
-    <div class="kv-row">
-      <span class="kv-label">${escapeHtml(label)}</span>
-      ${content}
+    <div class="coverage-item">
+      <span class="coverage-name">${escapeHtml(name)}</span>
+      <span class="status-pill ${pillClass}">${labelCn}</span>
     </div>
   `;
 }
 
-function renderAdapterCard(item: AdapterHealthItem): string {
-  const routed = item.routedCount ?? 0;
-  const observed = item.observedCount ?? 0;
-  const ratio = observed > 0 ? `${routed}/${observed} routed` : "No routed sample";
-  const evidence = item.ruleFiles.length > 0
-    ? `${path.basename(item.ruleFiles[0])}${observed > 0 ? ` · ${ratio}` : ""}`
-    : item.evidence;
+function computeAiCoverage(): {
+  claude: CoverageStatus;
+  codex: CoverageStatus;
+  kimi: CoverageStatus;
+  cursor: CoverageStatus;
+} {
+  const adapterHealth = getAiAdapterHealth();
+  const hookConn = getAdapterHookConnectivity();
 
-  return `
-    <article class="adapter-card">
-      <div class="adapter-topline">
-        <div class="adapter-name">${escapeHtml(item.adapter)}</div>
-        <span class="status-pill ${escapeHtml(item.status).replace(/\s+/g, "-")}">${escapeHtml(item.status)}</span>
-      </div>
-      <div class="adapter-evidence" title="${escapeHtml(item.evidence)}">${escapeHtml(evidence)}</div>
-      <div class="adapter-ratio">${escapeHtml(ratio)}</div>
-    </article>
-  `;
-}
+  const getStatus = (adapter: "Claude" | "Codex" | "Cursor", hookKey: string): CoverageStatus => {
+    const health = adapterHealth.find(h => h.adapter === adapter);
+    const isRulesOk = health && (health.status === "verified" || health.status === "rules installed");
+    const isHookConnected = hookConn[hookKey]?.connected;
+    return (isRulesOk || isHookConnected) ? "protected" : "not_verified";
+  };
 
-function renderEventRows(events: AdapterEvent[]): string {
-  return events
-    .map((event) => {
-      const time = event.time ? formatTime(event.time) : "-";
-      const command = event.original_command || event.event || event.action || "-";
-      return `
-        <tr>
-          <td>${escapeHtml(time)}</td>
-          <td>${escapeHtml(event.adapter || "-")}</td>
-          <td class="mono truncate-cell" title="${escapeHtml(command)}">${escapeHtml(command)}</td>
-          <td>${escapeHtml(event.policy || "-")}</td>
-        </tr>
-      `;
-    })
-    .join("");
-}
-
-function renderTerminalRows(
-  terminalEvents: {
-    time: string;
-    commandLine: string;
-    terminalName: string;
-    cwd?: string;
-  }[],
-): string {
-  return terminalEvents
-    .map((event) => {
-      const time = event.time ? formatTime(event.time) : "-";
-      return `
-        <tr>
-          <td>${escapeHtml(time)}</td>
-          <td>${escapeHtml(event.terminalName)}</td>
-          <td class="mono truncate-cell" title="${escapeHtml(event.commandLine)}">${escapeHtml(event.commandLine)}</td>
-          <td class="truncate-cell" title="${escapeHtml(event.cwd || "-")}">${escapeHtml(event.cwd || "-")}</td>
-        </tr>
-      `;
-    })
-    .join("");
-}
-
-function agentTurnStatusLabel(status: AgentTurnView["status"]): string {
-  switch (status) {
-    case "working": return "AI 正在工作";
-    case "xit_running": return "正在吸T中";
-    case "completed": return "本轮已完成";
-    case "stopped": return "已停止";
-    case "idle": return "空闲";
-    default: return "未知";
-  }
-}
-
-function agentTurnStatusTone(status: AgentTurnView["status"]): string {
-  switch (status) {
-    case "working": return "running";
-    case "xit_running": return "running";
-    case "completed": return "success";
-    case "stopped": return "warning";
-    default: return "idle";
-  }
-}
-
-function renderCurrentAgentTurn(turn: AgentTurnView): string {
-  if (!turn.isFreshActive) {
-    let noTurnMsg = "当前没有活跃 AI 对话轮次";
-    if (turn.staleTurnReason) {
-      noTurnMsg += ` — Ignored stale turn: ${turn.staleTurnReason}`;
-    }
-    return `<p class="empty-state">${escapeHtml(noTurnMsg)}</p>`;
-  }
-
-  const tone = agentTurnStatusTone(turn.status);
-  const statusLabel = agentTurnStatusLabel(turn.status);
-  const adapterLabel = turn.adapter === "unknown" ? "—" : turn.adapter;
-  const updatedLabel = turn.updatedAt ? new Date(turn.updatedAt).toLocaleTimeString() : "—";
-  const startedLabel = turn.startedAt ? new Date(turn.startedAt).toLocaleString() : "—";
-  const savedIsReal = turn.savedTokensDisplay !== "—" && turn.savedTokensThisTurn > 0;
-
-  return `
-    <div class="agent-turn-card">
-      <div class="agent-turn-header">
-        <div class="agent-turn-adapter">${escapeHtml(adapterLabel.toUpperCase())}</div>
-        <span class="status-pill ${escapeHtml(tone)}">${escapeHtml(statusLabel)}</span>
-      </div>
-      <div class="agent-turn-metrics">
-        <div class="metric-tile">
-          <div class="metric-label">本轮命令</div>
-          <div class="metric-value">${turn.commandsObserved}</div>
-        </div>
-        <div class="metric-tile">
-          <div class="metric-label">路由 XiT</div>
-          <div class="metric-value">${turn.routedThroughXit} / ${turn.commandsObserved}</div>
-        </div>
-        <div class="metric-tile ${savedIsReal ? "highlight" : ""}">
-          <div class="metric-label">本轮节省</div>
-          <div class="metric-value">${escapeHtml(turn.savedTokensDisplay)}</div>
-        </div>
-        <div class="metric-tile">
-          <div class="metric-label">最近更新</div>
-          <div class="metric-value">${escapeHtml(updatedLabel)}</div>
-        </div>
-      </div>
-      ${turn.latestEvent ? renderKeyValueRow("Latest event", turn.latestEvent) : ""}
-      ${turn.startedAt ? renderKeyValueRow("Started at", startedLabel) : ""}
-      ${turn.evidence.length > 0 ? renderKeyValueRow("Evidence", turn.evidence.join(" · "), { truncate: true, title: turn.evidence.join("\n") }) : ""}
-    </div>
-  `;
-}
-
-function renderLatestAgentActivity(activity: LatestActivityInfo | undefined): string {
-  if (!activity) {
-    return `<p class="empty-state">无最近 adapter 活动记录</p>`;
-  }
-
-  const timeLabel = formatTime(activity.timestamp);
-  const adapterUpper = activity.adapter.toUpperCase();
-  const routedBadge = activity.routedThroughXit
-    ? `<span class="status-pill success">XiT routed</span>`
-    : `<span class="status-pill idle">not routed</span>`;
-
-  return `
-    <div class="agent-turn-card">
-      <div class="agent-turn-header">
-        <div class="agent-turn-adapter">${escapeHtml(adapterUpper)}</div>
-        ${routedBadge}
-      </div>
-      ${renderKeyValueRow("Latest event time", timeLabel)}
-      ${renderKeyValueRow("Event type", activity.eventType)}
-      ${activity.command ? renderKeyValueRow("Command", activity.command, { mono: true, truncate: true, title: activity.command }) : ""}
-      ${activity.cwd ? renderKeyValueRow("CWD", activity.cwd, { mono: true, truncate: true, title: activity.cwd }) : ""}
-      ${renderKeyValueRow("Reason", activity.reason)}
-      ${renderKeyValueRow("Source", activity.sourceFile, { mono: true })}
-    </div>
-  `;
+  return {
+    claude: getStatus("Claude", "claude"),
+    codex: getStatus("Codex", "codex"),
+    kimi: hookConn["kimi"]?.connected ? "protected" : "not_verified",
+    cursor: getStatus("Cursor", "cursor"),
+  };
 }
 
 function buildDashboardHtml(
   status: XiTStatus,
-  events: AdapterEvent[],
-  terminalEvents: {
-    time: string;
-    commandLine: string;
-    terminalName: string;
-    cwd?: string;
-  }[],
   latestRun: LatestRun | undefined,
   cspSource: string,
   stylesheetHref: string,
 ): string {
   const gain = status.gain;
-  const activity = status.activity || computeActivityFromEvents(events);
-  const health = computeWorkflowHealth(status, latestRun);
   const tokenImpact = getTokenImpactStats(latestRun);
-  const adapterHealth = getAiAdapterHealth();
   const currentRunState = readCurrentRunState();
   const liveStatus = status.state === "binary-not-found"
     ? {
@@ -494,56 +205,16 @@ function buildDashboardHtml(
       }
     : buildLiveStatusView();
   const statusMeta = buildStatusMeta(status, liveStatus);
-  const agentTurn = buildAgentTurnView();
-  const hookConnectivity = getAdapterHookConnectivity();
 
-  // Only treat current-run.json as active when it is freshly running (status=running + heartbeat ≤15s).
-  // Any stale completed state — even one with raw_bytes>0 — must not override history.jsonl.
   const validCurrentRun = isCurrentRunFreshAndRunning(currentRunState ?? undefined)
     ? currentRunState
     : undefined;
 
-  // Latest entry in history with positive savings (used for the "Latest Saved" card).
   const allRuns = readAllWorkspaceRuns();
   const latestPositiveSavedRun = selectLatestSavedRun(allRuns);
+  const hasAnyXitData = allRuns.length > 0 || !!latestRun;
 
-  const hasAnyRun = !!(validCurrentRun || latestRun);
-
-  const latestCommand = validCurrentRun?.command || latestRun?.command;
-  const latestRawLog = validCurrentRun?.raw_log || latestRun?.raw_log;
-  const latestRawTokens =
-    typeof validCurrentRun?.raw_bytes === "number" && validCurrentRun.raw_bytes > 0
-      ? Math.max(0, Math.round(validCurrentRun.raw_bytes / 4))
-      : tokenImpact.latest?.rawTokens;
-  const latestSummaryTokens =
-    typeof validCurrentRun?.summary_bytes === "number" && validCurrentRun.summary_bytes > 0
-      ? Math.max(0, Math.round(validCurrentRun.summary_bytes / 4))
-      : tokenImpact.latest?.summaryTokens;
-  const latestSavedDisplay =
-    validCurrentRun?.saved_tokens_display ||
-    (typeof validCurrentRun?.saved_tokens === "number"
-      ? formatTokenShort(validCurrentRun.saved_tokens)
-      : undefined) ||
-    formatSavedTokensForRun(latestRun);
-  const latestReductionDisplay =
-    typeof validCurrentRun?.estimated_reduction === "number"
-      ? formatReduction(validCurrentRun.estimated_reduction)
-      : latestRun
-        ? formatReduction(latestRun.estimated_reduction)
-        : "--";
-  const latestExitCode =
-    typeof validCurrentRun?.exit_code === "number"
-      ? String(validCurrentRun.exit_code)
-      : latestRun
-        ? String(latestRun.exit_code)
-        : "--";
-  const latestDuration = latestRun
-    ? `${(latestRun.duration_ms / 1000).toFixed(1)}s`
-    : validCurrentRun?.started_at && validCurrentRun.heartbeat_at
-      ? "running"
-      : "--";
-
-  // Workspace total: prefer history aggregation; fall back to gain.saved_bytes if history is empty.
+  // Workspace total
   const gainFallbackTokens = !tokenImpact.workspaceTotalSavedTokens && gain?.saved_bytes
     ? Math.max(0, Math.round(gain.saved_bytes / 4))
     : 0;
@@ -553,32 +224,44 @@ function buildDashboardHtml(
       ? formatTokenShort(gainFallbackTokens)
       : "0 Token";
 
-  const workspaceWatchInfo = getWorkspaceWatchInfo();
-  const topCommands = tokenImpact.topTokenHeavyCommands;
-  const topCommandsPrimary = topCommands.slice(0, 5);
-  const topCommandsExtra = topCommands.slice(5);
-  const recentEventsPrimary = events.slice(0, 5);
-  const recentEventsExtra = events.slice(5, 20);
+  // Latest saved display (for hero card 2)
+  const latestSavedDisplay =
+    validCurrentRun?.saved_tokens_display ||
+    (typeof validCurrentRun?.saved_tokens === "number"
+      ? formatTokenShort(validCurrentRun.saved_tokens)
+      : undefined) ||
+    (latestPositiveSavedRun ? formatSavedTokensForRun(latestPositiveSavedRun) : undefined);
 
-  // Critical errors only — shown in main banner.
+  // Impact score metrics — use latest positive run
+  const impactMetrics = latestPositiveSavedRun
+    ? getTokenMetricsForRun(latestPositiveSavedRun)
+    : tokenImpact.latest;
+  const impactReductionPct = impactMetrics?.reductionPct ?? 0;
+  const impactSavedTokens = impactMetrics?.savedTokens ?? 0;
+  const impactSavedDisplay = impactMetrics?.savedDisplay || latestSavedDisplay;
+  const latestReductionDisplay = impactMetrics && impactReductionPct > 0
+    ? `${Math.round(impactReductionPct)}%`
+    : "--";
+  const hitRateLift = estimateHitRateLift(impactReductionPct, impactSavedTokens);
+  const hitRateLiftDisplay = hitRateLift > 0 ? `预计 +${hitRateLift}%` : "--";
+  const contextNoiseDisplay = impactReductionPct > 0
+    ? `减少 ${Math.round(impactReductionPct)}%`
+    : "--";
+
+  // Today runs count
+  const todayRunsCount = allRuns.filter(r => {
+    const ms = r.timestamp ? Date.parse(r.timestamp) : 0;
+    return ms >= new Date().setHours(0, 0, 0, 0);
+  }).length;
+
+  // AI Coverage
+  const aiCoverage = computeAiCoverage();
+
+  // Critical errors only
   const hardErrors: string[] = [];
   if (status.state === "binary-not-found") {
     hardErrors.push("未找到 XiT CLI，请运行 npm install -g xitsg 安装");
   }
-
-  // Low-severity notes relegated to Debug panel only.
-  const debugNotes: string[] = [];
-  if (status.state === "gain-json-failed") {
-    debugNotes.push("xit gain --json 未返回有效 JSON");
-  }
-  if (status.error && status.state !== "binary-not-found") {
-    debugNotes.push(status.error);
-  }
-  if (gain?.warnings?.length) {
-    debugNotes.push(...gain.warnings);
-  }
-
-  const rawLogHref = latestRawLog ? buildCommandUri("xit.openLatestRawLog") : undefined;
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -595,9 +278,7 @@ function buildDashboardHtml(
       <div>
         <div class="eyebrow">吸T神功 Dashboard</div>
         <h1>吸T神功 Dashboard</h1>
-        <p class="hero-subtitle">${escapeHtml(
-          statusMeta.heroSubtitle || "本地降噪 · Token 节省 · AI Agent Routing",
-        )}</p>
+        <p class="hero-subtitle">本地降噪 · Token 节省 · AI 命中率提升</p>
       </div>
       <div class="hero-status">
         <span class="status-pill hero ${statusMeta.pillTone}">${escapeHtml(statusMeta.pillLabel)}</span>
@@ -605,388 +286,71 @@ function buildDashboardHtml(
       </div>
     </section>
 
-    ${renderWorkspaceWatchBanner(workspaceWatchInfo)}
-
-    ${
-      hardErrors.length > 0
-        ? `<section class="banner warning">${escapeHtml(hardErrors.join(" · "))}</section>`
-        : ""
-    }
+    ${hardErrors.length > 0
+      ? `<section class="banner warning">${escapeHtml(hardErrors.join(" · "))}</section>`
+      : ""}
 
     <section class="summary-grid">
       ${renderSummaryCard(
-        "Current Status",
-        getCurrentStatusLabel(status, liveStatus),
-        status.available
-          ? `source: ${liveStatus.source || "live status"}`
-          : "需要本地 XiT CLI",
+        "当前状态",
+        statusMeta.pillLabel,
+        "当前 AI 工作流状态",
         status.state === "binary-not-found" ? "warning" : "accent",
       )}
       ${(() => {
-        if (!workspaceWatchInfo.hasAnyXitData) {
-          return renderSummaryCard("Latest Saved", "—", "当前工作区没有记录", "muted-zero" as const);
+        if (!hasAnyXitData) {
+          return renderSummaryCard("本次节省", "—", "等待首次吸T", "muted-zero" as const);
         }
-        const positiveSavedVal = latestPositiveSavedRun
-          ? formatSavedTokensForRun(latestPositiveSavedRun)
-          : undefined;
-        const savedVal = positiveSavedVal || "0 Token";
-        const isZero = savedVal === "0 Token" || savedVal === "0";
-        const tone = isZero ? ("muted-zero" as const) : ("success" as const);
-        let subtitle = "等待下一次 run";
-        if (latestPositiveSavedRun) {
-          const cmdShort = latestPositiveSavedRun.command.split(/\s+/).slice(0, 3).join(" ");
-          const completedAt = latestPositiveSavedRun.timestamp
-            ? new Date(latestPositiveSavedRun.timestamp).toLocaleTimeString()
-            : "";
-          const reduction = `降噪 ${formatReduction(latestPositiveSavedRun.estimated_reduction)}`;
-          subtitle = [cmdShort, completedAt, reduction].filter(Boolean).join(" · ");
-        }
-        return renderSummaryCard("Latest Saved", savedVal, subtitle, tone);
+        const val = latestSavedDisplay || "0 Token";
+        const isZero = val === "0 Token" || val === "0";
+        return renderSummaryCard(
+          "本次节省",
+          val,
+          "刚刚完成的吸T结果",
+          isZero ? ("muted-zero" as const) : ("success" as const),
+        );
       })()}
       ${renderSummaryCard(
-        "Today Saved",
-        workspaceWatchInfo.hasAnyXitData ? tokenImpact.todaySavedDisplay : "—",
-        workspaceWatchInfo.hasAnyXitData
-          ? `今日 ${allRuns.filter(r => {
-              const ms = r.timestamp ? Date.parse(r.timestamp) : 0;
-              return ms >= new Date().setHours(0,0,0,0);
-            }).length} runs`
-          : "当前工作区没有记录",
+        "今日节省",
+        hasAnyXitData ? tokenImpact.todaySavedDisplay : "—",
+        hasAnyXitData ? `今日 ${todayRunsCount} 次` : "等待首次吸T",
         "neutral",
       )}
       ${renderSummaryCard(
-        "Workspace Total",
-        workspaceWatchInfo.hasAnyXitData ? workspaceTotalSavedDisplay : "—",
-        workspaceWatchInfo.hasAnyXitData
-          ? `${allRuns.length} compressed commands`
-          : "当前工作区没有记录",
+        "工作区累计",
+        hasAnyXitData ? workspaceTotalSavedDisplay : "—",
+        hasAnyXitData ? `共 ${allRuns.length} 次压缩` : "等待首次吸T",
         "neutral",
       )}
     </section>
 
     <section class="panel">
       <div class="section-heading">
-        <h2>Current Agent Turn</h2>
-        <span class="section-note">仅在有 fresh active lifecycle 时显示（不读取聊天内容）</span>
+        <h2>本次影响力</h2>
       </div>
-      ${renderCurrentAgentTurn(agentTurn)}
-    </section>
-
-    <section class="panel">
-      <div class="section-heading">
-        <h2>Latest Agent Activity</h2>
-        <span class="section-note">最近 adapter hook 事件（命令路由或 lifecycle，无论是否有完整 turn）</span>
-      </div>
-      ${renderLatestAgentActivity(agentTurn.latestActivity)}
-    </section>
-
-    <section class="panel">
-      <div class="section-heading">
-        <h2>Current / Latest Run</h2>
-        <span class="section-note">最新一轮命令与压缩结果</span>
-      </div>
-      ${hasAnyRun ? `
-      <div class="run-grid">
-        <div class="run-card">
-          ${renderKeyValueRow("Command", latestCommand ?? "—", {
-            mono: true,
-            truncate: true,
-            title: latestCommand ?? "—",
-          })}
-          ${renderKeyValueRow("Status", validCurrentRun?.status || (latestRun ? "completed" : "idle"))}
-          ${renderKeyValueRow("Exit code", latestExitCode)}
-          ${renderKeyValueRow("Duration", latestDuration)}
-          ${
-            latestRawLog
-              ? renderKeyValueRow("Raw log", latestRawLog, {
-                  mono: true,
-                  truncate: true,
-                  title: latestRawLog,
-                  href: rawLogHref,
-                })
-              : renderKeyValueRow("Raw log", "暂无 raw log")
-          }
-        </div>
-        <div class="metrics-grid compact">
-          ${renderMetricItem("原始输出", typeof latestRawTokens === "number" ? formatTokenShort(latestRawTokens) : "--")}
-          ${renderMetricItem("吸后摘要", typeof latestSummaryTokens === "number" ? formatTokenShort(latestSummaryTokens) : "--")}
-          ${renderMetricItem("本次节省", latestSavedDisplay || "0 Token", true)}
-          ${renderMetricItem("降噪率", latestReductionDisplay)}
-        </div>
-      </div>
-      ` : `<p class="empty-state">${workspaceWatchInfo.hasAnyXitData ? "暂无最近运行 — 运行一次高噪音命令后，这里会显示本次吸T结果。" : "当前工作区没有记录 — 请在此工作区运行 xit auto 命令，或切换到含有 .xit 数据的工作区。"}</p>`}
-    </section>
-
-    <section class="panel">
-      <div class="section-heading">
-        <h2>AI Adapter Health</h2>
-        <span class="section-note">Codex / Claude / Gemini / Cursor</span>
-      </div>
-      <div class="adapter-grid">
-        ${adapterHealth.map(renderAdapterCard).join("")}
+      <div class="metrics-grid impact-grid">
+        ${renderMetricItem("节省 Token", hasAnyXitData ? (impactSavedDisplay || "0 Token") : "—", impactSavedTokens > 0)}
+        ${renderMetricItem("降噪率", hasAnyXitData ? latestReductionDisplay : "—")}
+        ${renderMetricItem("预计命中率提升", hasAnyXitData ? hitRateLiftDisplay : "—", hitRateLift > 0)}
+        ${renderMetricItem("上下文污染减少", hasAnyXitData ? contextNoiseDisplay : "—")}
       </div>
     </section>
 
     <section class="panel">
       <div class="section-heading">
-        <h2>Token Impact</h2>
-        <span class="section-note">最近一次、今日和工作区累计</span>
+        <h2>AI 守护状态</h2>
       </div>
-      <div class="metrics-grid six-up">
-        ${renderMetricItem("Latest raw tokens", tokenImpact.latest ? formatTokenShort(tokenImpact.latest.rawTokens) : "--")}
-        ${renderMetricItem("Latest summary tokens", tokenImpact.latest ? formatTokenShort(tokenImpact.latest.summaryTokens) : "--")}
-        ${renderMetricItem("Latest saved tokens", tokenImpact.latest?.savedDisplay || "0 Token", true)}
-        ${renderMetricItem("Latest reduction %", tokenImpact.latest ? `${Math.round(tokenImpact.latest.reductionPct)}%` : "--")}
-        ${renderMetricItem("Today saved tokens", tokenImpact.todaySavedDisplay)}
-        ${renderMetricItem("Workspace total saved tokens", tokenImpact.workspaceTotalSavedDisplay)}
+      <div class="coverage-grid">
+        ${renderCoverageItem("Claude", aiCoverage.claude)}
+        ${renderCoverageItem("Codex", aiCoverage.codex)}
+        ${renderCoverageItem("Kimi", aiCoverage.kimi)}
+        ${renderCoverageItem("Cursor", aiCoverage.cursor)}
       </div>
     </section>
-
-    <section class="panel">
-      <div class="section-heading">
-        <h2>Top Token-Heavy Commands</h2>
-        <span class="section-note">最值得优先使用 XiT 的命令</span>
-      </div>
-      ${
-        topCommandsPrimary.length > 0
-          ? `
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr><th>Command</th><th>Runs</th><th>Saved</th><th>Reduction</th></tr>
-                </thead>
-                <tbody>
-                  ${topCommandsPrimary
-                    .map((entry) => {
-                      const reduction =
-                        entry.rawTokens > 0
-                          ? `${Math.round((entry.savedTokens / entry.rawTokens) * 100)}%`
-                          : "--";
-                      return `
-                        <tr>
-                          <td class="mono truncate-cell" title="${escapeHtml(entry.command)}">${escapeHtml(entry.command)}</td>
-                          <td>${entry.runs}</td>
-                          <td class="saved-emphasis">${escapeHtml(entry.savedDisplay)}</td>
-                          <td>${reduction}</td>
-                        </tr>
-                      `;
-                    })
-                    .join("")}
-                </tbody>
-              </table>
-            </div>
-            ${
-              topCommandsExtra.length > 0
-                ? `
-                  <details class="details-block">
-                    <summary>Show more</summary>
-                    <div class="table-wrap">
-                      <table>
-                        <thead>
-                          <tr><th>Command</th><th>Runs</th><th>Saved</th><th>Reduction</th></tr>
-                        </thead>
-                        <tbody>
-                          ${topCommandsExtra
-                            .map((entry) => {
-                              const reduction =
-                                entry.rawTokens > 0
-                                  ? `${Math.round((entry.savedTokens / entry.rawTokens) * 100)}%`
-                                  : "--";
-                              return `
-                                <tr>
-                                  <td class="mono truncate-cell" title="${escapeHtml(entry.command)}">${escapeHtml(entry.command)}</td>
-                                  <td>${entry.runs}</td>
-                                  <td class="saved-emphasis">${escapeHtml(entry.savedDisplay)}</td>
-                                  <td>${reduction}</td>
-                                </tr>
-                              `;
-                            })
-                            .join("")}
-                        </tbody>
-                      </table>
-                    </div>
-                  </details>
-                `
-                : ""
-            }
-          `
-          : `<p class="empty-state">No token-heavy commands recorded yet.</p>`
-      }
-    </section>
-
-    <section class="panel">
-      <div class="section-heading">
-        <h2>Recent Events</h2>
-        <span class="section-note">默认显示最近 5 条</span>
-      </div>
-      ${
-        recentEventsPrimary.length > 0
-          ? `
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr><th>Time</th><th>Adapter</th><th>Event / Command</th><th>Policy</th></tr>
-                </thead>
-                <tbody>${renderEventRows(recentEventsPrimary)}</tbody>
-              </table>
-            </div>
-            ${
-              recentEventsExtra.length > 0
-                ? `
-                  <details class="details-block">
-                    <summary>Show older events</summary>
-                    <div class="table-wrap">
-                      <table>
-                        <thead>
-                          <tr><th>Time</th><th>Adapter</th><th>Event / Command</th><th>Policy</th></tr>
-                        </thead>
-                        <tbody>${renderEventRows(recentEventsExtra)}</tbody>
-                      </table>
-                    </div>
-                  </details>
-                `
-                : ""
-            }
-          `
-          : `<p class="empty-state">No recent events.</p>`
-      }
-    </section>
-
-    <details class="debug-panel">
-      <summary>Advanced / Debug</summary>
-      <div class="debug-grid">
-        ${debugNotes.length > 0 ? `
-        <div class="debug-card full-span">
-          <h3>Notes</h3>
-          ${debugNotes.map((n) => `<div class="kv-row"><span class="kv-value">${escapeHtml(n)}</span></div>`).join("")}
-        </div>
-        ` : ""}
-        <div class="debug-card">
-          <h3>Paths</h3>
-          ${renderKeyValueRow("Binary path", status.binary || "Not resolved", {
-            mono: true,
-            truncate: true,
-            title: status.binary || "Not resolved",
-          })}
-          ${renderKeyValueRow("Workspace cwd", status.cwd || "Unknown", {
-            mono: true,
-            truncate: true,
-            title: status.cwd || "Unknown",
-          })}
-          ${
-            latestRawLog
-              ? renderKeyValueRow("Raw log full path", latestRawLog, {
-                  mono: true,
-                  truncate: true,
-                  title: latestRawLog,
-                })
-              : ""
-          }
-          ${renderKeyValueRow(
-            "Attempted paths",
-            status.attempts?.join(" , ") || "None",
-            {
-              mono: true,
-              truncate: true,
-              title: status.attempts?.join("\n") || "None",
-            },
-          )}
-        </div>
-
-        <div class="debug-card">
-          <h3>Workspace / Global</h3>
-          ${renderKeyValueRow(
-            "Workspace commands condensed",
-            gain ? String(gain.total_commands_condensed) : "0",
-          )}
-          ${renderKeyValueRow(
-            "Workspace saved bytes",
-            gain ? formatBytes(gain.saved_bytes) : "0 B",
-          )}
-          ${renderKeyValueRow(
-            "Recent routed",
-            `${health.recentHighNoiseRouted}/${health.recentHighNoiseCommands}`,
-          )}
-          ${renderKeyValueRow(
-            "Latest adapter",
-            activity.latestAdapter || "None",
-          )}
-          ${renderKeyValueRow(
-            "Latest policy",
-            activity.latestPolicy || "None",
-          )}
-        </div>
-
-        <div class="debug-card">
-          <h3>Adapters Raw Counts</h3>
-          ${Object.entries(activity.adapterCounts).length > 0
-            ? Object.entries(activity.adapterCounts)
-                .map(([adapter, count]) => renderKeyValueRow(adapter, String(count)))
-                .join("")
-            : '<p class="empty-state">No adapter counts recorded.</p>'}
-        </div>
-
-        <div class="debug-card">
-          <h3>Agent Conversation Hooks</h3>
-          ${Object.entries(hookConnectivity).map(([adapter, info]) => {
-            const hookStatus = info.connected
-              ? (info.hasTurnLifecycle ? "connected (turn lifecycle)" : "connected (command routing only)")
-              : "not connected";
-            const detail = info.connected && info.latestEventTime
-              ? `${info.eventCount} events, last ${info.latestEventTime}`
-              : "no events";
-            return renderKeyValueRow(adapter, `${hookStatus} — ${detail}`);
-          }).join("")}
-          <div class="kv-row" style="margin-top:6px">
-            <span class="kv-value" style="font-size:0.75rem;opacity:0.6">
-              VS Code extension 不读取聊天内容，只使用本地 hook metadata。
-              Claude/Codex/Cursor = 命令路由; Kimi = 完整 turn lifecycle。
-            </span>
-          </div>
-        </div>
-
-        <div class="debug-card full-span">
-          <h3>Turn Selection Debug</h3>
-          ${renderKeyValueRow("Selected current turn source", agentTurn.selectedTurnSource || "none")}
-          ${renderKeyValueRow("Selected latest activity source", agentTurn.selectedActivitySource || "none")}
-          ${renderKeyValueRow("Turn is fresh active", agentTurn.isFreshActive ? "yes" : "no")}
-          ${agentTurn.staleTurnReason ? renderKeyValueRow("Stale turn reason", agentTurn.staleTurnReason) : ""}
-          ${agentTurn.ignoredStaleTurns.length > 0
-            ? agentTurn.ignoredStaleTurns.map(t =>
-                renderKeyValueRow(
-                  `Ignored stale turn (${t.adapter})`,
-                  `stopped ${t.ageHours}h ago — ${t.reason}`,
-                  { truncate: true, title: t.reason }
-                )
-              ).join("")
-            : renderKeyValueRow("Ignored stale turns", "none")}
-          ${renderKeyValueRow("Workspace event filter", `workspace: ${workspaceWatchInfo.workspaceRoot}`)}
-          ${renderKeyValueRow("Selected latest run source", latestPositiveSavedRun ? "history.jsonl (latest positive saved)" : "none")}
-        </div>
-
-        <div class="debug-card full-span">
-          <h3>VS Code Terminal Events</h3>
-          ${
-            terminalEvents.length > 0
-              ? `
-                <div class="table-wrap">
-                  <table>
-                    <thead>
-                      <tr><th>Time</th><th>Terminal</th><th>Command</th><th>CWD</th></tr>
-                    </thead>
-                    <tbody>${renderTerminalRows(terminalEvents.slice(0, 10))}</tbody>
-                  </table>
-                </div>
-              `
-              : '<p class="empty-state">No terminal events recorded.</p>'
-          }
-        </div>
-      </div>
-    </details>
 
     <footer class="dashboard-footer">
-      <span>Local only. No telemetry. No network requests.</span>
-      <a href="${buildCommandUri("xit.refresh")}">Refresh Dashboard</a>
+      <span>本地处理 · 不读取聊天内容 · 无遥测</span>
+      <a href="${buildCommandUri("xit.refresh")}">刷新</a>
     </footer>
   </main>
 </body>
@@ -1020,16 +384,12 @@ export function showDashboard(
     );
   }
 
-  const events = gatherAllEvents();
-  const terminalEvents = readTerminalEvents(20);
   const latestRun = readLatestRun();
   const stylesheetHref = panel.webview
     .asWebviewUri(vscode.Uri.joinPath(mediaRoot, "dashboard.css"))
     .toString();
   panel.webview.html = buildDashboardHtml(
     status,
-    events,
-    terminalEvents,
     latestRun,
     panel.webview.cspSource,
     stylesheetHref,
@@ -1040,16 +400,12 @@ export function updateDashboardIfOpen(status: XiTStatus): void {
   if (!panel) {
     return;
   }
-  const events = gatherAllEvents();
-  const terminalEvents = readTerminalEvents(20);
   const latestRun = readLatestRun();
   const stylesheetHref = panel.webview
     .asWebviewUri(vscode.Uri.joinPath(panel.webview.options.localResourceRoots![0], "dashboard.css"))
     .toString();
   panel.webview.html = buildDashboardHtml(
     status,
-    events,
-    terminalEvents,
     latestRun,
     panel.webview.cspSource,
     stylesheetHref,

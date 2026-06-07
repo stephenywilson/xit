@@ -8,7 +8,7 @@ import {
   promptRunCommand,
   promptRunWithAutoCompression,
 } from "./runner";
-import type { LatestRun, LiveStatusView, XiTStatus } from "./types";
+import type { AdapterEvent, LatestRun, LiveStatusView, XiTStatus } from "./types";
 import {
   appendOutput,
   clearOutput,
@@ -64,6 +64,12 @@ const SETTLING_DURATION_MS = 4000;
 let successRunDisplay: string | undefined;
 let sessionRunCountAtSuccess = 0;
 let turnActiveTimer: NodeJS.Timeout | undefined;
+
+let liveStateWorkspace: string | undefined;
+let turnActiveStartedAt: number | undefined;
+let activeRunPollerWorkspace: string | undefined;
+const TURN_ACTIVE_MAX_MS = 60000;
+const RUNNING_MAX_MS = 120000;
 
 function getRefreshIntervalMs(): number {
   const cfg = vscode.workspace.getConfiguration("xit");
@@ -142,10 +148,13 @@ function getLiveStatusLabel(view: LiveStatusView): string {
   return labelMap[view.kind] ?? "守护你的T";
 }
 
-function markActiveRun(startedAt = Date.now(), rawLogPath?: string): void {
+function markActiveRun(startedAt = Date.now(), rawLogPath?: string, workspace?: string): void {
   activeRunStartedAt = startedAt;
   if (rawLogPath) {
     activeRunRawLogPath = path.resolve(rawLogPath);
+  }
+  if (workspace) {
+    liveStateWorkspace = workspace;
   }
 }
 
@@ -166,7 +175,7 @@ function resetTurnActiveTimer(): void {
   }, TURN_ACTIVE_TIMEOUT_MS);
 }
 
-function enterTurnActive(): void {
+function enterTurnActive(workspace?: string): void {
   // Don't downgrade from xit-active or post-run phases
   if (liveState === "running" || liveState === "settling" || liveState === "success") {
     resetTurnActiveTimer();
@@ -183,17 +192,19 @@ function enterTurnActive(): void {
       waitingStateTimer = undefined;
     }
     liveState = "turn_active";
+    liveStateWorkspace = workspace || resolveActiveXitWorkspace();
+    turnActiveStartedAt = Date.now();
     void updateStatusBarLive();
   }
   resetTurnActiveTimer();
 }
 
-function enterSuccessPhase(hasSavings: boolean, latestRun?: LatestRun): void {
+function enterSuccessPhase(hasSavings: boolean, latestRun?: LatestRun, workspace?: string): void {
   if (liveState === "settling" || liveState === "success") {
     return;
   }
   if (!hasSavings) {
-    setLiveState("missed", 8000);
+    setLiveState("missed", 8000, workspace);
     return;
   }
 
@@ -234,6 +245,9 @@ function enterSuccessPhase(hasSavings: boolean, latestRun?: LatestRun): void {
       return;
     }
     liveState = "settling";
+    if (workspace) {
+      liveStateWorkspace = workspace;
+    }
     runningVisibleUntil = undefined;
     void updateStatusBarLive();
 
@@ -243,16 +257,23 @@ function enterSuccessPhase(hasSavings: boolean, latestRun?: LatestRun): void {
         return;
       }
       liveState = "success";
+      if (workspace) {
+        liveStateWorkspace = workspace;
+      }
       void updateStatusBarLive();
 
       liveStateTimer = setTimeout(() => {
         liveStateTimer = undefined;
         clearActiveRun();
         liveState = "waiting";
+        if (workspace) {
+          liveStateWorkspace = workspace;
+        }
         void updateStatusBarLive();
         waitingStateTimer = setTimeout(() => {
           waitingStateTimer = undefined;
           liveState = "idle";
+          liveStateWorkspace = undefined;
           void updateStatusBar();
         }, 20000);
       }, 25000);
@@ -266,7 +287,14 @@ function enterSuccessPhase(hasSavings: boolean, latestRun?: LatestRun): void {
   }
 }
 
-function buildLiveStatusOverride(): LiveStatusView | undefined {
+function buildLiveStatusOverride(activeWorkspace?: string): LiveStatusView | undefined {
+  if (
+    activeWorkspace &&
+    liveStateWorkspace &&
+    path.resolve(liveStateWorkspace) !== path.resolve(activeWorkspace)
+  ) {
+    return undefined;
+  }
   switch (liveState) {
     case "running":
       return {
@@ -328,7 +356,7 @@ function isCurrentRunCompletion(run: LatestRun | undefined): boolean {
   return true;
 }
 
-function setLiveState(state: typeof liveState, durationMs = 0): void {
+function setLiveState(state: typeof liveState, durationMs = 0, workspace?: string): void {
   // Enforce minimum running visibility: if we're leaving "running" too soon, delay.
   if (
     liveState === "running" &&
@@ -337,11 +365,17 @@ function setLiveState(state: typeof liveState, durationMs = 0): void {
     Date.now() < runningVisibleUntil
   ) {
     const delay = runningVisibleUntil - Date.now();
-    setTimeout(() => setLiveState(state, durationMs), delay);
+    setTimeout(() => setLiveState(state, durationMs, workspace), delay);
     return;
   }
 
   liveState = state;
+
+  if (workspace) {
+    liveStateWorkspace = workspace;
+  } else if (state === "idle" || state === "no-binary" || state === "waiting") {
+    liveStateWorkspace = undefined;
+  }
 
   if (state === "running") {
     runningVisibleUntil = Date.now() + RUNNING_MIN_VISIBLE_MS;
@@ -378,23 +412,39 @@ function setLiveState(state: typeof liveState, durationMs = 0): void {
       if (state === "success" || state === "missed") {
         clearActiveRun();
         liveState = "waiting";
+        if (workspace) {
+          liveStateWorkspace = workspace;
+        }
         void updateStatusBarLive();
         waitingStateTimer = setTimeout(() => {
           liveState = "idle";
+          liveStateWorkspace = undefined;
           void updateStatusBar();
         }, 20000);
         return;
       }
       liveState = "idle";
+      liveStateWorkspace = undefined;
       void updateStatusBar();
     }, durationMs);
   }
 }
 
-function startActiveRunPoller(): void {
+function startActiveRunPoller(workspacePath?: string): void {
   if (activeRunPoller) {
-    return;
+    if (
+      activeRunPollerWorkspace &&
+      workspacePath &&
+      path.resolve(activeRunPollerWorkspace) !== path.resolve(workspacePath)
+    ) {
+      clearInterval(activeRunPoller);
+      activeRunPoller = undefined;
+    } else {
+      return;
+    }
   }
+
+  activeRunPollerWorkspace = workspacePath;
   let ticks = 0;
   const MAX_TICKS = 240; // 120s at 500ms
   activeRunPoller = setInterval(() => {
@@ -402,8 +452,20 @@ function startActiveRunPoller(): void {
     if (ticks > MAX_TICKS) {
       clearInterval(activeRunPoller);
       activeRunPoller = undefined;
+      activeRunPollerWorkspace = undefined;
       return;
     }
+
+    if (workspacePath) {
+      const currentWorkspace = resolveActiveXitWorkspace();
+      if (path.resolve(currentWorkspace) !== path.resolve(workspacePath)) {
+        clearInterval(activeRunPoller);
+        activeRunPoller = undefined;
+        activeRunPollerWorkspace = undefined;
+        return;
+      }
+    }
+
     const state = readCurrentRunState();
     if (!state) {
       return;
@@ -411,6 +473,7 @@ function startActiveRunPoller(): void {
     if (state.status === "completed" || state.status === "failed") {
       clearInterval(activeRunPoller);
       activeRunPoller = undefined;
+      activeRunPollerWorkspace = undefined;
       const signature = getCurrentRunStateSignature();
       if (signature && signature !== currentRunStateSignature) {
         currentRunStateSignature = signature;
@@ -420,7 +483,7 @@ function startActiveRunPoller(): void {
           0,
           (latestRun?.raw_bytes || 0) - (latestRun?.summary_bytes || 0),
         );
-        enterSuccessPhase(savedBytes > 0, latestRun);
+        enterSuccessPhase(savedBytes > 0, latestRun, workspacePath);
       }
       void updateStatusBar();
     } else if (state.status === "running" && isFreshRunningState()) {
@@ -563,6 +626,29 @@ async function updateStatusBar(): Promise<void> {
   const status = await fetchStatus();
   const latestRun = getCompletedRunFromStateOrHistory();
 
+  // Stuck safety net: auto-clear stale live states
+  if (
+    liveState === "turn_active" &&
+    turnActiveStartedAt &&
+    Date.now() - turnActiveStartedAt > TURN_ACTIVE_MAX_MS
+  ) {
+    setLiveState("idle");
+  }
+  if (
+    liveState === "running" &&
+    activeRunStartedAt &&
+    Date.now() - activeRunStartedAt > RUNNING_MAX_MS
+  ) {
+    const currentState = readCurrentRunState();
+    if (
+      !currentState ||
+      currentState.status !== "running" ||
+      !isFreshRunningState()
+    ) {
+      setLiveState("idle");
+    }
+  }
+
   if (!status.available && status.state === "binary-not-found") {
     liveState = "no-binary";
     statusBarItem.text = "吸T神功 · 未接入";
@@ -590,7 +676,7 @@ async function updateStatusBar(): Promise<void> {
           (latestRun?.raw_bytes || 0) - (latestRun?.summary_bytes || 0),
         );
         enterSuccessPhase(savedBytes > 0, latestRun);
-        updateDashboardIfOpen(status, buildLiveStatusOverride());
+        updateDashboardIfOpen(status, buildLiveStatusOverride(resolveActiveXitWorkspace()));
         return;
       }
     }
@@ -602,7 +688,7 @@ async function updateStatusBar(): Promise<void> {
       "本地处理 · 不读取聊天内容 · 无遥测",
       "点击打开 XiT Dashboard",
     ].join("\n");
-    updateDashboardIfOpen(status, buildLiveStatusOverride());
+    updateDashboardIfOpen(status, buildLiveStatusOverride(resolveActiveXitWorkspace()));
     return;
   }
 
@@ -620,7 +706,7 @@ async function updateStatusBar(): Promise<void> {
       "本地处理 · 不读取聊天内容 · 无遥测",
       "点击打开 XiT Dashboard",
     ].join("\n");
-    updateDashboardIfOpen(status, buildLiveStatusOverride());
+    updateDashboardIfOpen(status, buildLiveStatusOverride(resolveActiveXitWorkspace()));
     return;
   }
 
@@ -640,7 +726,7 @@ async function updateStatusBar(): Promise<void> {
       "本地处理 · 不读取聊天内容 · 无遥测",
       "点击打开 XiT Dashboard",
     ].join("\n");
-    updateDashboardIfOpen(status, buildLiveStatusOverride());
+    updateDashboardIfOpen(status, buildLiveStatusOverride(resolveActiveXitWorkspace()));
     return;
   }
 
@@ -653,7 +739,7 @@ async function updateStatusBar(): Promise<void> {
       "本地处理 · 不读取聊天内容 · 无遥测",
       "点击打开 XiT Dashboard",
     ].join("\n");
-    updateDashboardIfOpen(status, buildLiveStatusOverride());
+    updateDashboardIfOpen(status, buildLiveStatusOverride(resolveActiveXitWorkspace()));
     return;
   }
 
@@ -783,7 +869,7 @@ function registerWorkspaceWatchers(context: vscode.ExtensionContext): void {
         0,
         (latestRun?.raw_bytes || 0) - (latestRun?.summary_bytes || 0),
       );
-      enterSuccessPhase(savedBytes > 0, latestRun);
+      enterSuccessPhase(savedBytes > 0, latestRun, workspacePath);
     }
     if (statusBarItem) {
       const status = await fetchStatus();
@@ -796,8 +882,8 @@ function registerWorkspaceWatchers(context: vscode.ExtensionContext): void {
     const active = detectActiveRawLog();
     if (active) {
       const rawLogMeta = readLatestRawLogMeta();
-      markActiveRun(rawLogMeta?.mtimeMs || Date.now(), active);
-      setLiveState("running");
+      markActiveRun(rawLogMeta?.mtimeMs || Date.now(), active, workspacePath);
+      setLiveState("running", 0, workspacePath);
     }
     await updateStatusBar();
   };
@@ -809,9 +895,10 @@ function registerWorkspaceWatchers(context: vscode.ExtensionContext): void {
       markActiveRun(
         parseIsoTimeMs(state.started_at) || Date.now(),
         state.raw_log,
+        workspacePath,
       );
-      setLiveState("running");
-      startActiveRunPoller();
+      setLiveState("running", 0, workspacePath);
+      startActiveRunPoller(workspacePath);
     } else if (
       state &&
       (state.status === "completed" || state.status === "failed") &&
@@ -825,7 +912,7 @@ function registerWorkspaceWatchers(context: vscode.ExtensionContext): void {
         0,
         (latestRun?.raw_bytes || 0) - (latestRun?.summary_bytes || 0),
       );
-      enterSuccessPhase(savedBytes > 0, latestRun);
+      enterSuccessPhase(savedBytes > 0, latestRun, workspacePath);
     }
     if (statusBarItem) {
       const status = await fetchStatus();
@@ -865,16 +952,60 @@ function resolveXiTHome(): string {
   return path.join(os.homedir(), ".xit");
 }
 
+function eventBelongsToWorkspace(
+  event: AdapterEvent,
+  workspacePath: string,
+): boolean {
+  const resolvedWorkspace = path.resolve(workspacePath);
+
+  if (event.cwd) {
+    const resolvedCwd = path.resolve(event.cwd);
+    if (
+      resolvedCwd === resolvedWorkspace ||
+      resolvedWorkspace.startsWith(resolvedCwd + path.sep)
+    ) {
+      return true;
+    }
+  }
+
+  if (event.original_command) {
+    const m = event.original_command.match(
+      /(?:^|;|\s&&)\s*cd\s+([^\s;&|"'`\\]+)/,
+    );
+    if (m && m[1]) {
+      const cdPath = m[1].startsWith("~/")
+        ? path.join(os.homedir(), m[1].slice(2))
+        : m[1] === "~"
+          ? os.homedir()
+          : m[1];
+      const resolvedCd = path.resolve(cdPath);
+      if (
+        resolvedCd === resolvedWorkspace ||
+        resolvedWorkspace.startsWith(resolvedCd + path.sep)
+      ) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
 function getLatestHookCommand(adapter: string): string | undefined {
   const events = readRecentEvents(adapter, 3);
   return events[0]?.original_command;
 }
 
-function checkHookEventForXitAuto(): boolean {
+function checkHookEventForXitAuto(workspacePath?: string): boolean {
   for (const adapter of ["claude", "codex", "cursor", "kimi"]) {
-    const cmd = getLatestHookCommand(adapter);
-    if (cmd && /\bxit\s+auto\b/.test(cmd)) {
-      return true;
+    const events = readRecentEvents(adapter, 10);
+    for (const event of events) {
+      if (workspacePath && !eventBelongsToWorkspace(event, workspacePath)) {
+        continue;
+      }
+      if (/\bxit\s+auto\b/.test(event.original_command || "")) {
+        return true;
+      }
     }
   }
   return false;
@@ -897,13 +1028,34 @@ function registerAdapterHookWatchers(context: vscode.ExtensionContext): void {
     }
     pendingRefresh = setTimeout(() => {
       pendingRefresh = undefined;
-      // Any hook event signals AI turn is active — show "正在吸T中"
-      enterTurnActive();
-      // If the latest hook event contains "xit auto", escalate to running state + polling.
-      if (checkHookEventForXitAuto()) {
-        markActiveRun(Date.now());
-        setLiveState("running");
-        startActiveRunPoller();
+      const activeWorkspace = resolveActiveXitWorkspace();
+
+      let hasWorkspaceEvent = false;
+      let hasWorkspaceXitAuto = false;
+
+      for (const adapter of ["claude", "codex", "cursor", "kimi"]) {
+        const events = readRecentEvents(adapter, 10);
+        for (const event of events) {
+          if (eventBelongsToWorkspace(event, activeWorkspace)) {
+            hasWorkspaceEvent = true;
+            if (/\bxit\s+auto\b/.test(event.original_command || "")) {
+              hasWorkspaceXitAuto = true;
+              break;
+            }
+          }
+        }
+        if (hasWorkspaceXitAuto) {
+          break;
+        }
+      }
+
+      if (hasWorkspaceEvent) {
+        enterTurnActive(activeWorkspace);
+        if (hasWorkspaceXitAuto) {
+          markActiveRun(Date.now(), undefined, activeWorkspace);
+          setLiveState("running", 0, activeWorkspace);
+          startActiveRunPoller(activeWorkspace);
+        }
       }
       void updateStatusBar();
     }, 100);
@@ -948,9 +1100,10 @@ function registerTerminalListeners(context: vscode.ExtensionContext): void {
         }
         writeTerminalEvent({ commandLine, confidence, terminalName, cwd });
         if (/\bxit\s+auto\b/.test(commandLine)) {
-          markActiveRun(Date.now());
-          setLiveState("running");
-          startActiveRunPoller();
+          const ws = cwd || resolveActiveXitWorkspace();
+          markActiveRun(Date.now(), undefined, ws);
+          setLiveState("running", 0, ws);
+          startActiveRunPoller(ws);
         }
         void updateStatusBar();
       },
@@ -1104,7 +1257,7 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand("xit.openDashboard", async () => {
       const status = await fetchStatus();
-      showDashboard(context, status, buildLiveStatusOverride());
+      showDashboard(context, status, buildLiveStatusOverride(resolveActiveXitWorkspace()));
     }),
     vscode.commands.registerCommand("xit.refresh", async () => {
       await updateStatusBar();
@@ -1126,11 +1279,13 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("xit.openLatestRawLog", openLatestRawLog),
     vscode.commands.registerCommand("xit.showOutput", showOutput),
     vscode.commands.registerCommand("xit.runCommand", async () => {
-      setLiveState("running");
+      const ws = resolveActiveXitWorkspace();
+      setLiveState("running", 0, ws);
       await promptRunCommand();
     }),
     vscode.commands.registerCommand("xit.runWithAutoCompression", async () => {
-      setLiveState("running");
+      const ws = resolveActiveXitWorkspace();
+      setLiveState("running", 0, ws);
       await promptRunWithAutoCompression();
     }),
     vscode.commands.registerCommand("xit.openXiTTerminal", () => {

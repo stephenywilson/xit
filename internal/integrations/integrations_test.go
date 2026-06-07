@@ -290,7 +290,7 @@ func TestDoctorResultNotInstalled(t *testing.T) {
 
 func TestAllAdaptersOrder(t *testing.T) {
 	adapters := AllAdapters()
-	expected := []string{"claude", "codex", "cursor", "kimi", "minimax"}
+	expected := []string{"claude", "codex", "cursor", "kimi", "minimax", "opencode"}
 	if len(adapters) != len(expected) {
 		t.Fatalf("expected %d adapters, got %d", len(expected), len(adapters))
 	}

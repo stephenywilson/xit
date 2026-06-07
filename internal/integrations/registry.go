@@ -206,15 +206,16 @@ func (b *baseAdapter) Launch(home string, cfg *config.Config, args []string, mod
 }
 
 var Registry = map[string]Adapter{
-	"claude":  &claudeAdapter{},
-	"codex":   &codexAdapter{},
-	"cursor":  &cursorAdapter{},
-	"kimi":    &kimiAdapter{},
-	"minimax": &minimaxAdapter{},
+	"claude":   &claudeAdapter{},
+	"codex":    &codexAdapter{},
+	"cursor":   &cursorAdapter{},
+	"kimi":     &kimiAdapter{},
+	"minimax":  &minimaxAdapter{},
+	"opencode": &opencodeAdapter{},
 }
 
 func AllAdapters() []Adapter {
-	order := []string{"claude", "codex", "cursor", "kimi", "minimax"}
+	order := []string{"claude", "codex", "cursor", "kimi", "minimax", "opencode"}
 	out := make([]Adapter, 0, len(order))
 	for _, n := range order {
 		if a, ok := Registry[n]; ok {

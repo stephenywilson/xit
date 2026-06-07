@@ -32,7 +32,7 @@ type Target struct {
 }
 
 func defaultTargets() map[string]Target {
-	names := []string{"kimi", "claude", "codex", "gemini", "cursor"}
+	names := []string{"kimi", "claude", "codex", "gemini", "cursor", "opencode"}
 	t := make(map[string]Target)
 	for _, n := range names {
 		wrapper := n != "cursor"
@@ -111,7 +111,7 @@ func (c *Config) FormatSummary(home string) string {
 	b.WriteString(fmt.Sprintf("default_mode: %s\n", c.DefaultMode))
 	b.WriteString(fmt.Sprintf("telemetry:    %v\n", c.Telemetry))
 	b.WriteString("\ntargets:\n\n")
-	for _, name := range []string{"kimi", "claude", "codex", "gemini", "cursor"} {
+	for _, name := range []string{"kimi", "claude", "codex", "gemini", "cursor", "opencode"} {
 		t, ok := c.Targets[name]
 		if !ok {
 			continue

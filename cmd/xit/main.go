@@ -29,6 +29,7 @@ import (
 	"github.com/stephenywilson/xit/internal/kimihook"
 	"github.com/stephenywilson/xit/internal/kimirulesinstall"
 	"github.com/stephenywilson/xit/internal/kimistatus"
+	"github.com/stephenywilson/xit/internal/opencodehook"
 	"github.com/stephenywilson/xit/internal/output"
 	"github.com/stephenywilson/xit/internal/runner"
 	"github.com/stephenywilson/xit/internal/session"
@@ -104,7 +105,7 @@ func main() {
 			os.Exit(1)
 		}
 		os.Exit(0)
-	case "kimi", "claude", "codex", "gemini", "cursor", "antigravity", "aider":
+	case "kimi", "claude", "codex", "gemini", "cursor", "opencode", "antigravity", "aider":
 		os.Exit(cmdWrapper(arg, rest[1:], mode))
 	case "claude-hook":
 		if err := cmdClaudeHook(rest[1:]); err != nil {
@@ -126,6 +127,12 @@ func main() {
 		os.Exit(0)
 	case "cursor-hook":
 		if err := cmdCursorHook(rest[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	case "opencode-hook":
+		if err := cmdOpencodeHook(rest[1:]); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
@@ -2196,7 +2203,7 @@ func cmdKimiStatusPatch(args []string) int {
 			fmt.Fprintln(os.Stderr, "  xit kimi status-patch install --yes --accept-risk")
 			return 1
 		}
-		if res.Installed {
+		if res.Installed && !hasForce {
 			fmt.Fprintln(os.Stderr, "error: XiT patch already installed")
 			fmt.Fprintln(os.Stderr, "Run uninstall first:")
 			fmt.Fprintln(os.Stderr, "  xit kimi status-patch uninstall --yes")
@@ -3700,6 +3707,20 @@ func cmdCursorHook(args []string) error {
 	}
 }
 
+func cmdOpencodeHook(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: xit opencode-hook log-event")
+	}
+	sub := args[0]
+	switch sub {
+	case "log-event":
+		home := userXiTHome()
+		return opencodehook.RunHookCommand(home)
+	default:
+		return fmt.Errorf("unknown opencode-hook command: %s", sub)
+	}
+}
+
 func cmdCursorHitrate(args []string) int {
 	window := 2 * time.Hour
 	useJSON := false
@@ -4280,8 +4301,77 @@ func cmdHook(args []string) error {
 		default:
 			return fmt.Errorf("unknown hook command for cursor: %s", sub)
 		}
+	case "opencode":
+		projectDir, _ := os.Getwd()
+		switch sub {
+		case "status":
+			status, err := opencodehook.Status(projectDir, home)
+			if err != nil {
+				return err
+			}
+			fmt.Println("XiT OpenCode Hook Status")
+			fmt.Println()
+			fmt.Printf("plugin:     %s\n", status.PluginPath)
+			if status.Installed {
+				fmt.Printf("installed:  yes\n")
+			} else {
+				fmt.Printf("installed:  no\n")
+			}
+			if status.HasEvents {
+				fmt.Printf("events:     %s\n", status.EventsPath)
+			}
+			return nil
+		case "install":
+			if !hasYesFlag(args[2:]) {
+				return fmt.Errorf("install requires --yes to confirm")
+			}
+			res, err := opencodehook.Install(projectDir, home, false)
+			if err != nil {
+				return err
+			}
+			if res.AlreadyInstalled {
+				fmt.Println("XiT OpenCode plugin already installed.")
+			} else {
+				fmt.Println("XiT OpenCode plugin installed.")
+			}
+			fmt.Printf("plugin:  %s\n", res.PluginPath)
+			fmt.Println()
+			fmt.Println("Next steps:")
+			fmt.Println("  1. Restart OpenCode for the plugin to take effect.")
+			fmt.Println("  2. Verify: xit hook stats opencode")
+			return nil
+		case "uninstall":
+			if !hasYesFlag(args[2:]) {
+				return fmt.Errorf("uninstall requires --yes to confirm")
+			}
+			if err := opencodehook.Uninstall(projectDir); err != nil {
+				return err
+			}
+			fmt.Println("XiT OpenCode plugin uninstalled.")
+			return nil
+		case "stats":
+			stats, err := opencodehook.Stats(home)
+			if err != nil {
+				return err
+			}
+			fmt.Println("XiT OpenCode Hook Stats")
+			fmt.Println()
+			if !stats.HasEvents {
+				fmt.Println("No hook events recorded yet.")
+				fmt.Println("Events are logged to .xit/opencode-hooks/events.jsonl when OpenCode runs Bash commands.")
+				return nil
+			}
+			fmt.Printf("events:      %d\n", stats.Events)
+			fmt.Printf("observed:    %d\n", stats.Observed)
+			fmt.Printf("rerouted:    %d\n", stats.Rerouted)
+			fmt.Printf("passthrough: %d\n", stats.Passthrough)
+			fmt.Printf("errors:      %d\n", stats.Errors)
+			return nil
+		default:
+			return fmt.Errorf("unknown hook command for opencode: %s", sub)
+		}
 	default:
-		return fmt.Errorf("hook commands only supported for claude, kimi, codex, and cursor")
+		return fmt.Errorf("hook commands only supported for claude, kimi, codex, cursor, and opencode")
 	}
 }
 

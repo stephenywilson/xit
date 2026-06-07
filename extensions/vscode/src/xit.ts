@@ -40,7 +40,7 @@ function hasXitData(dir: string): boolean {
   try {
     return (
       fs.existsSync(path.join(dir, ".xit", "history.jsonl")) ||
-      fs.existsSync(path.join(dir, ".xit", "state", "current-run.json"))
+      fs.existsSync(path.join(dir, ".xit", "state"))
     );
   } catch {
     return false;
@@ -49,11 +49,22 @@ function hasXitData(dir: string): boolean {
 
 const WORKSPACE_CACHE_PATH = path.join(os.homedir(), ".xit", "active-workspace");
 
+function canonicalWorkspacePath(workspacePath: string): string {
+  const absolute = path.resolve(workspacePath);
+  try {
+    return fs.realpathSync.native(absolute);
+  } catch {
+    return absolute;
+  }
+}
+
 function loadWorkspaceCache(): string | undefined {
   try {
     if (!fs.existsSync(WORKSPACE_CACHE_PATH)) return undefined;
-    const cached = fs.readFileSync(WORKSPACE_CACHE_PATH, "utf-8").trim();
-    if (!cached || path.resolve(cached) === path.resolve(os.homedir())) return undefined;
+    const raw = fs.readFileSync(WORKSPACE_CACHE_PATH, "utf-8").trim();
+    if (!raw) return undefined;
+    const cached = canonicalWorkspacePath(raw);
+    if (cached === canonicalWorkspacePath(os.homedir())) return undefined;
     if (!hasXitData(cached)) return undefined;
     return cached;
   } catch {
@@ -63,108 +74,60 @@ function loadWorkspaceCache(): string | undefined {
 
 function saveWorkspaceCache(workspacePath: string): void {
   try {
-    if (path.resolve(workspacePath) === path.resolve(os.homedir())) return;
-    fs.writeFileSync(WORKSPACE_CACHE_PATH, workspacePath, "utf-8");
+    const canonical = canonicalWorkspacePath(workspacePath);
+    if (canonical === canonicalWorkspacePath(os.homedir()) || !hasXitData(canonical)) {
+      return;
+    }
+    fs.writeFileSync(WORKSPACE_CACHE_PATH, canonical, "utf-8");
   } catch {
     // ignore write failures
   }
 }
 
-function parseXitCwdsFromHookCommands(): string[] {
-  const home = resolveXiTHome();
-  const hookFiles = [
-    path.join(home, "claude-hooks", "events.jsonl"),
-    path.join(home, "codex-hooks", "events.jsonl"),
-    path.join(home, "cursor-hooks", "events.jsonl"),
-    path.join(home, "kimi-hooks", "events.jsonl"),
-  ];
-  // Use a 60-minute window for workspace detection (hook events from the active project
-  // may come via "cd /project && xit auto ..." patterns which age quickly)
-  const cutoffMs = Date.now() - 60 * 60 * 1000;
-  const found: string[] = [];
-
-  for (const hookFile of hookFiles) {
-    try {
-      if (!fs.existsSync(hookFile)) {
-        continue;
-      }
-      const content = fs.readFileSync(hookFile, "utf-8");
-      const lines = content.trim().split("\n").filter(Boolean).slice(-100).reverse();
-      for (const line of lines) {
-        try {
-          const event = JSON.parse(line) as {
-            time?: string;
-            original_command?: string;
-            cwd?: string;
-          };
-          if (event.time) {
-            const ms = Date.parse(event.time);
-            if (!Number.isNaN(ms) && ms < cutoffMs) {
-              continue;
-            }
-          }
-          if (event.original_command) {
-            // Extract path from "cd /some/path &&" or "; cd /some/path"
-            const m = event.original_command.match(
-              /(?:^|;|\s&&)\s*cd\s+([^\s;&|"'`\\]+)/,
-            );
-            if (m && m[1] && !found.includes(m[1])) {
-              found.push(m[1]);
-            }
-          }
-          if (event.cwd && !found.includes(event.cwd)) {
-            found.push(event.cwd);
-          }
-        } catch {
-          // skip
-        }
-      }
-    } catch {
-      // skip
-    }
-  }
-  return found;
-}
-
 export function resolveActiveXitWorkspace(): string {
   const folders = vscode.workspace.workspaceFolders;
-  const homeDir = os.homedir();
+  const homeDir = canonicalWorkspacePath(os.homedir());
 
-  // 1. VS Code workspace root if it has .xit data, but skip home dir.
-  // ~/.xit/ is the XiT system home (hooks, sessions, global state) — not a project workspace.
+  // A window with project-local XiT data owns its workspace selection. Global hook
+  // activity must never move that window to another project.
   if (folders && folders.length > 0) {
-    const wsRoot = folders[0].uri.fsPath;
-    if (path.resolve(wsRoot) !== path.resolve(homeDir) && hasXitData(wsRoot)) {
-      return wsRoot;
+    const validFolders = folders
+      .map((folder) => canonicalWorkspacePath(folder.uri.fsPath))
+      .filter((folder) => folder !== homeDir && hasXitData(folder));
+
+    if (validFolders.length > 0) {
+      const activeEditorUri = vscode.window.activeTextEditor?.document.uri;
+      const activeFolder = activeEditorUri
+        ? vscode.workspace.getWorkspaceFolder(activeEditorUri)
+        : undefined;
+      const activePath = activeFolder
+        ? canonicalWorkspacePath(activeFolder.uri.fsPath)
+        : undefined;
+      // In a multi-root window, prefer the active editor's valid project. If no
+      // editor identifies one, use the first valid folder in workspace order.
+      const selected =
+        activePath && validFolders.includes(activePath)
+          ? activePath
+          : validFolders[0];
+      saveWorkspaceCache(selected);
+      return selected;
     }
   }
 
-  // 2. Scan recent hook commands/cwds for paths with .xit data (skip home dir)
-  for (const candidate of parseXitCwdsFromHookCommands()) {
-    const resolved = candidate.startsWith("~/")
-      ? path.join(homeDir, candidate.slice(2))
-      : candidate === "~"
-        ? homeDir
-        : candidate;
-    // Home dir is the XiT system home, not a project workspace — skip it here too
-    if (path.resolve(resolved) === path.resolve(homeDir)) continue;
-    try {
-      if (hasXitData(resolved)) {
-        saveWorkspaceCache(resolved);
-        return resolved;
-      }
-    } catch {
-      // skip
-    }
-  }
-
-  // 3. Use cached workspace from a previous successful resolution
+  // A validated cache is fallback-only for windows without project-local data.
   const cached = loadWorkspaceCache();
   if (cached) return cached;
 
-  // 4. Fall back to VS Code workspace root even if no .xit data there
+  // A folder without XiT data is a safe empty workspace. Never fall back to
+  // ~/.xit, which is global system state rather than project history.
   if (folders && folders.length > 0) {
-    return folders[0].uri.fsPath;
+    const activeEditorUri = vscode.window.activeTextEditor?.document.uri;
+    const activeFolder = activeEditorUri
+      ? vscode.workspace.getWorkspaceFolder(activeEditorUri)
+      : undefined;
+    return canonicalWorkspacePath(
+      activeFolder?.uri.fsPath || folders[0].uri.fsPath,
+    );
   }
 
   return homeDir;
@@ -329,8 +292,10 @@ export function readGlobalActivity(): GlobalActivity {
   };
 }
 
-export async function fetchStatus(): Promise<XiTStatus> {
-  const cwd = resolveWorkspaceCwd();
+export async function fetchStatus(
+  workspacePath = resolveWorkspaceCwd(),
+): Promise<XiTStatus> {
+  const cwd = workspacePath;
   const candidates = resolveBinaryCandidates();
   const attempts: string[] = [];
   let sawRunnableBinary = false;
@@ -496,8 +461,10 @@ export function readWorkspaceHistory(maxLines = 20): AdapterEvent[] {
   }
 }
 
-export function findLatestRawLog(): string | undefined {
-  const runsDir = path.join(resolveActiveXitWorkspace(), ".xit", "runs");
+export function findLatestRawLog(
+  workspacePath = resolveActiveXitWorkspace(),
+): string | undefined {
+  const runsDir = path.join(workspacePath, ".xit", "runs");
   try {
     if (!fs.existsSync(runsDir)) {
       return undefined;
@@ -521,8 +488,10 @@ export function findLatestRawLog(): string | undefined {
   }
 }
 
-export function readLatestRawLogMeta(): LatestRawLogMeta | undefined {
-  const latestPath = findLatestRawLog();
+export function readLatestRawLogMeta(
+  workspacePath = resolveActiveXitWorkspace(),
+): LatestRawLogMeta | undefined {
+  const latestPath = findLatestRawLog(workspacePath);
   if (!latestPath) {
     return undefined;
   }
@@ -538,19 +507,19 @@ export function readLatestRawLogMeta(): LatestRawLogMeta | undefined {
   }
 }
 
-function getCurrentRunStateCandidates(): string[] {
-  const root = resolveActiveXitWorkspace();
+function getCurrentRunStateCandidates(workspacePath?: string): string[] {
+  const root = workspacePath || resolveActiveXitWorkspace();
   return [
     path.join(root, ".xit", "state", "current-run.json"),
     path.join(root, ".xit", "state", "current.json"),
   ];
 }
 
-export function readCurrentRunState(): CurrentRunState | undefined {
+export function readCurrentRunState(workspacePath?: string): CurrentRunState | undefined {
   let best: CurrentRunState | undefined;
   let bestMs = -1;
 
-  for (const candidate of getCurrentRunStateCandidates()) {
+  for (const candidate of getCurrentRunStateCandidates(workspacePath)) {
     try {
       if (!fs.existsSync(candidate)) {
         continue;
@@ -578,8 +547,7 @@ export function readCurrentRunState(): CurrentRunState | undefined {
   return best;
 }
 
-export function readTurnState(): TurnState | undefined {
-  const workspacePath = resolveActiveXitWorkspace();
+export function readTurnState(workspacePath = resolveActiveXitWorkspace()): TurnState | undefined {
   const turnPath = path.join(workspacePath, ".xit", "state", "turn.json");
   try {
     if (!fs.existsSync(turnPath)) {
@@ -754,8 +722,8 @@ export function isHighOutputCommand(cmd: string): boolean {
   return false;
 }
 
-export function readLatestRun(): LatestRun | undefined {
-  const historyPath = path.join(resolveActiveXitWorkspace(), ".xit", "history.jsonl");
+export function readLatestRun(workspacePath = resolveActiveXitWorkspace()): LatestRun | undefined {
+  const historyPath = path.join(workspacePath, ".xit", "history.jsonl");
   try {
     if (!fs.existsSync(historyPath)) {
       return undefined;

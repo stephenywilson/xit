@@ -175,6 +175,21 @@ function parseIsoTimeMs(iso: string | undefined): number | undefined {
   return Number.isNaN(ms) ? undefined : ms;
 }
 
+function pathIsWorkspaceOrChild(
+  candidate: string | undefined,
+  workspacePath: string,
+): boolean {
+  if (!candidate) return false;
+  const resolvedCandidate = path.resolve(candidate);
+  if (resolvedCandidate === path.resolve(os.homedir())) return false;
+  const relative = path.relative(path.resolve(workspacePath), resolvedCandidate);
+  return relative === "" || (
+    relative !== ".." &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  );
+}
+
 function readRunsFromHistoryFile(historyPath: string): LatestRun[] {
   if (!fs.existsSync(historyPath)) {
     return [];
@@ -231,11 +246,11 @@ function collectRecentActivityCwds(cutoffMs?: number): string[] {
   return [...cwds];
 }
 
-export function readAllWorkspaceRuns(): LatestRun[] {
-  // Use the same authoritative workspace as readCurrentRunState() and readLatestRun().
-  // Never fall back to hook CWD scanning — that can pull data from a different project.
-  const activeWorkspace = resolveActiveXitWorkspace();
-  const historyPath = path.join(activeWorkspace, ".xit", "history.jsonl");
+export function readAllWorkspaceRuns(
+  workspacePath = resolveActiveXitWorkspace(),
+): LatestRun[] {
+  // Callers may pass a render/refresh snapshot so every data source stays on one project.
+  const historyPath = path.join(workspacePath, ".xit", "history.jsonl");
   return readRunsFromHistoryFile(historyPath);
 }
 
@@ -942,10 +957,11 @@ function resolveActivityReason(event: AdapterEvent): string {
   return "unknown";
 }
 
-export function buildAgentTurnView(): AgentTurnView {
-  const workspacePath = resolveWorkspaceCwd();
-  const turnState = readTurnState();
-  const allRuns = readAllWorkspaceRuns();
+export function buildAgentTurnView(
+  workspacePath = resolveWorkspaceCwd(),
+): AgentTurnView {
+  const turnState = readTurnState(workspacePath);
+  const allRuns = readAllWorkspaceRuns(workspacePath);
   const ADAPTERS = ["claude", "codex", "kimi", "cursor"] as const;
 
   const adapterEvents = new Map<string, AdapterEvent[]>();
@@ -993,19 +1009,10 @@ export function buildAgentTurnView(): AgentTurnView {
   // === Collect latest activity across all adapters (workspace-filtered) ===
   let latestActivity: LatestActivityInfo | undefined;
   let latestActivityMs: number | undefined;
-  const resolvedWorkspace = path.resolve(workspacePath);
-
   for (const [adapter, events] of adapterEvents) {
     for (const event of events) {
       if (!event.time) continue;
-      if (event.cwd) {
-        const resolvedEventCwd = path.resolve(event.cwd);
-        // Accept: exact match, OR hook cwd is a parent of the workspace (cd happened inside cmd)
-        const cwdMatches =
-          resolvedEventCwd === resolvedWorkspace ||
-          resolvedWorkspace.startsWith(resolvedEventCwd + path.sep);
-        if (!cwdMatches) continue;
-      }
+      if (!pathIsWorkspaceOrChild(event.cwd, workspacePath)) continue;
       const eventMs = parseIsoTimeMs(event.time);
       if (eventMs === undefined) continue;
       if (latestActivityMs === undefined || eventMs > latestActivityMs) {
@@ -1065,7 +1072,7 @@ export function buildAgentTurnView(): AgentTurnView {
   }
 
   // Override with xit_running if xit auto is actively running
-  const currentRun = readCurrentRunState();
+  const currentRun = readCurrentRunState(workspacePath);
   if (currentRun?.status === "running") {
     const heartbeatMs = parseIsoTimeMs(currentRun.heartbeat_at || currentRun.started_at);
     if (heartbeatMs !== undefined && Date.now() - heartbeatMs <= 15000) {
@@ -1083,13 +1090,7 @@ export function buildAgentTurnView(): AgentTurnView {
     let countForAdapter = 0;
     for (const event of events) {
       if (!event.time || !event.original_command) continue;
-      if (event.cwd) {
-        const resolvedEventCwd = path.resolve(event.cwd);
-        const cwdMatches =
-          resolvedEventCwd === resolvedWorkspace ||
-          resolvedWorkspace.startsWith(resolvedEventCwd + path.sep);
-        if (!cwdMatches) continue;
-      }
+      if (!pathIsWorkspaceOrChild(event.cwd, workspacePath)) continue;
       const eventMs = parseIsoTimeMs(event.time);
       if (eventMs === undefined) continue;
       if (turnStartMs !== undefined && eventMs < turnStartMs) continue;
@@ -1106,9 +1107,7 @@ export function buildAgentTurnView(): AgentTurnView {
     }
     const latestForAdapter = events.find(e => {
       if (!e.time) return false;
-      if (!e.cwd) return true;
-      const r = path.resolve(e.cwd);
-      return r === resolvedWorkspace || resolvedWorkspace.startsWith(r + path.sep);
+      return pathIsWorkspaceOrChild(e.cwd, workspacePath);
     });
     if (countForAdapter > 0 || latestForAdapter?.time) {
       evidence.push(`${adapter}: ${countForAdapter} cmd(s)${latestForAdapter?.time ? `, last ${latestForAdapter.time}` : ""}`);
@@ -1157,11 +1156,13 @@ export function buildLiveStatusView(options?: {
   xitCompletedHoldMs?: number;
   agentFreshMs?: number;
   agentMissedHoldMs?: number;
+  workspacePath?: string;
 }): LiveStatusView {
   const xitCompletedHoldMs = options?.xitCompletedHoldMs ?? SUCCESS_HOLD_MS;
   const agentFreshMs = options?.agentFreshMs ?? LIVE_AGENT_FRESH_MS;
   const agentMissedHoldMs = options?.agentMissedHoldMs ?? LIVE_AGENT_MISSED_HOLD_MS;
-  const currentRun = readCurrentRunState();
+  const workspacePath = options?.workspacePath || resolveActiveXitWorkspace();
+  const currentRun = readCurrentRunState(workspacePath);
   const now = Date.now();
 
   if (currentRun?.status === "running") {
@@ -1178,10 +1179,10 @@ export function buildLiveStatusView(options?: {
     }
   }
 
-  const latestRun = readAllWorkspaceRuns().slice(-1)[0];
+  const latestRun = readAllWorkspaceRuns(workspacePath).slice(-1)[0];
   const latestRunMs = parseIsoTimeMs(latestRun?.timestamp);
   const latestRunMetrics = getTokenMetricsForRun(latestRun);
-  const agentTurn = buildAgentTurnView();
+  const agentTurn = buildAgentTurnView(workspacePath);
   const activity = agentTurn.latestActivity;
   const activityMs = parseIsoTimeMs(activity?.timestamp);
 

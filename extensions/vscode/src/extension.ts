@@ -8,7 +8,13 @@ import {
   promptRunCommand,
   promptRunWithAutoCompression,
 } from "./runner";
-import type { AdapterEvent, LatestRun, LiveStatusView, XiTStatus } from "./types";
+import type {
+  AdapterEvent,
+  CurrentRunState,
+  LatestRun,
+  LiveStatusView,
+  XiTStatus,
+} from "./types";
 import {
   appendOutput,
   clearOutput,
@@ -52,8 +58,6 @@ let liveStateTimer: NodeJS.Timeout | undefined;
 let waitingStateTimer: NodeJS.Timeout | undefined;
 let lastObservedRunSignature: string | undefined;
 let terminalListenerDisposable: vscode.Disposable | undefined;
-let activeRunStartedAt: number | undefined;
-let activeRunRawLogPath: string | undefined;
 let currentRunStateSignature: string | undefined;
 let runningVisibleUntil: number | undefined;
 let activeRunPoller: NodeJS.Timeout | undefined;
@@ -70,6 +74,27 @@ let turnActiveStartedAt: number | undefined;
 let activeRunPollerWorkspace: string | undefined;
 const TURN_ACTIVE_MAX_MS = 60000;
 const RUNNING_MAX_MS = 120000;
+const HOOK_EVENT_FRESH_MS = 30000;
+const COMPLETED_RUN_FRESH_MS = 120000;
+const RUN_START_SKEW_MS = 15000;
+
+interface ActiveRunIdentity {
+  workspace: string;
+  detectedAt: number;
+  startedAt?: number;
+  command?: string;
+  rawLog?: string;
+}
+
+interface HookFileCursor {
+  offset: number;
+  inode?: number;
+  mtimeMs: number;
+  lastLineSignature?: string;
+  remainder: string;
+}
+
+let activeRunIdentity: ActiveRunIdentity | undefined;
 
 function getRefreshIntervalMs(): number {
   const cfg = vscode.workspace.getConfiguration("xit");
@@ -103,9 +128,9 @@ function ensureTildePrefix(display: string): string {
   return display.startsWith("~") ? display : `~${display}`;
 }
 
-function getSessionRunCount(): number {
+function getSessionRunCount(workspacePath = resolveActiveXitWorkspace()): number {
   const startOfToday = new Date().setHours(0, 0, 0, 0);
-  const count = readAllWorkspaceRuns().filter((r) => {
+  const count = readAllWorkspaceRuns(workspacePath).filter((r) => {
     const ms = r.timestamp ? Date.parse(r.timestamp) : 0;
     return ms >= startOfToday;
   }).length;
@@ -148,19 +173,31 @@ function getLiveStatusLabel(view: LiveStatusView): string {
   return labelMap[view.kind] ?? "守护你的T";
 }
 
-function markActiveRun(startedAt = Date.now(), rawLogPath?: string, workspace?: string): void {
-  activeRunStartedAt = startedAt;
-  if (rawLogPath) {
-    activeRunRawLogPath = path.resolve(rawLogPath);
-  }
-  if (workspace) {
-    liveStateWorkspace = workspace;
-  }
+function markActiveRun(
+  detectedAt = Date.now(),
+  workspace = resolveActiveXitWorkspace(),
+  state = readCurrentRunState(workspace),
+): void {
+  const canonicalWorkspace = path.resolve(workspace);
+  const stateStartedAt = state?.status === "running"
+    ? parseIsoTimeMs(state.started_at)
+    : undefined;
+  activeRunIdentity = {
+    workspace: canonicalWorkspace,
+    detectedAt,
+    startedAt: stateStartedAt,
+    command: state?.status === "running" ? state.command : undefined,
+    rawLog:
+      state?.status === "running" && state.raw_log
+        ? path.resolve(state.raw_log)
+        : undefined,
+  };
+  liveStateWorkspace = canonicalWorkspace;
 }
 
 function clearActiveRun(): void {
-  activeRunStartedAt = undefined;
-  activeRunRawLogPath = undefined;
+  activeRunIdentity = undefined;
+  activeRunPollerWorkspace = undefined;
 }
 
 function resetTurnActiveTimer(): void {
@@ -175,7 +212,7 @@ function resetTurnActiveTimer(): void {
   }, TURN_ACTIVE_TIMEOUT_MS);
 }
 
-function enterTurnActive(workspace?: string): void {
+function enterTurnActive(workspace = resolveActiveXitWorkspace()): void {
   // Don't downgrade from xit-active or post-run phases
   if (liveState === "running" || liveState === "settling" || liveState === "success") {
     resetTurnActiveTimer();
@@ -192,7 +229,7 @@ function enterTurnActive(workspace?: string): void {
       waitingStateTimer = undefined;
     }
     liveState = "turn_active";
-    liveStateWorkspace = workspace || resolveActiveXitWorkspace();
+    liveStateWorkspace = path.resolve(workspace);
     turnActiveStartedAt = Date.now();
     void updateStatusBarLive();
   }
@@ -216,7 +253,7 @@ function enterSuccessPhase(hasSavings: boolean, latestRun?: LatestRun, workspace
         : `${latestRun.saved_tokens_display} Token`)
       : undefined);
   successRunDisplay = rawDisplay ? ensureTildePrefix(rawDisplay) : undefined;
-  sessionRunCountAtSuccess = getSessionRunCount();
+  sessionRunCountAtSuccess = getSessionRunCount(workspace);
 
   if (activeRunPoller) {
     clearInterval(activeRunPoller);
@@ -305,8 +342,8 @@ function buildLiveStatusOverride(activeWorkspace?: string): LiveStatusView | und
       };
     case "turn_active":
       return {
-        kind: "xit_running",
-        label: "正在吸T中",
+        kind: "agent_observing",
+        label: "守护你的T",
         reason: "turn active",
         source: "liveState",
       };
@@ -339,21 +376,109 @@ function parseIsoTimeMs(iso: string | undefined): number | undefined {
   return Number.isNaN(ms) ? undefined : ms;
 }
 
-function isCurrentRunCompletion(run: LatestRun | undefined): boolean {
-  if (!run || activeRunStartedAt === undefined) {
+export function runStateMatchesIdentity(
+  state: CurrentRunState | undefined,
+  identity: ActiveRunIdentity | undefined,
+  workspacePath: string,
+  now = Date.now(),
+): boolean {
+  if (
+    !state ||
+    (state.status !== "completed" && state.status !== "failed") ||
+    !identity ||
+    path.resolve(workspacePath) !== identity.workspace
+  ) {
     return false;
   }
-  const finishedAt = parseIsoTimeMs(run.timestamp);
-  if (finishedAt === undefined || finishedAt < activeRunStartedAt) {
+
+  const completedAt = parseIsoTimeMs(state.completed_at || state.finished_at);
+  const startedAt = parseIsoTimeMs(state.started_at);
+  if (
+    completedAt === undefined ||
+    now - completedAt > COMPLETED_RUN_FRESH_MS ||
+    completedAt < identity.detectedAt - RUN_START_SKEW_MS
+  ) {
     return false;
   }
-  if (activeRunRawLogPath) {
-    const runRawLogPath = run.raw_log ? path.resolve(run.raw_log) : "";
-    if (runRawLogPath !== activeRunRawLogPath) {
-      return false;
-    }
+  if (
+    startedAt !== undefined &&
+    startedAt < identity.detectedAt - RUN_START_SKEW_MS
+  ) {
+    return false;
+  }
+  if (
+    identity.startedAt !== undefined &&
+    startedAt !== identity.startedAt
+  ) {
+    return false;
+  }
+  if (
+    identity.rawLog &&
+    (!state.raw_log || path.resolve(state.raw_log) !== identity.rawLog)
+  ) {
+    return false;
+  }
+  if (
+    identity.command &&
+    state.command &&
+    state.command !== identity.command
+  ) {
+    return false;
   }
   return true;
+}
+
+function currentRunMatchesActiveIdentity(
+  state: CurrentRunState | undefined,
+  workspacePath: string,
+): boolean {
+  return runStateMatchesIdentity(
+    state,
+    activeRunIdentity,
+    workspacePath,
+  );
+}
+
+function historyRunMatchesActiveIdentity(
+  run: LatestRun | undefined,
+  workspacePath: string,
+): boolean {
+  if (
+    !run ||
+    !activeRunIdentity ||
+    path.resolve(workspacePath) !== activeRunIdentity.workspace
+  ) {
+    return false;
+  }
+  const completedAt = parseIsoTimeMs(run.timestamp);
+  if (
+    completedAt === undefined ||
+    Date.now() - completedAt > COMPLETED_RUN_FRESH_MS ||
+    completedAt < activeRunIdentity.detectedAt - RUN_START_SKEW_MS
+  ) {
+    return false;
+  }
+  if (
+    activeRunIdentity.rawLog &&
+    path.resolve(run.raw_log) !== activeRunIdentity.rawLog
+  ) {
+    return false;
+  }
+  if (
+    activeRunIdentity.command &&
+    run.command &&
+    run.command !== activeRunIdentity.command
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function liveStateBelongsToWorkspace(workspacePath: string): boolean {
+  return !!(
+    liveStateWorkspace &&
+    path.resolve(liveStateWorkspace) === path.resolve(workspacePath)
+  );
 }
 
 function setLiveState(state: typeof liveState, durationMs = 0, workspace?: string): void {
@@ -430,7 +555,7 @@ function setLiveState(state: typeof liveState, durationMs = 0, workspace?: strin
   }
 }
 
-function startActiveRunPoller(workspacePath?: string): void {
+function startActiveRunPoller(workspacePath = resolveActiveXitWorkspace()): void {
   if (activeRunPoller) {
     if (
       activeRunPollerWorkspace &&
@@ -452,7 +577,8 @@ function startActiveRunPoller(workspacePath?: string): void {
     if (ticks > MAX_TICKS) {
       clearInterval(activeRunPoller);
       activeRunPoller = undefined;
-      activeRunPollerWorkspace = undefined;
+      clearActiveRun();
+      setLiveState("idle");
       return;
     }
 
@@ -466,27 +592,33 @@ function startActiveRunPoller(workspacePath?: string): void {
       }
     }
 
-    const state = readCurrentRunState();
+    const state = readCurrentRunState(workspacePath);
     if (!state) {
       return;
     }
-    if (state.status === "completed" || state.status === "failed") {
+    if (
+      (state.status === "completed" || state.status === "failed") &&
+      currentRunMatchesActiveIdentity(state, workspacePath)
+    ) {
       clearInterval(activeRunPoller);
       activeRunPoller = undefined;
       activeRunPollerWorkspace = undefined;
-      const signature = getCurrentRunStateSignature();
-      if (signature && signature !== currentRunStateSignature) {
-        currentRunStateSignature = signature;
-        const latestRun = getCompletedRunFromStateOrHistory();
-        lastObservedRunSignature = getRunSignature(latestRun);
-        const savedBytes = Math.max(
-          0,
-          (latestRun?.raw_bytes || 0) - (latestRun?.summary_bytes || 0),
-        );
-        enterSuccessPhase(savedBytes > 0, latestRun, workspacePath);
-      }
+      const signature = getCurrentRunStateSignature(workspacePath);
+      currentRunStateSignature = signature;
+      const latestRun = getCompletedRunFromStateOrHistory(workspacePath);
+      lastObservedRunSignature = getRunSignature(latestRun);
+      const savedBytes = Math.max(
+        0,
+        (latestRun?.raw_bytes || 0) - (latestRun?.summary_bytes || 0),
+      );
+      enterSuccessPhase(savedBytes > 0, latestRun, workspacePath);
       void updateStatusBar();
-    } else if (state.status === "running" && isFreshRunningState()) {
+    } else if (state.status === "completed" || state.status === "failed") {
+      clearInterval(activeRunPoller);
+      activeRunPoller = undefined;
+      clearActiveRun();
+      setLiveState("idle");
+    } else if (state.status === "running" && isFreshRunningState(workspacePath)) {
       void updateStatusBarLive();
     }
   }, 500);
@@ -499,8 +631,10 @@ function getRunSignature(run: LatestRun | undefined): string | undefined {
   return `${run.timestamp}|${run.command}|${run.raw_log}|${run.raw_bytes}|${run.summary_bytes}`;
 }
 
-function getCurrentRunStateSignature(): string | undefined {
-  const state = readCurrentRunState();
+function getCurrentRunStateSignature(
+  workspacePath = resolveActiveXitWorkspace(),
+): string | undefined {
+  const state = readCurrentRunState(workspacePath);
   if (!state) {
     return undefined;
   }
@@ -515,8 +649,10 @@ function getCurrentRunStateSignature(): string | undefined {
   ].join("|");
 }
 
-function isFreshRunningState(): boolean {
-  const state = readCurrentRunState();
+function isFreshRunningState(
+  workspacePath = resolveActiveXitWorkspace(),
+): boolean {
+  const state = readCurrentRunState(workspacePath);
   if (!state || state.status !== "running") {
     return false;
   }
@@ -537,9 +673,11 @@ function isFreshRunningState(): boolean {
   return false;
 }
 
-function getCompletedRunFromStateOrHistory(): LatestRun | undefined {
-  const state = readCurrentRunState();
-  const latestRun = readLatestRun();
+function getCompletedRunFromStateOrHistory(
+  workspacePath = resolveActiveXitWorkspace(),
+): LatestRun | undefined {
+  const state = readCurrentRunState(workspacePath);
+  const latestRun = readLatestRun(workspacePath);
   if (!state || (state.status !== "completed" && state.status !== "failed")) {
     return latestRun;
   }
@@ -583,13 +721,15 @@ function getCompletedRunFromStateOrHistory(): LatestRun | undefined {
   };
 }
 
-function detectActiveRawLog(): string | undefined {
-  const latestRawLog = readLatestRawLogMeta();
+function detectActiveRawLog(
+  workspacePath = resolveActiveXitWorkspace(),
+): string | undefined {
+  const latestRawLog = readLatestRawLogMeta(workspacePath);
   if (!latestRawLog) {
     return undefined;
   }
 
-  const latestRun = readLatestRun();
+  const latestRun = readLatestRun(workspacePath);
   const latestRunLog = latestRun?.raw_log
     ? path.resolve(latestRun.raw_log)
     : undefined;
@@ -606,7 +746,7 @@ function detectActiveRawLog(): string | undefined {
 
   try {
     const historyMtime = fs.statSync(
-      path.join(resolveWorkspaceCwd(), ".xit", "history.jsonl"),
+      path.join(workspacePath, ".xit", "history.jsonl"),
     ).mtimeMs;
     if (latestRawLog.mtimeMs > historyMtime) {
       return rawLogPath;
@@ -623,8 +763,9 @@ async function updateStatusBar(): Promise<void> {
     return;
   }
 
-  const status = await fetchStatus();
-  const latestRun = getCompletedRunFromStateOrHistory();
+  const workspaceSnapshot = resolveActiveXitWorkspace();
+  const status = await fetchStatus(workspaceSnapshot);
+  const latestRun = getCompletedRunFromStateOrHistory(workspaceSnapshot);
 
   // Stuck safety net: auto-clear stale live states
   if (
@@ -636,21 +777,23 @@ async function updateStatusBar(): Promise<void> {
   }
   if (
     liveState === "running" &&
-    activeRunStartedAt &&
-    Date.now() - activeRunStartedAt > RUNNING_MAX_MS
+    activeRunIdentity &&
+    Date.now() - activeRunIdentity.detectedAt > RUNNING_MAX_MS
   ) {
-    const currentState = readCurrentRunState();
+    const currentState = readCurrentRunState(activeRunIdentity.workspace);
     if (
       !currentState ||
       currentState.status !== "running" ||
-      !isFreshRunningState()
+      !isFreshRunningState(activeRunIdentity.workspace)
     ) {
+      clearActiveRun();
       setLiveState("idle");
     }
   }
 
   if (!status.available && status.state === "binary-not-found") {
     liveState = "no-binary";
+    liveStateWorkspace = workspaceSnapshot;
     statusBarItem.text = "吸T神功 · 未接入";
     statusBarItem.tooltip = [
       "当前状态：未接入",
@@ -659,28 +802,45 @@ async function updateStatusBar(): Promise<void> {
       "本地处理 · 不读取聊天内容 · 无遥测",
       "点击打开 XiT Dashboard",
     ].join("\n");
-    updateDashboardIfOpen(status);
+    updateDashboardIfOpen(status, undefined, workspaceSnapshot);
     return;
   }
 
-  if (liveState === "turn_active" || liveState === "running") {
+  const useLiveState = liveStateBelongsToWorkspace(workspaceSnapshot);
+
+  if (useLiveState && (liveState === "turn_active" || liveState === "running")) {
     // Safety net: file watchers may be registered against the wrong workspace path at
     // activation time (before any hook events arrive). On every periodic refresh, check
     // if the run actually completed and transition immediately if so.
     if (liveState === "running") {
-      const currentState = readCurrentRunState();
-      if (currentState?.status === "completed" || currentState?.status === "failed") {
-        const latestRun = getCompletedRunFromStateOrHistory();
+      const currentState = readCurrentRunState(workspaceSnapshot);
+      if (currentRunMatchesActiveIdentity(currentState, workspaceSnapshot)) {
+        const latestRun = getCompletedRunFromStateOrHistory(workspaceSnapshot);
         const savedBytes = Math.max(
           0,
           (latestRun?.raw_bytes || 0) - (latestRun?.summary_bytes || 0),
         );
-        enterSuccessPhase(savedBytes > 0, latestRun);
-        updateDashboardIfOpen(status, buildLiveStatusOverride(resolveActiveXitWorkspace()));
+        enterSuccessPhase(savedBytes > 0, latestRun, workspaceSnapshot);
+        updateDashboardIfOpen(
+          status,
+          buildLiveStatusOverride(workspaceSnapshot),
+          workspaceSnapshot,
+        );
+        return;
+      } else if (
+        liveState === "running" &&
+        currentState &&
+        (currentState.status === "completed" || currentState.status === "failed")
+      ) {
+        clearActiveRun();
+        setLiveState("idle");
+        await updateStatusBar();
         return;
       }
     }
-    statusBarItem.text = "吸T神功 · 正在吸T中";
+    statusBarItem.text = liveState === "running"
+      ? "吸T神功 · 正在吸T中"
+      : "吸T神功 · 守护你的T";
     statusBarItem.tooltip = [
       "当前状态：正在吸T中",
       "本次节省：—",
@@ -688,11 +848,15 @@ async function updateStatusBar(): Promise<void> {
       "本地处理 · 不读取聊天内容 · 无遥测",
       "点击打开 XiT Dashboard",
     ].join("\n");
-    updateDashboardIfOpen(status, buildLiveStatusOverride(resolveActiveXitWorkspace()));
+    updateDashboardIfOpen(
+      status,
+      buildLiveStatusOverride(workspaceSnapshot),
+      workspaceSnapshot,
+    );
     return;
   }
 
-  if (liveState === "settling") {
+  if (useLiveState && liveState === "settling") {
     statusBarItem.text = "吸T完成 · 神功正在收工";
     const metrics = getTokenMetricsForRun(latestRun);
     const reductionLabel = metrics && metrics.reductionPct > 0 ? `${Math.round(metrics.reductionPct)}%` : "--";
@@ -706,11 +870,15 @@ async function updateStatusBar(): Promise<void> {
       "本地处理 · 不读取聊天内容 · 无遥测",
       "点击打开 XiT Dashboard",
     ].join("\n");
-    updateDashboardIfOpen(status, buildLiveStatusOverride(resolveActiveXitWorkspace()));
+    updateDashboardIfOpen(
+      status,
+      buildLiveStatusOverride(workspaceSnapshot),
+      workspaceSnapshot,
+    );
     return;
   }
 
-  if (liveState === "success") {
+  if (useLiveState && liveState === "success") {
     const opt1 = successRunDisplay ? `吸T完成 · 本次省${successRunDisplay}` : "吸T完成";
     const opt2 = `吸T完成 · 本轮共吸 ${sessionRunCountAtSuccess}次`;
     statusBarItem.text = pickRotatingText([opt1, opt2]);
@@ -726,11 +894,15 @@ async function updateStatusBar(): Promise<void> {
       "本地处理 · 不读取聊天内容 · 无遥测",
       "点击打开 XiT Dashboard",
     ].join("\n");
-    updateDashboardIfOpen(status, buildLiveStatusOverride(resolveActiveXitWorkspace()));
+    updateDashboardIfOpen(
+      status,
+      buildLiveStatusOverride(workspaceSnapshot),
+      workspaceSnapshot,
+    );
     return;
   }
 
-  if (liveState === "missed") {
+  if (useLiveState && liveState === "missed") {
     statusBarItem.text = "吸T神功 · 无需发功";
     statusBarItem.tooltip = [
       "当前状态：无需发功",
@@ -739,17 +911,21 @@ async function updateStatusBar(): Promise<void> {
       "本地处理 · 不读取聊天内容 · 无遥测",
       "点击打开 XiT Dashboard",
     ].join("\n");
-    updateDashboardIfOpen(status, buildLiveStatusOverride(resolveActiveXitWorkspace()));
+    updateDashboardIfOpen(
+      status,
+      buildLiveStatusOverride(workspaceSnapshot),
+      workspaceSnapshot,
+    );
     return;
   }
 
-  if (liveState === "waiting") {
+  if (useLiveState && liveState === "waiting") {
     statusBarItem.text = pickRotatingText(["吸T神功 · 等待下轮发功", "吸T神功 · 守护你的T"]);
-    updateDashboardIfOpen(status);
+    updateDashboardIfOpen(status, undefined, workspaceSnapshot);
     return;
   }
 
-  const liveStatus = buildLiveStatusView();
+  const liveStatus = buildLiveStatusView({ workspacePath: workspaceSnapshot });
   statusBarItem.text = getStatusBarTextFromLiveStatus(liveStatus);
 
   const metrics = getTokenMetricsForRun(latestRun);
@@ -774,7 +950,7 @@ async function updateStatusBar(): Promise<void> {
     .filter(Boolean)
     .join("\n");
 
-  updateDashboardIfOpen(status);
+  updateDashboardIfOpen(status, undefined, workspaceSnapshot);
 }
 
 async function updateStatusBarLive(): Promise<void> {
@@ -782,12 +958,21 @@ async function updateStatusBarLive(): Promise<void> {
     return;
   }
 
+  const workspaceSnapshot = resolveActiveXitWorkspace();
+  if (!liveStateBelongsToWorkspace(workspaceSnapshot)) {
+    statusBarItem.text = getStatusBarTextFromLiveStatus(
+      buildLiveStatusView({ workspacePath: workspaceSnapshot }),
+    );
+    return;
+  }
   if (liveState === "no-binary") {
     statusBarItem.text = "吸T神功 · 未接入";
     return;
   }
   if (liveState === "turn_active" || liveState === "running") {
-    statusBarItem.text = "吸T神功 · 正在吸T中";
+    statusBarItem.text = liveState === "running"
+      ? "吸T神功 · 正在吸T中"
+      : "吸T神功 · 守护你的T";
     return;
   }
   if (liveState === "settling") {
@@ -808,7 +993,9 @@ async function updateStatusBarLive(): Promise<void> {
     statusBarItem.text = pickRotatingText(["吸T神功 · 等待下轮发功", "吸T神功 · 守护你的T"]);
     return;
   }
-  statusBarItem.text = getStatusBarTextFromLiveStatus(buildLiveStatusView());
+  statusBarItem.text = getStatusBarTextFromLiveStatus(
+    buildLiveStatusView({ workspacePath: workspaceSnapshot }),
+  );
 }
 
 function startRefresh(): void {
@@ -861,9 +1048,13 @@ function registerWorkspaceWatchers(context: vscode.ExtensionContext): void {
   const rawLogWatcher = vscode.workspace.createFileSystemWatcher(rawLogPattern);
 
   const onHistoryChange = async (): Promise<void> => {
-    const latestRun = readLatestRun();
+    const latestRun = readLatestRun(workspacePath);
     const signature = getRunSignature(latestRun);
-    if (signature && signature !== lastObservedRunSignature) {
+    if (
+      signature &&
+      signature !== lastObservedRunSignature &&
+      historyRunMatchesActiveIdentity(latestRun, workspacePath)
+    ) {
       lastObservedRunSignature = signature;
       const savedBytes = Math.max(
         0,
@@ -872,41 +1063,38 @@ function registerWorkspaceWatchers(context: vscode.ExtensionContext): void {
       enterSuccessPhase(savedBytes > 0, latestRun, workspacePath);
     }
     if (statusBarItem) {
-      const status = await fetchStatus();
-      updateDashboardIfOpen(status);
+      const status = await fetchStatus(workspacePath);
+      updateDashboardIfOpen(status, undefined, workspacePath);
     }
     await updateStatusBar();
   };
 
   const onRawLogChange = async (): Promise<void> => {
-    const active = detectActiveRawLog();
+    const active = detectActiveRawLog(workspacePath);
     if (active) {
-      const rawLogMeta = readLatestRawLogMeta();
-      markActiveRun(rawLogMeta?.mtimeMs || Date.now(), active, workspacePath);
+      markActiveRun(Date.now(), workspacePath);
       setLiveState("running", 0, workspacePath);
+      startActiveRunPoller(workspacePath);
     }
     await updateStatusBar();
   };
 
   const onStateChange = async (): Promise<void> => {
-    const state = readCurrentRunState();
-    const signature = getCurrentRunStateSignature();
-    if (state?.status === "running" && isFreshRunningState()) {
-      markActiveRun(
-        parseIsoTimeMs(state.started_at) || Date.now(),
-        state.raw_log,
-        workspacePath,
-      );
+    const state = readCurrentRunState(workspacePath);
+    const signature = getCurrentRunStateSignature(workspacePath);
+    if (state?.status === "running" && isFreshRunningState(workspacePath)) {
+      markActiveRun(Date.now(), workspacePath, state);
       setLiveState("running", 0, workspacePath);
       startActiveRunPoller(workspacePath);
     } else if (
       state &&
       (state.status === "completed" || state.status === "failed") &&
+      currentRunMatchesActiveIdentity(state, workspacePath) &&
       signature &&
       signature !== currentRunStateSignature
     ) {
       currentRunStateSignature = signature;
-      const latestRun = getCompletedRunFromStateOrHistory();
+      const latestRun = getCompletedRunFromStateOrHistory(workspacePath);
       lastObservedRunSignature = getRunSignature(latestRun);
       const savedBytes = Math.max(
         0,
@@ -915,8 +1103,8 @@ function registerWorkspaceWatchers(context: vscode.ExtensionContext): void {
       enterSuccessPhase(savedBytes > 0, latestRun, workspacePath);
     }
     if (statusBarItem) {
-      const status = await fetchStatus();
-      updateDashboardIfOpen(status);
+      const status = await fetchStatus(workspacePath);
+      updateDashboardIfOpen(status, undefined, workspacePath);
     }
     await updateStatusBar();
   };
@@ -952,18 +1140,26 @@ function resolveXiTHome(): string {
   return path.join(os.homedir(), ".xit");
 }
 
-function eventBelongsToWorkspace(
+export function eventBelongsToWorkspace(
   event: AdapterEvent,
   workspacePath: string,
 ): boolean {
   const resolvedWorkspace = path.resolve(workspacePath);
+  const home = path.resolve(os.homedir());
+
+  const isWorkspaceOrChild = (candidate: string): boolean => {
+    const resolvedCandidate = path.resolve(candidate);
+    if (resolvedCandidate === home) return false;
+    const relative = path.relative(resolvedWorkspace, resolvedCandidate);
+    return relative === "" || (
+      relative !== ".." &&
+      !relative.startsWith(`..${path.sep}`) &&
+      !path.isAbsolute(relative)
+    );
+  };
 
   if (event.cwd) {
-    const resolvedCwd = path.resolve(event.cwd);
-    if (
-      resolvedCwd === resolvedWorkspace ||
-      resolvedWorkspace.startsWith(resolvedCwd + path.sep)
-    ) {
+    if (isWorkspaceOrChild(event.cwd)) {
       return true;
     }
   }
@@ -977,12 +1173,12 @@ function eventBelongsToWorkspace(
         ? path.join(os.homedir(), m[1].slice(2))
         : m[1] === "~"
           ? os.homedir()
-          : m[1];
-      const resolvedCd = path.resolve(cdPath);
-      if (
-        resolvedCd === resolvedWorkspace ||
-        resolvedWorkspace.startsWith(resolvedCd + path.sep)
-      ) {
+          : path.isAbsolute(m[1])
+            ? m[1]
+            : event.cwd
+              ? path.resolve(event.cwd, m[1])
+              : "";
+      if (cdPath && isWorkspaceOrChild(cdPath)) {
         return true;
       }
     }
@@ -991,24 +1187,73 @@ function eventBelongsToWorkspace(
   return false;
 }
 
-function getLatestHookCommand(adapter: string): string | undefined {
-  const events = readRecentEvents(adapter, 3);
-  return events[0]?.original_command;
+export function hookEventIsFresh(event: AdapterEvent, now = Date.now()): boolean {
+  const eventMs = parseIsoTimeMs(event.time);
+  return eventMs !== undefined && Math.abs(now - eventMs) <= HOOK_EVENT_FRESH_MS;
 }
 
-function checkHookEventForXitAuto(workspacePath?: string): boolean {
-  for (const adapter of ["claude", "codex", "cursor", "kimi"]) {
-    const events = readRecentEvents(adapter, 10);
-    for (const event of events) {
-      if (workspacePath && !eventBelongsToWorkspace(event, workspacePath)) {
-        continue;
-      }
-      if (/\bxit\s+auto\b/.test(event.original_command || "")) {
-        return true;
+function commandRunsXitAuto(command: string | undefined): boolean {
+  return /(?:^|\s)(?:\.\/)?xit\s+auto\b/.test(command || "");
+}
+
+export function initializeHookCursor(hookFile: string): HookFileCursor {
+  try {
+    const stat = fs.statSync(hookFile);
+    return {
+      offset: stat.size,
+      inode: stat.ino,
+      mtimeMs: stat.mtimeMs,
+      remainder: "",
+    };
+  } catch {
+    return { offset: 0, mtimeMs: 0, remainder: "" };
+  }
+}
+
+export function readAppendedHookEvents(
+  hookFile: string,
+  cursor: HookFileCursor,
+): AdapterEvent[] {
+  try {
+    const stat = fs.statSync(hookFile);
+    const replaced = cursor.inode !== undefined && stat.ino !== cursor.inode;
+    const truncated = stat.size < cursor.offset;
+    const start = replaced || truncated ? 0 : cursor.offset;
+    if (stat.size === start) {
+      cursor.inode = stat.ino;
+      cursor.mtimeMs = stat.mtimeMs;
+      return [];
+    }
+
+    const length = stat.size - start;
+    const buffer = Buffer.alloc(length);
+    const fd = fs.openSync(hookFile, "r");
+    try {
+      fs.readSync(fd, buffer, 0, length, start);
+    } finally {
+      fs.closeSync(fd);
+    }
+
+    cursor.offset = stat.size;
+    cursor.inode = stat.ino;
+    cursor.mtimeMs = stat.mtimeMs;
+
+    const chunks = `${cursor.remainder}${buffer.toString("utf-8")}`.split("\n");
+    cursor.remainder = chunks.pop() || "";
+    const events: AdapterEvent[] = [];
+    for (const line of chunks) {
+      if (!line.trim() || line === cursor.lastLineSignature) continue;
+      cursor.lastLineSignature = line;
+      try {
+        events.push(JSON.parse(line) as AdapterEvent);
+      } catch {
+        // Ignore malformed appended lines; a later complete line will be processed.
       }
     }
+    return events;
+  } catch {
+    return [];
   }
-  return false;
 }
 
 function registerAdapterHookWatchers(context: vscode.ExtensionContext): void {
@@ -1020,62 +1265,57 @@ function registerAdapterHookWatchers(context: vscode.ExtensionContext): void {
     path.join(home, "cursor-hooks", "events.jsonl"),
     path.join(home, "kimi-hooks", "turn-events.jsonl"),
   ];
+  const cursors = new Map(
+    hookFiles.map((hookFile) => [hookFile, initializeHookCursor(hookFile)]),
+  );
 
-  let pendingRefresh: NodeJS.Timeout | undefined;
-  const scheduleRefresh = (): void => {
-    if (pendingRefresh) {
-      clearTimeout(pendingRefresh);
-    }
-    pendingRefresh = setTimeout(() => {
-      pendingRefresh = undefined;
+  const pendingRefreshes = new Map<string, NodeJS.Timeout>();
+  const scheduleRefresh = (hookFile: string): void => {
+    const pending = pendingRefreshes.get(hookFile);
+    if (pending) clearTimeout(pending);
+    pendingRefreshes.set(hookFile, setTimeout(() => {
+      pendingRefreshes.delete(hookFile);
       const activeWorkspace = resolveActiveXitWorkspace();
-
-      let hasWorkspaceEvent = false;
-      let hasWorkspaceXitAuto = false;
-
-      for (const adapter of ["claude", "codex", "cursor", "kimi"]) {
-        const events = readRecentEvents(adapter, 10);
-        for (const event of events) {
-          if (eventBelongsToWorkspace(event, activeWorkspace)) {
-            hasWorkspaceEvent = true;
-            if (/\bxit\s+auto\b/.test(event.original_command || "")) {
-              hasWorkspaceXitAuto = true;
-              break;
-            }
-          }
-        }
-        if (hasWorkspaceXitAuto) {
-          break;
-        }
-      }
+      const cursor = cursors.get(hookFile) || initializeHookCursor(hookFile);
+      cursors.set(hookFile, cursor);
+      const appendedEvents = readAppendedHookEvents(hookFile, cursor);
+      const workspaceEvents = appendedEvents.filter(
+        (event) =>
+          hookEventIsFresh(event) &&
+          eventBelongsToWorkspace(event, activeWorkspace),
+      );
+      const hasWorkspaceEvent = workspaceEvents.length > 0;
+      const hasWorkspaceXitAuto = workspaceEvents.some((event) =>
+        commandRunsXitAuto(event.original_command)
+      );
 
       if (hasWorkspaceEvent) {
         enterTurnActive(activeWorkspace);
         if (hasWorkspaceXitAuto) {
-          markActiveRun(Date.now(), undefined, activeWorkspace);
+          markActiveRun(Date.now(), activeWorkspace);
           setLiveState("running", 0, activeWorkspace);
           startActiveRunPoller(activeWorkspace);
         }
       }
       void updateStatusBar();
-    }, 100);
+    }, 100));
   };
 
   for (const hookFile of hookFiles) {
     const watcher = vscode.workspace.createFileSystemWatcher(
       new vscode.RelativePattern(path.dirname(hookFile), path.basename(hookFile)),
     );
-    watcher.onDidChange(scheduleRefresh, null, context.subscriptions);
-    watcher.onDidCreate(scheduleRefresh, null, context.subscriptions);
+    watcher.onDidChange(() => scheduleRefresh(hookFile), null, context.subscriptions);
+    watcher.onDidCreate(() => scheduleRefresh(hookFile), null, context.subscriptions);
     context.subscriptions.push(watcher);
   }
 
   context.subscriptions.push({
     dispose: () => {
-      if (pendingRefresh) {
-        clearTimeout(pendingRefresh);
-        pendingRefresh = undefined;
+      for (const pending of pendingRefreshes.values()) {
+        clearTimeout(pending);
       }
+      pendingRefreshes.clear();
     },
   });
 }
@@ -1099,11 +1339,18 @@ function registerTerminalListeners(context: vscode.ExtensionContext): void {
           return;
         }
         writeTerminalEvent({ commandLine, confidence, terminalName, cwd });
-        if (/\bxit\s+auto\b/.test(commandLine)) {
-          const ws = cwd || resolveActiveXitWorkspace();
-          markActiveRun(Date.now(), undefined, ws);
-          setLiveState("running", 0, ws);
-          startActiveRunPoller(ws);
+        if (commandRunsXitAuto(commandLine)) {
+          const activeWorkspace = resolveActiveXitWorkspace();
+          const terminalEvent: AdapterEvent = {
+            cwd,
+            original_command: commandLine,
+            time: new Date().toISOString(),
+          };
+          if (eventBelongsToWorkspace(terminalEvent, activeWorkspace)) {
+            markActiveRun(Date.now(), activeWorkspace);
+            setLiveState("running", 0, activeWorkspace);
+            startActiveRunPoller(activeWorkspace);
+          }
         }
         void updateStatusBar();
       },
@@ -1247,8 +1494,9 @@ export function activate(context: vscode.ExtensionContext): void {
     context.subscriptions.push(statusBarItem);
   }
 
-  lastObservedRunSignature = getRunSignature(readLatestRun());
-  currentRunStateSignature = getCurrentRunStateSignature();
+  const activationWorkspace = resolveActiveXitWorkspace();
+  lastObservedRunSignature = getRunSignature(readLatestRun(activationWorkspace));
+  currentRunStateSignature = getCurrentRunStateSignature(activationWorkspace);
   startRefresh();
   registerWorkspaceWatchers(context);
   registerAdapterHookWatchers(context);
@@ -1256,15 +1504,23 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     vscode.commands.registerCommand("xit.openDashboard", async () => {
-      const status = await fetchStatus();
-      showDashboard(context, status, buildLiveStatusOverride(resolveActiveXitWorkspace()));
+      await updateStatusBar();
+      const workspaceSnapshot = resolveActiveXitWorkspace();
+      const status = await fetchStatus(workspaceSnapshot);
+      showDashboard(
+        context,
+        status,
+        buildLiveStatusOverride(workspaceSnapshot),
+        workspaceSnapshot,
+      );
     }),
     vscode.commands.registerCommand("xit.refresh", async () => {
       await updateStatusBar();
       vscode.window.showInformationMessage("XiT status refreshed");
     }),
     vscode.commands.registerCommand("xit.showGain", async () => {
-      const status = await fetchStatus();
+      const workspaceSnapshot = resolveActiveXitWorkspace();
+      const status = await fetchStatus(workspaceSnapshot);
       if (!status.available || !status.gain) {
         vscode.window.showWarningMessage(
           `XiT: ${status.error || "No gain data available."}`,
@@ -1280,11 +1536,13 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("xit.showOutput", showOutput),
     vscode.commands.registerCommand("xit.runCommand", async () => {
       const ws = resolveActiveXitWorkspace();
+      markActiveRun(Date.now(), ws);
       setLiveState("running", 0, ws);
       await promptRunCommand();
     }),
     vscode.commands.registerCommand("xit.runWithAutoCompression", async () => {
       const ws = resolveActiveXitWorkspace();
+      markActiveRun(Date.now(), ws);
       setLiveState("running", 0, ws);
       await promptRunWithAutoCompression();
     }),

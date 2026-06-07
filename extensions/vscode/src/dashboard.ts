@@ -37,7 +37,8 @@ interface CumulativeStats {
 }
 
 interface CumulativeCacheEntry extends CumulativeStats {
-  cachedAt: string;
+  updatedAt: string;
+  cachedAt?: string;
 }
 
 type CumulativeCacheFile = Record<string, CumulativeCacheEntry>;
@@ -47,10 +48,51 @@ const CUMULATIVE_CACHE_FILE = path.join(os.homedir(), ".xit", "vscode-cumulative
 // Fast in-memory layer — reset on extension host restart, backed by disk below
 let memCumulative: { workspace: string; stats: CumulativeStats } | undefined;
 
+function canonicalWorkspacePath(workspacePath: string): string {
+  const absolute = path.resolve(workspacePath);
+  try {
+    return fs.realpathSync.native(absolute);
+  } catch {
+    return absolute;
+  }
+}
+
+function isValidCumulativeStats(value: unknown): value is CumulativeStats {
+  if (!value || typeof value !== "object") return false;
+  const entry = value as Partial<CumulativeCacheEntry>;
+  return (
+    typeof entry.totalRuns === "number" &&
+    Number.isFinite(entry.totalRuns) &&
+    typeof entry.todayCount === "number" &&
+    Number.isFinite(entry.todayCount) &&
+    typeof entry.todaySaved === "number" &&
+    Number.isFinite(entry.todaySaved) &&
+    typeof entry.totalSaved === "number" &&
+    Number.isFinite(entry.totalSaved)
+  );
+}
+
 function readCacheFile(): CumulativeCacheFile {
   try {
     if (!fs.existsSync(CUMULATIVE_CACHE_FILE)) return {};
-    return JSON.parse(fs.readFileSync(CUMULATIVE_CACHE_FILE, "utf-8")) as CumulativeCacheFile;
+    const parsed = JSON.parse(
+      fs.readFileSync(CUMULATIVE_CACHE_FILE, "utf-8"),
+    ) as Record<string, unknown>;
+    const valid: CumulativeCacheFile = {};
+    for (const [workspace, value] of Object.entries(parsed)) {
+      if (!isValidCumulativeStats(value)) continue;
+      const entry = value as Partial<CumulativeCacheEntry>;
+      const updatedAt = entry.updatedAt || entry.cachedAt;
+      if (typeof updatedAt !== "string") continue;
+      valid[canonicalWorkspacePath(workspace)] = {
+        totalRuns: entry.totalRuns!,
+        todayCount: entry.todayCount!,
+        todaySaved: entry.todaySaved!,
+        totalSaved: entry.totalSaved!,
+        updatedAt,
+      };
+    }
+    return valid;
   } catch {
     return {};
   }
@@ -58,24 +100,33 @@ function readCacheFile(): CumulativeCacheFile {
 
 function writeCacheEntry(workspacePath: string, stats: CumulativeStats): void {
   try {
+    const canonical = canonicalWorkspacePath(workspacePath);
+    const home = canonicalWorkspacePath(os.homedir());
+    const hasXitData =
+      fs.existsSync(path.join(canonical, ".xit", "history.jsonl")) ||
+      fs.existsSync(path.join(canonical, ".xit", "state"));
+    if (canonical === home || !hasXitData) return;
     const cache = readCacheFile();
-    cache[workspacePath] = { ...stats, cachedAt: new Date().toISOString() };
+    cache[canonical] = { ...stats, updatedAt: new Date().toISOString() };
     fs.mkdirSync(path.dirname(CUMULATIVE_CACHE_FILE), { recursive: true });
-    fs.writeFileSync(CUMULATIVE_CACHE_FILE, JSON.stringify(cache, null, 2), "utf-8");
+    const tempPath = `${CUMULATIVE_CACHE_FILE}.${process.pid}.${Date.now()}.tmp`;
+    fs.writeFileSync(tempPath, JSON.stringify(cache, null, 2), "utf-8");
+    fs.renameSync(tempPath, CUMULATIVE_CACHE_FILE);
   } catch {
     // ignore write failures — cache is best-effort
   }
 }
 
 function loadCacheEntry(workspacePath: string): CumulativeStats | undefined {
+  const canonical = canonicalWorkspacePath(workspacePath);
   // 1. fast path: memory
-  if (memCumulative && path.resolve(memCumulative.workspace) === path.resolve(workspacePath)) {
+  if (memCumulative && memCumulative.workspace === canonical) {
     return memCumulative.stats;
   }
   // 2. disk
   try {
     const cache = readCacheFile();
-    const entry = cache[workspacePath];
+    const entry = cache[canonical];
     if (!entry) return undefined;
     return {
       totalRuns: entry.totalRuns,
@@ -89,8 +140,9 @@ function loadCacheEntry(workspacePath: string): CumulativeStats | undefined {
 }
 
 function updateCache(workspacePath: string, stats: CumulativeStats): void {
-  memCumulative = { workspace: workspacePath, stats };
-  writeCacheEntry(workspacePath, stats);
+  const canonical = canonicalWorkspacePath(workspacePath);
+  memCumulative = { workspace: canonical, stats };
+  writeCacheEntry(canonical, stats);
 }
 
 function escapeHtml(text: string): string {
@@ -168,7 +220,7 @@ function savedTokensFromRun(run: LatestRun): number {
 // ──────────────────────────────────────────────────────────────────
 // CUMULATIVE AGGREGATE — reads all rows from history, no filtering
 // ──────────────────────────────────────────────────────────────────
-function computeCumulative(runs: LatestRun[]): CumulativeStats {
+export function computeCumulative(runs: LatestRun[]): CumulativeStats {
   const todayStart = new Date().setHours(0, 0, 0, 0);
   let todayCount = 0;
   let todaySaved = 0;
@@ -185,6 +237,13 @@ function computeCumulative(runs: LatestRun[]): CumulativeStats {
   }
 
   return { totalRuns: runs.length, todayCount, todaySaved, totalSaved };
+}
+
+export function selectCumulativeStats(
+  runs: LatestRun[],
+  cached: CumulativeStats | undefined,
+): CumulativeStats | undefined {
+  return runs.length > 0 ? computeCumulative(runs) : cached;
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -218,17 +277,16 @@ function buildDashboardHtml(
   _latestRun: LatestRun | undefined,   // kept for signature compat, not used for live result
   cspSource: string,
   stylesheetHref: string,
+  workspaceSnapshot: string,
   liveOverride?: LiveStatusView,
 ): string {
   // ──────────────────────────────────────────────────────────────────
   // SINGLE AUTHORITY: active XiT workspace
   // All reads use this path — never mix workspace roots.
   // ──────────────────────────────────────────────────────────────────
-  const activeWorkspace = resolveActiveXitWorkspace();
-
   const liveStatus = liveOverride ?? (status.state === "binary-not-found"
     ? { kind: "missing" as const, label: "未找到 XiT", reason: "binary not found", source: "extension status" }
-    : buildLiveStatusView());
+    : buildLiveStatusView({ workspacePath: workspaceSnapshot }));
 
   // ──────────────────────────────────────────────────────────────────
   // LIVE STATE FLAGS
@@ -241,10 +299,16 @@ function buildDashboardHtml(
   // LIVE RESULT METRICS — source: current-run.json only
   // Never reads from history for 发功效果.
   // ──────────────────────────────────────────────────────────────────
-  const currentRunState = readCurrentRunState();
-  const completedRun = isCompleted && currentRunState?.status === "completed"
-    ? currentRunState
-    : undefined;
+  const currentRunState = readCurrentRunState(workspaceSnapshot);
+  const completedAt = currentRunState?.completed_at || currentRunState?.finished_at;
+  const completedAtMs = completedAt ? Date.parse(completedAt) : Number.NaN;
+  const completedRun =
+    isCompleted &&
+    currentRunState?.status === "completed" &&
+    Number.isFinite(completedAtMs) &&
+    Date.now() - completedAtMs <= 120000
+      ? currentRunState
+      : undefined;
 
   let liveSavedDisplay = "—";
   let liveReductionDisplay = "—";
@@ -271,18 +335,18 @@ function buildDashboardHtml(
 
   // ──────────────────────────────────────────────────────────────────
   // CUMULATIVE AGGREGATE (功力累计)
-  // Reads history.jsonl via readAllWorkspaceRuns() which uses activeWorkspace.
-  // On success: update persistent cache keyed by activeWorkspace.
+  // Reads history.jsonl using the render's workspace snapshot.
+  // On success: update persistent cache keyed by that snapshot.
   // On failure: use cache for the same workspace (never cross-project).
   // ──────────────────────────────────────────────────────────────────
-  const allRuns = readAllWorkspaceRuns();
-  let cum: CumulativeStats | undefined;
+  const allRuns = readAllWorkspaceRuns(workspaceSnapshot);
+  const cached = allRuns.length > 0
+    ? undefined
+    : loadCacheEntry(workspaceSnapshot);
+  const cum = selectCumulativeStats(allRuns, cached);
 
-  if (allRuns.length > 0) {
-    cum = computeCumulative(allRuns);
-    updateCache(activeWorkspace, cum);
-  } else {
-    cum = loadCacheEntry(activeWorkspace);
+  if (allRuns.length > 0 && cum) {
+    updateCache(workspaceSnapshot, cum);
   }
 
   const todaySavedValue  = cum && cum.todaySaved  > 0 ? formatTokensCumulative(cum.todaySaved)  : "—";
@@ -366,6 +430,7 @@ export function showDashboard(
   context: vscode.ExtensionContext,
   status: XiTStatus,
   liveOverride?: LiveStatusView,
+  workspaceSnapshot = resolveActiveXitWorkspace(),
 ): void {
   const mediaRoot = vscode.Uri.joinPath(context.extensionUri, "media");
   if (panel) {
@@ -384,22 +449,26 @@ export function showDashboard(
     panel.onDidDispose(() => { panel = undefined; }, null, context.subscriptions);
   }
 
-  const latestRun = readLatestRun();
+  const latestRun = readLatestRun(workspaceSnapshot);
   const stylesheetHref = panel.webview
     .asWebviewUri(vscode.Uri.joinPath(mediaRoot, "dashboard.css"))
     .toString();
   panel.webview.html = buildDashboardHtml(
-    status, latestRun, panel.webview.cspSource, stylesheetHref, liveOverride,
+    status, latestRun, panel.webview.cspSource, stylesheetHref, workspaceSnapshot, liveOverride,
   );
 }
 
-export function updateDashboardIfOpen(status: XiTStatus, liveOverride?: LiveStatusView): void {
+export function updateDashboardIfOpen(
+  status: XiTStatus,
+  liveOverride?: LiveStatusView,
+  workspaceSnapshot = resolveActiveXitWorkspace(),
+): void {
   if (!panel) return;
-  const latestRun = readLatestRun();
+  const latestRun = readLatestRun(workspaceSnapshot);
   const stylesheetHref = panel.webview
     .asWebviewUri(vscode.Uri.joinPath(panel.webview.options.localResourceRoots![0], "dashboard.css"))
     .toString();
   panel.webview.html = buildDashboardHtml(
-    status, latestRun, panel.webview.cspSource, stylesheetHref, liveOverride,
+    status, latestRun, panel.webview.cspSource, stylesheetHref, workspaceSnapshot, liveOverride,
   );
 }

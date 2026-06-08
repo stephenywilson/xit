@@ -111,7 +111,7 @@ func CheckPatchable(pkgDir string) *PatchCheckResult {
 		Patchable:    false,
 		Installed:    false,
 		Reason:       "",
-		TargetVersion: "1.46",
+		TargetVersion: "1.47",
 	}
 
 	if path, err := exec.LookPath("kimi"); err == nil {
@@ -146,9 +146,11 @@ func CheckPatchable(pkgDir string) *PatchCheckResult {
 		return res
 	}
 
-	// Check for right_width calculation (where we insert the patch)
-	if !strings.Contains(contentStr, "_display_width(right_text)") {
-		res.Reason = "_display_width(right_text) not found"
+	// Check for patch anchors (new style or old style)
+	hasNewAnchor := strings.Contains(contentStr, `fragments.append(("", "\n"))`) && strings.Contains(contentStr, `left_toast = _current_toast(`)
+	hasOldAnchor := strings.Contains(contentStr, "_display_width(right_text)")
+	if !hasNewAnchor && !hasOldAnchor {
+		res.Reason = "required patch anchors not found"
 		return res
 	}
 
@@ -190,8 +192,8 @@ func InstallPatch(promptPath, xitHome string, force bool) error {
 	if !res.Patchable && !force {
 		return fmt.Errorf("not patchable: %s", res.Reason)
 	}
-	if res.Installed {
-		return fmt.Errorf("XiT patch already installed; run uninstall first")
+	if res.Installed && !force {
+		return fmt.Errorf("XiT patch already installed; run uninstall first or use --force")
 	}
 
 	content, err := os.ReadFile(promptPath)
@@ -199,6 +201,11 @@ func InstallPatch(promptPath, xitHome string, force bool) error {
 		return err
 	}
 	contentStr := string(content)
+
+	// If already patched and force is true, strip old patch first
+	if res.Installed && force {
+		contentStr = removeExistingPatch(contentStr)
+	}
 
 	// Preflight validation on temp copy
 	if err := ValidatePatch(promptPath, xitHome); err != nil {
@@ -316,9 +323,122 @@ func DryRunPatch(promptPath, xitHome string) (string, error) {
 	return diffPreview(string(content), patched), nil
 }
 
-func applyPatch(content, xitHome string) (string, error) {
-	// Find "right_width = _display_width(right_text)"
+func removeExistingPatch(content string) string {
 	lines := strings.Split(content, "\n")
+	var newLines []string
+	skipUntil := ""
+	for _, line := range lines {
+		if skipUntil != "" {
+			if strings.Contains(line, skipUntil) {
+				skipUntil = ""
+			}
+			continue
+		}
+		if strings.Contains(line, PatchBeginMarker) {
+			skipUntil = PatchEndMarker
+			continue
+		}
+		if strings.Contains(line, HelperBeginMarker) {
+			skipUntil = HelperEndMarker
+			continue
+		}
+		newLines = append(newLines, line)
+	}
+	// Remove trailing empty lines
+	for len(newLines) > 0 && strings.TrimSpace(newLines[len(newLines)-1]) == "" {
+		newLines = newLines[:len(newLines)-1]
+	}
+	return strings.Join(newLines, "\n")
+}
+
+func applyPatch(content, xitHome string) (string, error) {
+	// Strip any old patch first
+	content = removeExistingPatch(content)
+	lines := strings.Split(content, "\n")
+
+	// Try new-style patch first (Kimi 1.47+ with line-2 newline + left_toast)
+	newlineIdx := -1
+	for i, line := range lines {
+		if strings.Contains(line, `fragments.append(("", "\n"))`) {
+			newlineIdx = i
+		}
+	}
+	rightTextIdx := -1
+	if newlineIdx >= 0 {
+		for i := newlineIdx + 1; i < len(lines); i++ {
+			if strings.Contains(lines[i], "right_text = self._render_right_span") {
+				rightTextIdx = i
+				break
+			}
+		}
+	}
+	leftToastIdx := -1
+	if rightTextIdx >= 0 {
+		for i := rightTextIdx + 1; i < len(lines); i++ {
+			if strings.Contains(lines[i], `left_toast = _current_toast(`) {
+				leftToastIdx = i
+				break
+			}
+		}
+	}
+	lwAssignIdx := -1
+	lwElse1Idx := -1
+	lwElse2Idx := -1
+	if leftToastIdx >= 0 {
+		for i := leftToastIdx + 1; i < len(lines) && i < leftToastIdx+25; i++ {
+			if strings.TrimSpace(lines[i]) == "left_width = _display_width(left_text)" {
+				lwAssignIdx = i
+			}
+			if strings.TrimSpace(lines[i]) == "left_width = 0" {
+				if lwElse1Idx < 0 {
+					lwElse1Idx = i
+				} else {
+					lwElse2Idx = i
+					break
+				}
+			}
+		}
+	}
+
+	if newlineIdx >= 0 && rightTextIdx >= 0 && leftToastIdx >= 0 && lwAssignIdx >= 0 && lwElse1Idx >= 0 && lwElse2Idx >= 0 {
+		indent := ""
+		for _, ch := range lines[rightTextIdx] {
+			if ch == ' ' || ch == '\t' {
+				indent += string(ch)
+			} else {
+				break
+			}
+		}
+
+		xitBlock := indent + PatchBeginMarker + "\n"
+		xitBlock += indent + "_xit_status_text = _xit_bottom_toolbar_status_text()\n"
+		xitBlock += indent + "_xit_status_width = _display_width(_xit_status_text) if _xit_status_text else 0\n"
+		xitBlock += indent + "left_width = 0\n"
+		xitBlock += indent + "if _xit_status_text:\n"
+		xitBlock += indent + "    fragments.append((\"fg:#D4A017 bold\", _xit_status_text))\n"
+		xitBlock += indent + "    fragments.append((\"\", \"  \"))\n"
+		xitBlock += indent + "    left_width = _xit_status_width + 2\n"
+		xitBlock += indent + PatchEndMarker + "\n"
+
+		var newLines []string
+		newLines = append(newLines, lines[:leftToastIdx]...)
+		newLines = append(newLines, xitBlock)
+		newLines = append(newLines, lines[leftToastIdx:lwAssignIdx]...)
+		newLines = append(newLines, strings.Replace(lines[lwAssignIdx], "left_width = _display_width(left_text)", "left_width += _display_width(left_text)", 1))
+		newLines = append(newLines, lines[lwAssignIdx+1:lwElse1Idx]...)
+		newLines = append(newLines, strings.Replace(lines[lwElse1Idx], "left_width = 0", "left_width += 0", 1))
+		newLines = append(newLines, lines[lwElse1Idx+1:lwElse2Idx]...)
+		newLines = append(newLines, strings.Replace(lines[lwElse2Idx], "left_width = 0", "left_width += 0", 1))
+		newLines = append(newLines, lines[lwElse2Idx+1:]...)
+
+		helper := helperFunction(xitHome)
+		newLines = append(newLines, "")
+		newLines = append(newLines, helper)
+
+		return strings.Join(newLines, "\n"), nil
+	}
+
+	// Fallback: old-style patch for simpler prompts
 	rwIdx := -1
 	for i, line := range lines {
 		if strings.Contains(line, "_display_width(right_text)") {
@@ -327,112 +447,56 @@ func applyPatch(content, xitHome string) (string, error) {
 		}
 	}
 	if rwIdx < 0 {
-		return "", fmt.Errorf("could not find '_display_width(right_text)'")
+		return "", fmt.Errorf("could not find patch anchors")
 	}
 
-	// Find spacer line: fragments.append(("", " " * max(0, columns - left_width - right_width)))
-	spacerIdx := -1
+	firstFragIdx := -1
 	for i := rwIdx + 1; i < len(lines); i++ {
-		if strings.Contains(lines[i], `fragments.append(("", " " * max(0, columns - left_width - right_width))`) {
-			spacerIdx = i
+		if strings.Contains(lines[i], "fragments.append") {
+			firstFragIdx = i
 			break
 		}
 	}
-
-	// Check if left_width is initialized between right_width and spacer
-	hasLeftWidthInit := false
-	if spacerIdx > 0 {
-		for i := rwIdx + 1; i < spacerIdx; i++ {
-			if strings.Contains(lines[i], "left_width") && strings.Contains(lines[i], "=") {
-				hasLeftWidthInit = true
-				break
-			}
-		}
+	if firstFragIdx < 0 {
+		return "", fmt.Errorf("could not find insertion point after right_width")
 	}
 
-	// Determine insertion point and XiT block
-	var insertIdx int
-	var xitBlock string
-
-	if spacerIdx > rwIdx && hasLeftWidthInit {
-		// Real Kimi prompt: insert XiT before spacer, adjust left_width
-		fragIndent := ""
-		for _, ch := range lines[spacerIdx] {
-			if ch == ' ' || ch == '\t' {
-				fragIndent += string(ch)
-			} else {
-				break
-			}
-		}
-		xitBlock = fragIndent + PatchBeginMarker + "\n"
-		xitBlock += fragIndent + "if _xit_status_text:\n"
-		xitBlock += fragIndent + "    fragments.append((\"fg:#D4A017 bold\", _xit_status_text))\n"
-		xitBlock += fragIndent + "    fragments.append((\"\", \"  \"))\n"
-		xitBlock += fragIndent + "    left_width += _xit_status_width + 2\n"
-		xitBlock += fragIndent + PatchEndMarker
-		insertIdx = spacerIdx
-	} else {
-		// Fallback: insert before first fragments.append after right_width,
-		// or before return if no fragments.append exists.
-		firstFragIdx := -1
-		for i := rwIdx + 1; i < len(lines); i++ {
-			if strings.Contains(lines[i], "fragments.append") {
-				firstFragIdx = i
-				break
-			}
-		}
-		if firstFragIdx < 0 {
-			// No fragments.append after right_width; find return statement
-			for i := rwIdx + 1; i < len(lines); i++ {
-				if strings.Contains(lines[i], "return") {
-					firstFragIdx = i
-					break
-				}
-			}
-		}
-		if firstFragIdx < 0 {
-			return "", fmt.Errorf("could not find insertion point after right_width")
-		}
-		fragIndent := ""
-		for _, ch := range lines[firstFragIdx] {
-			if ch == ' ' || ch == '\t' {
-				fragIndent += string(ch)
-			} else {
-				break
-			}
-		}
-		xitBlock = fragIndent + PatchBeginMarker + "\n"
-		xitBlock += fragIndent + "if _xit_status_text:\n"
-		xitBlock += fragIndent + "    fragments.append((\"fg:#D4A017 bold\", _xit_status_text))\n"
-		xitBlock += fragIndent + PatchEndMarker
-		insertIdx = firstFragIdx
-	}
-
-	// Compute indentation of the target line
-	targetLine := lines[rwIdx]
-	indent := ""
-	for _, ch := range targetLine {
+	fragIndent := ""
+	for _, ch := range lines[firstFragIdx] {
 		if ch == ' ' || ch == '\t' {
-			indent += string(ch)
+			fragIndent += string(ch)
 		} else {
 			break
 		}
 	}
 
-	// Build patch block before right_width (compute XiT status)
-	patchBlock := indent + PatchBeginMarker + "\n"
-	patchBlock += indent + "_xit_status_text = _xit_bottom_toolbar_status_text()\n"
-	patchBlock += indent + "_xit_status_width = _display_width(_xit_status_text) if _xit_status_text else 0\n"
-	patchBlock += indent + PatchEndMarker + "\n"
+	xitBlock := fragIndent + PatchBeginMarker + "\n"
+	xitBlock += fragIndent + "if _xit_status_text:\n"
+	xitBlock += fragIndent + "    fragments.append((\"fg:#D4A017 bold\", _xit_status_text))\n"
+	xitBlock += fragIndent + PatchEndMarker + "\n"
 
-	// Assemble
-	newLines := append([]string{}, lines[:rwIdx]...)
+	targetLine := lines[rwIdx]
+	targetIndent := ""
+	for _, ch := range targetLine {
+		if ch == ' ' || ch == '\t' {
+			targetIndent += string(ch)
+		} else {
+			break
+		}
+	}
+
+	patchBlock := targetIndent + PatchBeginMarker + "\n"
+	patchBlock += targetIndent + "_xit_status_text = _xit_bottom_toolbar_status_text()\n"
+	patchBlock += targetIndent + "_xit_status_width = _display_width(_xit_status_text) if _xit_status_text else 0\n"
+	patchBlock += targetIndent + PatchEndMarker + "\n"
+
+	var newLines []string
+	newLines = append(newLines, lines[:rwIdx]...)
 	newLines = append(newLines, patchBlock)
-	newLines = append(newLines, lines[rwIdx:insertIdx]...)
+	newLines = append(newLines, lines[rwIdx:firstFragIdx]...)
 	newLines = append(newLines, xitBlock)
-	newLines = append(newLines, lines[insertIdx:]...)
+	newLines = append(newLines, lines[firstFragIdx:]...)
 
-	// Append helper function at end of file
 	helper := helperFunction(xitHome)
 	newLines = append(newLines, "")
 	newLines = append(newLines, helper)
@@ -500,14 +564,14 @@ def _xit_bottom_toolbar_status_text():
                 state = None
 
             if state and status == "running" and started_at and (now - started_at) < 600:
-                return "吸T神功 · 正在吸T中"
+                return "吸T神功 · Kimi · 正在吸T中"
             if state and status == "completed" and finished_at and (now - finished_at) < 30:
                 saved = state.get("saved_bytes", 0)
                 if saved:
-                    return "吸T完成 · 本次" + _xit_format_saved_tokens(saved)
-                return "吸T完成 · 已压缩输出"
+                    return "吸T完成 · Kimi · 本次" + _xit_format_saved_tokens(saved)
+                return "吸T完成 · Kimi · 已压缩输出"
             if state and status == "failed" and finished_at and (now - finished_at) < 30:
-                return "吸T完成 · 已压缩输出"
+                return "吸T完成 · Kimi · 已压缩输出"
 
         # 2. Check turn state (project-first, then user home)
         turn_state = None
@@ -550,10 +614,10 @@ def _xit_bottom_toolbar_status_text():
 
             if turn_state:
                 if turn_status == "session_started":
-                    return "吸T神功 · 准备就绪"
+                    return "吸T神功 · Kimi · 准备就绪"
 
                 if turn_status in ("thinking", "active"):
-                    return "吸T神功 · 守护你的T"
+                    return "吸T神功 · Kimi · 守护你的T"
 
                 if turn_status == "turn_completed" and turn_finished_at and (now - turn_finished_at) < 60:
                     # Compute turn-scoped stats
@@ -639,9 +703,9 @@ def _xit_bottom_toolbar_status_text():
         # Fall through to ready.
 
         # 6. ready
-        return "吸T神功 · 准备就绪"
+        return "吸T神功 · Kimi · 准备就绪"
     except Exception:
-        return "吸T神功 · 准备就绪"
+        return "吸T神功 · Kimi · 准备就绪"
 ` + HelperEndMarker
 }
 
@@ -786,11 +850,11 @@ func ComputeToolbarPreview(xitHome string) *ToolbarPreview {
 		RotationEnabled:       false,
 		HistoryInToolbar:      false,
 		RawLogInIdle:          false,
-		ReadyText:             "吸T神功 · 准备就绪",
-		GuardingText:          "吸T神功 · 守护你的T",
-		AbsorbingText:         "吸T神功 · 正在吸T中",
-		AbsorbingProgressText: "吸T神功 · 已接管12k Token",
-		CompletedText:         "吸T完成 · 本次省9k Token",
+		ReadyText:             "吸T神功 · Kimi · 准备就绪",
+		GuardingText:          "吸T神功 · Kimi · 守护你的T",
+		AbsorbingText:         "吸T神功 · Kimi · 正在吸T中",
+		AbsorbingProgressText: "吸T神功 · Kimi · 已接管12k Token",
+		CompletedText:         "吸T完成 · Kimi · 本次省9k Token",
 		TurnResultWithAuto:    []string{"本次吸T1次 · 省9k Token", "吸T完成 · raw_log 已留证", "吸T神功 · 等待下轮发功"},
 		Unit:                  "token",
 		TokenMethod:           "saved_bytes / 4",
@@ -807,7 +871,7 @@ func ComputeToolbarPreview(xitHome string) *ToolbarPreview {
 
 	if state.Status == "running" && state.StartedAt != "" {
 		if t, err := time.Parse(time.RFC3339, state.StartedAt); err == nil && now.Sub(t) < 10*time.Minute {
-			base.Preview = "吸T神功 · 正在吸T中"
+			base.Preview = "吸T神功 · Kimi · 正在吸T中"
 			return &base
 		}
 	}
@@ -815,16 +879,16 @@ func ComputeToolbarPreview(xitHome string) *ToolbarPreview {
 		if t, err := time.Parse(time.RFC3339, state.FinishedAt); err == nil && now.Sub(t) < 30*time.Second {
 			tokenStr := kimihook.FormatSavedTokens(state.SavedBytes)
 			if tokenStr != "" {
-				base.Preview = "吸T完成 · 本次" + tokenStr
+				base.Preview = "吸T完成 · Kimi · 本次" + tokenStr
 			} else {
-				base.Preview = "吸T完成 · 已压缩输出"
+				base.Preview = "吸T完成 · Kimi · 已压缩输出"
 			}
 			return &base
 		}
 	}
 	if state.Status == "failed" && state.FinishedAt != "" {
 		if t, err := time.Parse(time.RFC3339, state.FinishedAt); err == nil && now.Sub(t) < 30*time.Second {
-			base.Preview = "吸T完成 · 已压缩输出"
+			base.Preview = "吸T完成 · Kimi · 已压缩输出"
 			return &base
 		}
 	}
@@ -852,12 +916,12 @@ func ComputeToolbarPreview(xitHome string) *ToolbarPreview {
 	turnAutoCount, turnSaved := computeTurnStatsForPreview(xitHome, turn)
 
 	if turn.Status == "session_started" {
-		base.Preview = "吸T神功 · 准备就绪"
+		base.Preview = "吸T神功 · Kimi · 准备就绪"
 		return &base
 	}
 
 	if turn.Status == "thinking" || turn.Status == "active" {
-		base.Preview = "吸T神功 · 守护你的T"
+		base.Preview = "吸T神功 · Kimi · 守护你的T"
 		return &base
 	}
 
@@ -881,7 +945,7 @@ func ComputeToolbarPreview(xitHome string) *ToolbarPreview {
 	_ = turnSaved
 
 	// 6. ready
-	base.Preview = "吸T神功 · 准备就绪"
+	base.Preview = "吸T神功 · Kimi · 准备就绪"
 	return &base
 }
 

@@ -93,8 +93,25 @@ func fakePromptPy() string {
 	return `class ShellPrompt:
     def _render_bottom_toolbar(self):
         fragments = []
+        fragments.append(("", "\n"))
         right_text = self._render_right_span(status)
         right_width = _display_width(right_text)
+
+        left_toast = _current_toast("left")
+        if left_toast is not None:
+            max_left = max(0, columns - right_width - 2)
+            if max_left > 0:
+                left_text = left_toast.message
+                if _display_width(left_text) > max_left:
+                    left_text = _truncate_right(left_text, max_left)
+                left_width = _display_width(left_text)
+                fragments.append(("", left_text))
+            else:
+                left_width = 0
+        else:
+            left_width = 0
+
+        fragments.append(("", " " * max(0, columns - left_width - right_width)))
         fragments.append(("", right_text))
         return FormattedText(fragments)
 `
@@ -187,9 +204,8 @@ func TestDryRunPatch(t *testing.T) {
 	if strings.Contains(diff, "_display_width(right_text) + (2 + _xit_status_width") {
 		t.Error("diff should not modify right_width to include XiT width")
 	}
-	if strings.Contains(diff, `fragments.append(("", "  "))`) {
-		t.Error("diff should not contain spacer fragment append for right_text concatenation")
-	}
+	// Note: new patch uses fragments.append(("", "  ")) as separator between XiT and left_toast,
+	// which is different from the old right_text concatenation pattern.
 	// Verify file unchanged
 	content, _ := os.ReadFile(promptPath)
 	if strings.Contains(string(content), PatchBeginMarker) {
@@ -264,18 +280,18 @@ func TestHelperFunctionFailOpen(t *testing.T) {
 	if !strings.Contains(h, "except Exception") {
 		t.Error("expected fail-open except block in helper")
 	}
-	if !strings.Contains(h, "吸T神功 · 准备就绪") {
-		t.Error("expected fallback '吸T神功 · 准备就绪' in helper")
+	if !strings.Contains(h, "吸T神功 · Kimi · 准备就绪") {
+		t.Error("expected fallback '吸T神功 · Kimi · 准备就绪' in helper")
 	}
 }
 
 func TestHelperContainsChinese(t *testing.T) {
 	h := helperFunction("/tmp/xit")
-	if !strings.Contains(h, "吸T神功 · 准备就绪") {
-		t.Error("expected '吸T神功 · 准备就绪' in helper")
+	if !strings.Contains(h, "吸T神功 · Kimi · 准备就绪") {
+		t.Error("expected '吸T神功 · Kimi · 准备就绪' in helper")
 	}
-	if !strings.Contains(h, "吸T神功 · 正在吸T中") {
-		t.Error("expected running state '吸T神功 · 正在吸T中' in helper")
+	if !strings.Contains(h, "吸T神功 · Kimi · 正在吸T中") {
+		t.Error("expected running state '吸T神功 · Kimi · 正在吸T中' in helper")
 	}
 	if !strings.Contains(h, "省") {
 		t.Error("expected '省' saved prefix in helper")
@@ -304,7 +320,7 @@ func TestHelperNoRotation(t *testing.T) {
 	// ready/guarding/absorbing state-machine returns must appear BEFORE any candidates_text block.
 	// The fallback "return ready" at the end of the function (after rotation block) is expected.
 	for i, line := range lines {
-		if strings.Contains(line, "return \"吸T神功 · 守护你的T\"") || strings.Contains(line, "return \"吸T神功 · 正在吸T中\"") {
+		if strings.Contains(line, "return \"吸T神功 · Kimi · 守护你的T\"") || strings.Contains(line, "return \"吸T神功 · Kimi · 正在吸T中\"") {
 			if i > firstCandidatesIdx {
 				t.Errorf("line %d: guarding/absorbing return should appear before rotation block (line %d)", i, firstCandidatesIdx)
 			}
@@ -312,7 +328,7 @@ func TestHelperNoRotation(t *testing.T) {
 		// session_started ready return must appear before rotation
 		if strings.Contains(line, `turn_status == "session_started"`) {
 			for j := i + 1; j < len(lines) && j <= i+3; j++ {
-				if strings.Contains(lines[j], "return \"吸T神功 · 准备就绪\"") {
+				if strings.Contains(lines[j], "return \"吸T神功 · Kimi · 准备就绪\"") {
 					if j > firstCandidatesIdx {
 						t.Errorf("line %d: session_started ready return should appear before rotation block", j)
 					}
@@ -377,14 +393,14 @@ func TestComputeToolbarPreview(t *testing.T) {
 	if preview.RawLogInIdle {
 		t.Error("expected raw_log_in_idle false")
 	}
-	if preview.ReadyText != "吸T神功 · 准备就绪" {
-		t.Errorf("expected ready_text 吸T神功 · 准备就绪, got %s", preview.ReadyText)
+	if preview.ReadyText != "吸T神功 · Kimi · 准备就绪" {
+		t.Errorf("expected ready_text 吸T神功 · Kimi · 准备就绪, got %s", preview.ReadyText)
 	}
-	if preview.GuardingText != "吸T神功 · 守护你的T" {
-		t.Errorf("expected guarding_text 吸T神功 · 守护你的T, got %s", preview.GuardingText)
+	if preview.GuardingText != "吸T神功 · Kimi · 守护你的T" {
+		t.Errorf("expected guarding_text 吸T神功 · Kimi · 守护你的T, got %s", preview.GuardingText)
 	}
-	if preview.AbsorbingText != "吸T神功 · 正在吸T中" {
-		t.Errorf("expected absorbing_text 吸T神功 · 正在吸T中, got %s", preview.AbsorbingText)
+	if preview.AbsorbingText != "吸T神功 · Kimi · 正在吸T中" {
+		t.Errorf("expected absorbing_text 吸T神功 · Kimi · 正在吸T中, got %s", preview.AbsorbingText)
 	}
 	if preview.RotationScope != "completed_only" {
 		t.Errorf("expected rotation_scope completed_only, got %s", preview.RotationScope)
@@ -402,8 +418,8 @@ func TestComputeToolbarPreview(t *testing.T) {
 		t.Error("expected ON_OFF false")
 	}
 	// Without history, default should be ready state
-	if preview.Preview != "吸T神功 · 准备就绪" {
-		t.Errorf("expected default preview '吸T神功 · 准备就绪', got %s", preview.Preview)
+	if preview.Preview != "吸T神功 · Kimi · 准备就绪" {
+		t.Errorf("expected default preview '吸T神功 · Kimi · 准备就绪', got %s", preview.Preview)
 	}
 	// ready state must not contain ON
 	if strings.Contains(preview.Preview, "ON") {
@@ -615,13 +631,18 @@ func TestPatchSecondLineLeftPlacement(t *testing.T) {
 	prompt := `class ShellPrompt:
     def _render_bottom_toolbar(self):
         fragments = []
+        fragments.append(("", "\n"))
         right_text = self._render_right_span(status)
         right_width = _display_width(right_text)
         left_toast = _current_toast("left")
         if left_toast is not None:
-            left_text = left_toast.message
-            left_width = _display_width(left_text)
-            fragments.append(("", left_text))
+            max_left = max(0, columns - right_width - 2)
+            if max_left > 0:
+                left_text = left_toast.message
+                left_width = _display_width(left_text)
+                fragments.append(("", left_text))
+            else:
+                left_width = 0
         else:
             left_width = 0
         fragments.append(("", " " * max(0, columns - left_width - right_width)))
@@ -636,8 +657,8 @@ func TestPatchSecondLineLeftPlacement(t *testing.T) {
 	if !strings.Contains(patched, `fragments.append(("fg:#D4A017 bold", _xit_status_text))`) {
 		t.Error("expected XiT styled fragment in patched output")
 	}
-	// Should adjust left_width to account for XiT width
-	if !strings.Contains(patched, "left_width += _xit_status_width + 2") {
+	// Should set left_width to account for XiT width (initialized to 0 before block)
+	if !strings.Contains(patched, "left_width = _xit_status_width + 2") {
 		t.Error("expected left_width adjustment for XiT spacer")
 	}
 	// Should add gap fragment after XiT
@@ -755,7 +776,7 @@ func TestHelperSessionStartedShowsReady(t *testing.T) {
 		if strings.Contains(line, `turn_status == "session_started"`) {
 			// Check next few lines for 准备就绪 return
 			for j := i + 1; j < len(lines) && j <= i+3; j++ {
-				if strings.Contains(lines[j], "吸T神功 · 准备就绪") {
+				if strings.Contains(lines[j], "吸T神功 · Kimi · 准备就绪") {
 					foundSessionStartedReady = true
 					break
 				}
@@ -763,7 +784,7 @@ func TestHelperSessionStartedShowsReady(t *testing.T) {
 		}
 	}
 	if !foundSessionStartedReady {
-		t.Error("expected session_started to return 吸T神功 · 准备就绪 in helper")
+		t.Error("expected session_started to return 吸T神功 · Kimi · 准备就绪 in helper")
 	}
 }
 
@@ -790,8 +811,8 @@ func TestComputeToolbarPreviewSessionStartedShowsReady(t *testing.T) {
 	os.WriteFile(filepath.Join(stateDir, "turn.json"), []byte(`{"status":"session_started","event":"SessionStart","started_at":"2026-05-30T00:00:00Z"}`), 0644)
 
 	preview := ComputeToolbarPreview(tmp)
-	if preview.Preview != "吸T神功 · 准备就绪" {
-		t.Errorf("expected preview 吸T神功 · 准备就绪 for session_started, got %s", preview.Preview)
+	if preview.Preview != "吸T神功 · Kimi · 准备就绪" {
+		t.Errorf("expected preview 吸T神功 · Kimi · 准备就绪 for session_started, got %s", preview.Preview)
 	}
 }
 
@@ -802,8 +823,8 @@ func TestComputeToolbarPreviewUserPromptSubmitShowsGuarding(t *testing.T) {
 	os.WriteFile(filepath.Join(stateDir, "turn.json"), []byte(`{"status":"thinking","event":"UserPromptSubmit","started_at":"2026-05-30T00:00:00Z"}`), 0644)
 
 	preview := ComputeToolbarPreview(tmp)
-	if preview.Preview != "吸T神功 · 守护你的T" {
-		t.Errorf("expected preview 吸T神功 · 守护你的T for thinking, got %s", preview.Preview)
+	if preview.Preview != "吸T神功 · Kimi · 守护你的T" {
+		t.Errorf("expected preview 吸T神功 · Kimi · 守护你的T for thinking, got %s", preview.Preview)
 	}
 }
 
@@ -814,7 +835,7 @@ func TestComputeToolbarPreviewActiveShowsGuarding(t *testing.T) {
 	os.WriteFile(filepath.Join(stateDir, "turn.json"), []byte(`{"status":"active","event":"","started_at":"2026-05-30T00:00:00Z"}`), 0644)
 
 	preview := ComputeToolbarPreview(tmp)
-	if preview.Preview != "吸T神功 · 守护你的T" {
+	if preview.Preview != "吸T神功 · Kimi · 守护你的T" {
 		t.Errorf("expected preview 吸T神功 · 守护你的T for active, got %s", preview.Preview)
 	}
 }
@@ -841,8 +862,8 @@ func TestComputeToolbarPreviewRotationInterval(t *testing.T) {
 
 func TestComputeToolbarPreviewCompletedText(t *testing.T) {
 	preview := ComputeToolbarPreview("/nonexistent")
-	if preview.CompletedText != "吸T完成 · 本次省9k Token" {
-		t.Errorf("expected completed_text 吸T完成 · 本次省9k Token, got %s", preview.CompletedText)
+	if preview.CompletedText != "吸T完成 · Kimi · 本次省9k Token" {
+		t.Errorf("expected completed_text 吸T完成 · Kimi · 本次省9k Token, got %s", preview.CompletedText)
 	}
 }
 
@@ -856,8 +877,8 @@ func TestComputeToolbarPreviewAutoCompletedShowsTokens(t *testing.T) {
 	os.WriteFile(filepath.Join(stateDir, "current.json"), []byte(state), 0644)
 
 	preview := ComputeToolbarPreview(tmp)
-	if preview.Preview != "吸T完成 · 本次省9k Token" {
-		t.Errorf("expected preview 吸T完成 · 本次省9k Token, got %s", preview.Preview)
+	if preview.Preview != "吸T完成 · Kimi · 本次省9k Token" {
+		t.Errorf("expected preview 吸T完成 · Kimi · 本次省9k Token, got %s", preview.Preview)
 	}
 }
 

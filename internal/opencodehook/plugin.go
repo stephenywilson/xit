@@ -67,6 +67,12 @@ function shouldCompress(cmd) {
   }
 }
 
+function wrapWithBanner(xitAutoCmd) {
+  return "(printf '%s\\n' '吸T神功 · OpenCode · 正在吸T中' >&2; " +
+    xitAutoCmd +
+    "; __xit_exit=$?; printf '%s\\n' '吸T完成 · OpenCode · 本次已压缩' >&2; exit $__xit_exit)";
+}
+
 function buildFinalCommand(cmd) {
   const c = cmd.trim();
 
@@ -86,14 +92,14 @@ function buildFinalCommand(cmd) {
     if (suffix.startsWith("command ")) {
       suffix = suffix.slice(8).trim();
     }
-    return prefix + " xit auto " + suffix;
+    return prefix + " " + wrapWithBanner("xit auto " + suffix);
   }
 
   if (c.startsWith("command ")) {
-    return "xit auto " + c.slice(8).trim();
+    return wrapWithBanner("xit auto " + c.slice(8).trim());
   }
 
-  return "xit auto " + c;
+  return wrapWithBanner("xit auto " + c);
 }
 
 function logEvent(home, record) {

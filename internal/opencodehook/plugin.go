@@ -67,18 +67,16 @@ function shouldCompress(cmd) {
   }
 }
 
-function wrapWithBanner(xitAutoCmd) {
-  return "(printf '%s\\n' '吸T神功 · OpenCode · 正在吸T中' >&2; " +
-    xitAutoCmd +
-    "; __xit_exit=$?; printf '%s\\n' '吸T完成 · OpenCode · 本次已压缩' >&2; exit $__xit_exit)";
-}
-
-function buildFinalCommand(cmd) {
+// buildFinalCommand rewrites cmd to run via xit auto.
+// envPrefix is prepended immediately before "xit auto" so that callers can
+// inject per-invocation env vars (e.g. XIT_ADAPTER=opencode).
+function buildFinalCommand(cmd, envPrefix) {
+  const xitCmd = (envPrefix || "") + "xit auto ";
   const c = cmd.trim();
 
   const shellMatch = c.match(/^(bash|sh)((?:\s+-[a-z]+)*)\s+["'](.+)["']$/i);
   if (shellMatch) {
-    const inner = buildFinalCommand(shellMatch[3]);
+    const inner = buildFinalCommand(shellMatch[3], envPrefix);
     return shellMatch[1] + shellMatch[2] + ' "' + inner + '"';
   }
 
@@ -92,14 +90,14 @@ function buildFinalCommand(cmd) {
     if (suffix.startsWith("command ")) {
       suffix = suffix.slice(8).trim();
     }
-    return prefix + " " + wrapWithBanner("xit auto " + suffix);
+    return prefix + " " + xitCmd + suffix;
   }
 
   if (c.startsWith("command ")) {
-    return wrapWithBanner("xit auto " + c.slice(8).trim());
+    return xitCmd + c.slice(8).trim();
   }
 
-  return wrapWithBanner("xit auto " + c);
+  return xitCmd + c;
 }
 
 function logEvent(home, record) {
@@ -177,13 +175,23 @@ export const XiTPlugin = async ({ directory, worktree }) => {
         alreadyWrapped,
       });
 
-      if (alreadyWrapped) {
+      const hasEnvPrefix = cmd.includes("XIT_ADAPTER=opencode");
+
+      if (alreadyWrapped && !hasEnvPrefix) {
+        // AI wrote "xit auto ..." itself — inject adapter env without double-wrapping
+        action = "reroute";
+        reason = "already_xit_auto_inject_env";
+        finalCmd = "XIT_ADAPTER=opencode " + cmd.trim();
+        if (output.args && typeof output.args === "object") {
+          output.args.command = finalCmd;
+        }
+      } else if (alreadyWrapped && hasEnvPrefix) {
         action = "observe";
-        reason = "already_xit_auto";
+        reason = "already_xit_auto_with_env";
       } else if (compressDecision) {
         action = "reroute";
         reason = "should_compress";
-        finalCmd = buildFinalCommand(cmd);
+        finalCmd = buildFinalCommand(cmd, "XIT_ADAPTER=opencode ");
         if (output.args && typeof output.args === "object") {
           output.args.command = finalCmd;
         }

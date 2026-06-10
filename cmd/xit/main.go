@@ -1078,6 +1078,20 @@ func writeAutoStateFiles(home string, state map[string]interface{}) {
 	}
 }
 
+// buildOpenCodeSummary returns the four-line Chinese brand output shown
+// inside OpenCode's tool output panel when xit auto runs via the OpenCode
+// hook (XIT_ADAPTER=opencode). It replaces the generic English summary.
+// Note: per-turn count is intentionally omitted — OpenCode hook payload has
+// no turn/message ID, so cross-turn counting would be misleading.
+func buildOpenCodeSummary(savedBytes int) string {
+	var b strings.Builder
+	b.WriteString("吸T神功 · 守护你的T\n")
+	b.WriteString("吸T神功 · 本次已发功\n")
+	b.WriteString(fmt.Sprintf("本次省 %s Token\n", formatTokenCount(savedBytes/4)))
+	b.WriteString("吸T神功 · 等待下轮发功\n")
+	return b.String()
+}
+
 func buildAutoRenderedSummary(summary *output.Summary, rawBytes int, summaryBytes int, savedBytes int) string {
 	var b strings.Builder
 	b.WriteString("吸T完成\n\n")
@@ -1120,6 +1134,12 @@ func cmdAuto(args []string) error {
 	}
 	tool := args[0]
 	toolArgs := args[1:]
+
+	// Capture and clear OpenCode env vars before the child process runs so
+	// they don't leak into sub-commands. xcAdapter is used for rendering only.
+	xcAdapter := os.Getenv("XIT_ADAPTER")
+	os.Unsetenv("XIT_ADAPTER")
+	os.Unsetenv("XIT_OPENCODE_REROUTE_COUNT")
 
 	// State file setup (fail-open).
 	home := xitHome()
@@ -1285,8 +1305,13 @@ func cmdAuto(args []string) error {
 		savedBytes = 0
 	}
 
-	// Render auto summary with product wording but stable fields.
-	fmt.Print(rendered)
+	// Render summary: OpenCode adapter shows minimal Chinese brand output;
+	// other adapters use the full auto-rendered summary.
+	if xcAdapter == "opencode" {
+		fmt.Print(buildOpenCodeSummary(savedBytes))
+	} else {
+		fmt.Print(rendered)
+	}
 
 	// Write history.
 	_ = disp.WriteHistoryWithSummaryBytes(home, actualArgs, res, summary, summaryBytes)

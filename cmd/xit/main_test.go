@@ -38,6 +38,15 @@ func stripEnv(env []string, key string) []string {
 	return out
 }
 
+// noXitAdapterEnv returns os.Environ() with XIT_ADAPTER and XIT_OPENCODE_REROUTE_COUNT
+// stripped so that tests for the default (non-OpenCode) output path are not affected
+// by an outer shell that happens to have XIT_ADAPTER=opencode set.
+func noXitAdapterEnv() []string {
+	env := stripEnv(os.Environ(), "XIT_ADAPTER")
+	env = stripEnv(env, "XIT_OPENCODE_REROUTE_COUNT")
+	return env
+}
+
 func TestExitCodePreservation(t *testing.T) {
 	bin := buildXit(t)
 
@@ -743,7 +752,7 @@ func TestAutoCommand(t *testing.T) {
 	os.WriteFile(gitPath, []byte("#!/bin/sh\nfor i in $(seq 1 200); do echo \"+ line $i changed in src/example.go\"; done"), 0755)
 
 	cmd := exec.Command(bin, "auto", "git", "diff")
-	cmd.Env = append(os.Environ(), "PATH="+tmpPath, "XIT_ORIGINAL_GIT="+gitPath, "XIT_HOME=", "XIT_NONINTERACTIVE=1")
+	cmd.Env = append(noXitAdapterEnv(), "PATH="+tmpPath, "XIT_ORIGINAL_GIT="+gitPath, "XIT_HOME=", "XIT_NONINTERACTIVE=1")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		// auto may return non-zero if git returns non-zero, but here git succeeds
@@ -761,7 +770,7 @@ func TestAutoPassthroughSmallOutput(t *testing.T) {
 	os.WriteFile(gitPath, []byte("#!/bin/sh\necho 'small output'"), 0755)
 
 	cmd := exec.Command(bin, "auto", "git", "status")
-	cmd.Env = append(os.Environ(), "PATH="+tmpPath, "XIT_ORIGINAL_GIT="+gitPath, "XIT_HOME=", "XIT_NONINTERACTIVE=1")
+	cmd.Env = append(noXitAdapterEnv(), "PATH="+tmpPath, "XIT_ORIGINAL_GIT="+gitPath, "XIT_HOME=", "XIT_NONINTERACTIVE=1")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("auto git status failed: %v\n%s", err, out)
@@ -782,7 +791,7 @@ func TestAutoWritesRuntimeState(t *testing.T) {
 	os.WriteFile(gitPath, []byte("#!/bin/sh\nfor i in $(seq 1 200); do echo \"+ line $i changed in src/example.go\"; done"), 0755)
 
 	cmd := exec.Command(bin, "auto", "git", "diff")
-	cmd.Env = append(os.Environ(), "PATH="+tmpPath, "XIT_ORIGINAL_GIT="+gitPath, "XIT_HOME="+tmpHome, "XIT_NONINTERACTIVE=1")
+	cmd.Env = append(noXitAdapterEnv(), "PATH="+tmpPath, "XIT_ORIGINAL_GIT="+gitPath, "XIT_HOME="+tmpHome, "XIT_NONINTERACTIVE=1")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("auto git diff failed: %v\n%s", err, out)
@@ -824,7 +833,7 @@ func TestAutoStateFailOpen(t *testing.T) {
 	os.WriteFile(gitPath, []byte("#!/bin/sh\necho 'small output'"), 0755)
 
 	cmd := exec.Command(bin, "auto", "git", "status")
-	cmd.Env = append(os.Environ(), "PATH="+tmpPath, "XIT_ORIGINAL_GIT="+gitPath, "XIT_HOME="+tmpHome, "XIT_NONINTERACTIVE=1")
+	cmd.Env = append(noXitAdapterEnv(), "PATH="+tmpPath, "XIT_ORIGINAL_GIT="+gitPath, "XIT_HOME="+tmpHome, "XIT_NONINTERACTIVE=1")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("auto git status should succeed even when state write fails: %v\n%s", err, out)
@@ -2870,5 +2879,79 @@ func TestGainJSONMalformedLine(t *testing.T) {
 	warnings, ok := data["warnings"].([]interface{})
 	if !ok || len(warnings) == 0 {
 		t.Errorf("expected warnings for malformed line, got %v", data["warnings"])
+	}
+}
+
+// TestAutoOpencodeOutputsFourLines verifies that when XIT_ADAPTER=opencode is set,
+// xit auto emits the four-line Chinese brand output instead of the English summary.
+func TestAutoOpencodeOutputsFourLines(t *testing.T) {
+	bin := buildXit(t)
+	tmpPath := t.TempDir()
+	// Fake git that produces high-noise output (>100 lines triggers compression).
+	gitPath := filepath.Join(tmpPath, "git")
+	os.WriteFile(gitPath, []byte("#!/bin/sh\nfor i in $(seq 1 200); do echo \"+ line $i changed\"; done"), 0755)
+
+	cmd := exec.Command(bin, "auto", "git", "diff")
+	cmd.Env = append(os.Environ(),
+		"PATH="+tmpPath,
+		"XIT_ORIGINAL_GIT="+gitPath,
+		"XIT_HOME=",
+		"XIT_NONINTERACTIVE=1",
+		"XIT_ADAPTER=opencode",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("auto git diff (opencode) failed: %v\n%s", err, out)
+	}
+	outStr := string(out)
+	if !strings.Contains(outStr, "吸T神功 · 守护你的T") {
+		t.Errorf("expected 吸T神功 · 守护你的T, got:\n%s", outStr)
+	}
+	if !strings.Contains(outStr, "吸T神功 · 本次已发功") {
+		t.Errorf("expected 吸T神功 · 本次已发功, got:\n%s", outStr)
+	}
+	if !strings.Contains(outStr, "本次省") {
+		t.Errorf("expected 本次省 token line, got:\n%s", outStr)
+	}
+	if !strings.Contains(outStr, "吸T神功 · 等待下轮发功") {
+		t.Errorf("expected 吸T神功 · 等待下轮发功, got:\n%s", outStr)
+	}
+	// Must NOT contain the English summary header or old per-session count.
+	if strings.Contains(outStr, "吸T完成") {
+		t.Errorf("should not contain 吸T完成 in opencode mode, got:\n%s", outStr)
+	}
+	if strings.Contains(outStr, "本轮共吸") {
+		t.Errorf("should not contain 本轮共吸 (cross-turn count removed), got:\n%s", outStr)
+	}
+}
+
+// TestAutoOpencodeEnvNotLeakedToChild verifies that XIT_ADAPTER and
+// XIT_OPENCODE_REROUTE_COUNT are stripped from the child process environment.
+func TestAutoOpencodeEnvNotLeakedToChild(t *testing.T) {
+	bin := buildXit(t)
+	tmpPath := t.TempDir()
+	// Fake "env" binary that prints XIT_ADAPTER from its own environment.
+	envScript := filepath.Join(tmpPath, "env")
+	os.WriteFile(envScript, []byte("#!/bin/sh\nprintenv XIT_ADAPTER; printenv XIT_OPENCODE_REROUTE_COUNT; exit 0"), 0755)
+
+	cmd := exec.Command(bin, "auto", "env")
+	cmd.Env = append(os.Environ(),
+		"PATH="+tmpPath,
+		"XIT_ORIGINAL_ENV="+envScript,
+		"XIT_HOME=",
+		"XIT_NONINTERACTIVE=1",
+		"XIT_ADAPTER=opencode",
+		"XIT_OPENCODE_REROUTE_COUNT=3",
+	)
+	out, err := cmd.CombinedOutput()
+	// env exits 0, xit auto may exit 0 too (passthrough for small output).
+	_ = err
+	outStr := string(out)
+	// The child env output must NOT contain XIT_ADAPTER=opencode.
+	if strings.Contains(outStr, "XIT_ADAPTER") {
+		t.Errorf("XIT_ADAPTER leaked into child process env, got:\n%s", outStr)
+	}
+	if strings.Contains(outStr, "XIT_OPENCODE_REROUTE_COUNT") {
+		t.Errorf("XIT_OPENCODE_REROUTE_COUNT leaked into child process env, got:\n%s", outStr)
 	}
 }

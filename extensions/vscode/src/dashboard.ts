@@ -175,14 +175,6 @@ function formatReductionPrecise(pct: number): string {
   return `${pct.toFixed(1)}%`;
 }
 
-function formatHitLiftRange(reductionPct: number): string {
-  if (reductionPct >= 95) return "预计 +24–28%";
-  if (reductionPct >= 90) return "预计 +18–24%";
-  if (reductionPct >= 80) return "预计 +12–18%";
-  if (reductionPct >= 60) return "预计 +6–12%";
-  return "预计 +0–6%";
-}
-
 // summary_bytes / 4 is an estimate, marked with ~
 function formatEssenceApprox(summaryBytes: number): string {
   if (summaryBytes <= 0) return "—";
@@ -312,22 +304,18 @@ function buildDashboardHtml(
 
   let liveSavedDisplay = "—";
   let liveReductionDisplay = "—";
-  let liveHitLiftDisplay = "—";
   let liveEssenceDisplay = "—";
   let liveSavedHighlight = false;
   let liveReductionHighlight = false;
-  let liveHitHighlight = false;
   let liveEssenceHighlight = false;
 
   if (completedRun) {
     const m = liveMetricsFromCurrentRun(completedRun);
     liveSavedDisplay      = formatTokensPrecise(m.savedTokens);
     liveReductionDisplay  = m.reductionPct > 0 ? formatReductionPrecise(m.reductionPct) : "—";
-    liveHitLiftDisplay    = m.reductionPct > 0 ? formatHitLiftRange(m.reductionPct) : "—";
     liveEssenceDisplay    = formatEssenceApprox(m.summaryBytes);
     liveSavedHighlight     = m.savedTokens > 0;
     liveReductionHighlight = m.reductionPct > 0;
-    liveHitHighlight       = m.reductionPct > 0;
     liveEssenceHighlight   = m.summaryBytes > 0;
   } else if (isRunning) {
     liveSavedDisplay = liveReductionDisplay = "计算中";
@@ -394,7 +382,6 @@ function buildDashboardHtml(
         ? `<div class="metrics-grid report-grid">
           ${renderMetricItem("本次吸T",  liveSavedDisplay,     liveSavedHighlight)}
           ${renderMetricItem("降噪率",   liveReductionDisplay,  liveReductionHighlight)}
-          ${renderMetricItem("命中加成", liveHitLiftDisplay,    liveHitHighlight)}
           ${renderMetricItem("保留精华", liveEssenceDisplay,    liveEssenceHighlight)}
         </div>`
         : `<div class="empty-state">

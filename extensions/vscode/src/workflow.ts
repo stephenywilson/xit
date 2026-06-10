@@ -693,16 +693,6 @@ export async function buildDiagnoseReport(
   };
 }
 
-export function estimateHitRateLift(reductionPct: number, savedTokens: number): number {
-  if (!Number.isFinite(reductionPct) || savedTokens <= 0) return 0;
-  if (reductionPct >= 95) return 28;
-  if (reductionPct >= 90) return 24;
-  if (reductionPct >= 80) return 18;
-  if (reductionPct >= 60) return 12;
-  if (reductionPct >= 30) return 6;
-  return 0;
-}
-
 export function formatSavedBytes(bytes: number): string {
   if (bytes >= 1000 * 1000) {
     return `~${Math.round(bytes / (1000 * 1000))}MB`;

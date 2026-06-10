@@ -34,7 +34,6 @@ import {
   buildLiveStatusView,
   buildVerifyRoutingReport,
   buildDiagnoseReport,
-  estimateHitRateLift,
   getAdapterHookConnectivity,
   getTokenMetricsForRun,
   formatSavedTokensForRun,
@@ -134,7 +133,7 @@ function getSessionRunCount(workspacePath = resolveActiveXitWorkspace()): number
     const ms = r.timestamp ? Date.parse(r.timestamp) : 0;
     return ms >= startOfToday;
   }).length;
-  return Math.max(1, count);
+  return count;
 }
 
 function getStatusBarTextFromLiveStatus(view: LiveStatusView): string {
@@ -149,8 +148,9 @@ function getStatusBarTextFromLiveStatus(view: LiveStatusView): string {
     case "xit_completed": {
       const savedDisplay = ensureTildePrefix(view.savedTokensDisplay || "");
       const opt1 = savedDisplay ? `吸T完成 · 本次省${savedDisplay}` : "吸T完成";
-      const opt2 = `吸T神功 · 本轮共吸 ${getSessionRunCount()}次`;
-      return pickRotatingText([opt1, opt2]);
+      const count = getSessionRunCount();
+      const texts = count > 0 ? [opt1, `吸T神功 · 本轮共吸 ${count}次`] : [opt1];
+      return pickRotatingText(texts);
     }
     case "missing":
       return "吸T神功 · 未接入";
@@ -860,12 +860,10 @@ async function updateStatusBar(): Promise<void> {
     statusBarItem.text = "吸T完成 · 神功正在收工";
     const metrics = getTokenMetricsForRun(latestRun);
     const reductionLabel = metrics && metrics.reductionPct > 0 ? `${Math.round(metrics.reductionPct)}%` : "--";
-    const hitLift = metrics ? estimateHitRateLift(metrics.reductionPct, metrics.savedTokens) : 0;
     statusBarItem.tooltip = [
       "当前状态：吸T完成",
       successRunDisplay ? `本次节省：${successRunDisplay}` : "本次节省：—",
       `降噪率：${reductionLabel}`,
-      hitLift > 0 ? `预计命中率提升：预计 +${hitLift}%` : "预计命中率提升：--",
       "─".repeat(20),
       "本地处理 · 不读取聊天内容 · 无遥测",
       "点击打开 XiT Dashboard",
@@ -880,16 +878,14 @@ async function updateStatusBar(): Promise<void> {
 
   if (useLiveState && liveState === "success") {
     const opt1 = successRunDisplay ? `吸T完成 · 本次省${successRunDisplay}` : "吸T完成";
-    const opt2 = `吸T完成 · 本轮共吸 ${sessionRunCountAtSuccess}次`;
-    statusBarItem.text = pickRotatingText([opt1, opt2]);
+    const successTexts = sessionRunCountAtSuccess > 0 ? [opt1, `吸T完成 · 本轮共吸 ${sessionRunCountAtSuccess}次`] : [opt1];
+    statusBarItem.text = pickRotatingText(successTexts);
     const metrics = getTokenMetricsForRun(latestRun);
     const reductionLabel = metrics && metrics.reductionPct > 0 ? `${Math.round(metrics.reductionPct)}%` : "--";
-    const hitLift = metrics ? estimateHitRateLift(metrics.reductionPct, metrics.savedTokens) : 0;
     statusBarItem.tooltip = [
       "当前状态：吸T完成",
       successRunDisplay ? `本次节省：${successRunDisplay}` : "本次节省：—",
       `降噪率：${reductionLabel}`,
-      hitLift > 0 ? `预计命中率提升：预计 +${hitLift}%` : "预计命中率提升：--",
       "─".repeat(20),
       "本地处理 · 不读取聊天内容 · 无遥测",
       "点击打开 XiT Dashboard",
@@ -933,8 +929,6 @@ async function updateStatusBar(): Promise<void> {
   const reductionLabel = metrics && metrics.reductionPct > 0
     ? `${Math.round(metrics.reductionPct)}%`
     : "--";
-  const hitLift = metrics ? estimateHitRateLift(metrics.reductionPct, metrics.savedTokens) : 0;
-  const hitLiftLabel = hitLift > 0 ? `预计 +${hitLift}%` : "--";
 
   statusBarItem.tooltip = [
     `当前状态：${getLiveStatusLabel(liveStatus)}`,
@@ -942,7 +936,6 @@ async function updateStatusBar(): Promise<void> {
       ? `本次节省：${savedDisplay}`
       : "本次节省：—",
     `降噪率：${reductionLabel}`,
-    `预计命中率提升：${hitLiftLabel}`,
     "─".repeat(20),
     "本地处理 · 不读取聊天内容 · 无遥测",
     "点击打开 XiT Dashboard",
@@ -981,8 +974,8 @@ async function updateStatusBarLive(): Promise<void> {
   }
   if (liveState === "success") {
     const opt1 = successRunDisplay ? `吸T完成 · 本次省${successRunDisplay}` : "吸T完成";
-    const opt2 = `吸T完成 · 本轮共吸 ${sessionRunCountAtSuccess}次`;
-    statusBarItem.text = pickRotatingText([opt1, opt2]);
+    const quickTexts = sessionRunCountAtSuccess > 0 ? [opt1, `吸T完成 · 本轮共吸 ${sessionRunCountAtSuccess}次`] : [opt1];
+    statusBarItem.text = pickRotatingText(quickTexts);
     return;
   }
   if (liveState === "missed") {

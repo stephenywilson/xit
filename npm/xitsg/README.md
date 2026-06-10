@@ -26,6 +26,16 @@ xit init kimi --method official_hook --scope user --yes
 xit kimi rules install --scope user --yes
 ```
 
+## OpenCode Setup
+
+```
+xit init opencode --yes
+```
+
+Installs a plugin to `.opencode/plugins/xit.ts` that intercepts high-noise bash tool calls and routes them through `xit auto`. The XiT summary is shown directly in the tool output.
+
+> **Note:** Persistent OpenCode TUI statusline/footer is currently not supported. XiT only acts at the tool-execution level.
+
 ## Optional Kimi Toolbar Patch
 
 ```

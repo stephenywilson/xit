@@ -1100,7 +1100,14 @@ func buildAutoRenderedSummary(summary *output.Summary, rawBytes int, summaryByte
 	b.WriteString(fmt.Sprintf("原始输出: %s\n", formatTokenCount(rawBytes/4)))
 	b.WriteString(fmt.Sprintf("吸后摘要: %s\n", formatTokenCount(summaryBytes/4)))
 	b.WriteString(fmt.Sprintf("本次节省: %s\n", formatTokenCount(savedBytes/4)))
-	b.WriteString(fmt.Sprintf("降噪率: %.0f%%\n", summary.EstimatedReduction*100))
+	// 压缩率 must use the same real source as 本次节省 (savedBytes vs rawBytes),
+	// NOT summary.EstimatedReduction (a filter semantic/heuristic estimate that can
+	// read 0% even when real savings are large). rawBytes<=0 -> 0% (no panic).
+	compressionRate := 0.0
+	if rawBytes > 0 {
+		compressionRate = float64(savedBytes) / float64(rawBytes) * 100
+	}
+	b.WriteString(fmt.Sprintf("压缩率: %.0f%%\n", compressionRate))
 	b.WriteString(fmt.Sprintf("raw_log: %s\n", summary.RawLogPath))
 	b.WriteString("\nkey_facts:\n")
 

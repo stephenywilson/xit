@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -780,6 +781,132 @@ func TestAutoPassthroughSmallOutput(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "small output") {
 		t.Errorf("expected passthrough output, got:\n%s", out)
+	}
+}
+
+// parsePercentAfter extracts the integer percent that immediately follows label
+// (e.g. "压缩率: ") and precedes the next '%'.
+func parsePercentAfter(t *testing.T, out, label string) int {
+	t.Helper()
+	idx := strings.Index(out, label)
+	if idx < 0 {
+		t.Fatalf("label %q not found in:\n%s", label, out)
+	}
+	rest := out[idx+len(label):]
+	pctIdx := strings.Index(rest, "%")
+	if pctIdx < 0 {
+		t.Fatalf("no %% after %q in:\n%s", label, out)
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(rest[:pctIdx]))
+	if err != nil {
+		t.Fatalf("could not parse percent from %q: %v", rest[:pctIdx], err)
+	}
+	return n
+}
+
+// TestAutoSummaryShowsRealCompressionRate verifies the human summary prints a
+// real 压缩率 (savedBytes/rawBytes), not the filter's EstimatedReduction.
+// "noisycmd" is unknown -> routed to the fallback filter whose EstimatedReduction
+// is hardcoded 0.0; this is the exact case that used to print the contradictory
+// "本次节省 1k / 降噪率 0%". 压缩率 must be > 0 and equal saved/raw from run state.
+func TestAutoSummaryShowsRealCompressionRate(t *testing.T) {
+	bin := buildXit(t)
+	tmpPath := t.TempDir()
+	tmpHome := t.TempDir()
+	toolPath := filepath.Join(tmpPath, "noisycmd")
+	os.WriteFile(toolPath, []byte("#!/bin/sh\ni=0\nwhile [ $i -lt 300 ]; do echo \"line $i hello xit compression rate test\"; i=$((i+1)); done"), 0755)
+
+	cmd := exec.Command(bin, "auto", "noisycmd")
+	cmd.Env = append(noXitAdapterEnv(), "PATH="+tmpPath, "XIT_HOME="+tmpHome, "XIT_NONINTERACTIVE=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("auto noisycmd failed: %v\n%s", err, out)
+	}
+	s := string(out)
+	if !strings.Contains(s, "吸T完成") {
+		t.Fatalf("expected compressed summary (吸T完成), got:\n%s", s)
+	}
+	if !strings.Contains(s, "本次节省") {
+		t.Errorf("expected 本次节省, got:\n%s", s)
+	}
+	if !strings.Contains(s, "压缩率") {
+		t.Errorf("expected 压缩率, got:\n%s", s)
+	}
+	if strings.Contains(s, "降噪率") {
+		t.Errorf("must NOT contain 降噪率 (replaced by real 压缩率), got:\n%s", s)
+	}
+	rate := parsePercentAfter(t, s, "压缩率: ")
+	if rate <= 0 {
+		t.Errorf("压缩率 must be > 0 when 本次节省 > 0 (no 0%% contradiction), got %d%%\n%s", rate, s)
+	}
+
+	// 压缩率 must equal savedBytes/rawBytes from the real run state (same source as 本次节省).
+	statePath := filepath.Join(tmpHome, "state", "current-run.json")
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("expected state file at %s: %v", statePath, err)
+	}
+	var st struct {
+		RawBytes     int `json:"raw_bytes"`
+		SummaryBytes int `json:"summary_bytes"`
+		SavedBytes   int `json:"saved_bytes"`
+	}
+	if err := json.Unmarshal(data, &st); err != nil {
+		t.Fatalf("parse state: %v", err)
+	}
+	if st.RawBytes <= 0 {
+		t.Fatalf("expected raw_bytes > 0 in state, got %d", st.RawBytes)
+	}
+	expected := int(float64(st.SavedBytes)/float64(st.RawBytes)*100 + 0.5)
+	if diff := rate - expected; diff < -1 || diff > 1 {
+		t.Errorf("压缩率 %d%% != savedBytes/rawBytes %d%% (saved=%d raw=%d) — must be same source as 本次节省",
+			rate, expected, st.SavedBytes, st.RawBytes)
+	}
+}
+
+// TestAutoSummaryLargeOutputHighCompressionRate verifies large repetitive output
+// yields a real, high 压缩率 (not 0, not the filter estimate).
+func TestAutoSummaryLargeOutputHighCompressionRate(t *testing.T) {
+	bin := buildXit(t)
+	tmpPath := t.TempDir()
+	tmpHome := t.TempDir()
+	toolPath := filepath.Join(tmpPath, "noisycmd")
+	os.WriteFile(toolPath, []byte("#!/bin/sh\ni=0\nwhile [ $i -lt 3000 ]; do echo \"line $i hello xit compression rate test\"; i=$((i+1)); done"), 0755)
+
+	cmd := exec.Command(bin, "auto", "noisycmd")
+	cmd.Env = append(noXitAdapterEnv(), "PATH="+tmpPath, "XIT_HOME="+tmpHome, "XIT_NONINTERACTIVE=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("auto noisycmd (large) failed: %v\n%s", err, out)
+	}
+	s := string(out)
+	if strings.Contains(s, "降噪率") {
+		t.Errorf("must NOT contain 降噪率, got:\n%s", s)
+	}
+	rate := parsePercentAfter(t, s, "压缩率: ")
+	if rate < 50 {
+		t.Errorf("large repetitive output should compress heavily; 压缩率 %d%% too low\n%s", rate, s)
+	}
+}
+
+// TestAutoPassthroughNoCompressionMetric verifies small passthrough output shows
+// neither 压缩率 nor 降噪率 (no fake compression metric for un-summarized output).
+func TestAutoPassthroughNoCompressionMetric(t *testing.T) {
+	bin := buildXit(t)
+	tmpPath := t.TempDir()
+	tmpHome := t.TempDir()
+	gitPath := filepath.Join(tmpPath, "git")
+	os.WriteFile(gitPath, []byte("#!/bin/sh\necho 'small output'"), 0755)
+
+	cmd := exec.Command(bin, "auto", "git", "status")
+	cmd.Env = append(noXitAdapterEnv(), "PATH="+tmpPath, "XIT_ORIGINAL_GIT="+gitPath, "XIT_HOME="+tmpHome, "XIT_NONINTERACTIVE=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("auto git status failed: %v\n%s", err, out)
+	}
+	s := string(out)
+	if strings.Contains(s, "压缩率") || strings.Contains(s, "降噪率") {
+		t.Errorf("passthrough small output must not show a compression metric, got:\n%s", s)
 	}
 }
 
@@ -2651,8 +2778,13 @@ func TestClaudeStatuslineNoDaiGuanCe(t *testing.T) {
 func TestClaudeStatuslineNoColor(t *testing.T) {
 	bin := buildXit(t)
 	tmpHome := t.TempDir()
+	// Isolate XIT_HOME to an empty temp dir so the statusline reads no real run
+	// data. With XIT_HOME unset, xitHome() falls back to <cwd>/.xit — and during
+	// `go test` cwd is cmd/xit, whose dogfood .xit/history.jsonl would otherwise
+	// make this fallback test read a real "本次省NNk Token" line.
+	tmpProject := t.TempDir()
 	cmd := exec.Command(bin, "claude", "statusline")
-	cmd.Env = append(os.Environ(), "HOME="+tmpHome, "XIT_HOME=", "XIT_NONINTERACTIVE=1", "NO_COLOR=1")
+	cmd.Env = append(os.Environ(), "HOME="+tmpHome, "XIT_HOME="+tmpProject, "XIT_NONINTERACTIVE=1", "NO_COLOR=1")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("xit claude statusline failed: %v\n%s", err, out)

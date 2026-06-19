@@ -2875,6 +2875,103 @@ func TestClaudeStatuslineAutostateCompleted(t *testing.T) {
 	}
 }
 
+// antigravityStatuslineJSON runs `xit antigravity statusline --json` with an
+// isolated XIT_HOME and returns the parsed payload.
+func antigravityStatuslineJSON(t *testing.T, tmpProject string) map[string]interface{} {
+	t.Helper()
+	bin := buildXit(t)
+	tmpHome := t.TempDir()
+	cmd := exec.Command(bin, "antigravity", "statusline", "--json")
+	cmd.Env = append(os.Environ(), "HOME="+tmpHome, "XIT_HOME="+tmpProject, "XIT_NONINTERACTIVE=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("xit antigravity statusline --json failed: %v\n%s", err, out)
+	}
+	var data map[string]interface{}
+	if err := json.Unmarshal(out, &data); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, out)
+	}
+	return data
+}
+
+// TestAntigravityStatuslineRunning verifies a fresh running current-run drives
+// the "Antigravity · 正在吸T中" lifecycle line (the bug: it used to show 准备就绪).
+func TestAntigravityStatuslineRunning(t *testing.T) {
+	tmpProject := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(tmpProject, "state"), 0755)
+	state := `{"status":"running","started_at":"` + time.Now().Format(time.RFC3339) + `","heartbeat_at":"` + time.Now().Format(time.RFC3339) + `","command":"go test"}`
+	_ = os.WriteFile(filepath.Join(tmpProject, "state", "current-run.json"), []byte(state), 0644)
+
+	data := antigravityStatuslineJSON(t, tmpProject)
+	line, _ := data["line"].(string)
+	if !strings.Contains(line, "Antigravity · 正在吸T中") {
+		t.Errorf("expected 'Antigravity · 正在吸T中' for running autostate, got: %s", line)
+	}
+	if data["source"] != "autostate_running" {
+		t.Errorf("expected source autostate_running, got %v", data["source"])
+	}
+}
+
+// TestAntigravityStatuslineCompleted verifies a fresh completed current-run with
+// savings drives the real "Antigravity · 本次省 X Token" line.
+func TestAntigravityStatuslineCompleted(t *testing.T) {
+	tmpProject := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(tmpProject, "state"), 0755)
+	state := `{"status":"completed","finished_at":"` + time.Now().Format(time.RFC3339) + `","completed_at":"` + time.Now().Format(time.RFC3339) + `","saved_bytes":4000,"command":"go test"}`
+	_ = os.WriteFile(filepath.Join(tmpProject, "state", "current-run.json"), []byte(state), 0644)
+
+	data := antigravityStatuslineJSON(t, tmpProject)
+	line, _ := data["line"].(string)
+	if !strings.Contains(line, "Antigravity · 本次省") || !strings.Contains(line, "Token") {
+		t.Errorf("expected 'Antigravity · 本次省 X Token' for completed autostate, got: %s", line)
+	}
+	if data["source"] != "autostate_completed" {
+		t.Errorf("expected source autostate_completed, got %v", data["source"])
+	}
+}
+
+// TestAntigravityStatuslineStaleRunningFallback verifies a stale running state
+// (heartbeat older than the 15s freshness window) does NOT show 正在吸T中.
+func TestAntigravityStatuslineStaleRunningFallback(t *testing.T) {
+	tmpProject := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(tmpProject, "state"), 0755)
+	old := time.Now().Add(-2 * time.Minute).Format(time.RFC3339)
+	state := `{"status":"running","started_at":"` + old + `","heartbeat_at":"` + old + `","command":"go test"}`
+	_ = os.WriteFile(filepath.Join(tmpProject, "state", "current-run.json"), []byte(state), 0644)
+
+	data := antigravityStatuslineJSON(t, tmpProject)
+	line, _ := data["line"].(string)
+	if strings.Contains(line, "正在吸T中") {
+		t.Errorf("stale running must NOT show 正在吸T中, got: %s", line)
+	}
+}
+
+// TestClaudeStatuslineRunningLabel verifies the Claude running line carries the
+// adapter label: "Claude · 正在吸T中".
+func TestClaudeStatuslineRunningLabel(t *testing.T) {
+	bin := buildXit(t)
+	tmpHome := t.TempDir()
+	tmpProject := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(tmpProject, "state"), 0755)
+	state := `{"status":"running","started_at":"` + time.Now().Format(time.RFC3339) + `","heartbeat_at":"` + time.Now().Format(time.RFC3339) + `","command":"go test"}`
+	_ = os.WriteFile(filepath.Join(tmpProject, "state", "current-run.json"), []byte(state), 0644)
+
+	cmd := exec.Command(bin, "claude", "statusline", "--json")
+	cmd.Env = append(os.Environ(), "HOME="+tmpHome, "XIT_HOME="+tmpProject, "XIT_NONINTERACTIVE=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("xit claude statusline --json failed: %v\n%s", err, out)
+	}
+	var data map[string]interface{}
+	if err := json.Unmarshal(out, &data); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, out)
+	}
+	line, _ := data["line"].(string)
+	if !strings.Contains(line, "Claude · 正在吸T中") {
+		t.Errorf("expected 'Claude · 正在吸T中' for running autostate, got: %s", line)
+	}
+}
+
 func TestGainTextOutput(t *testing.T) {
 	bin := buildXit(t)
 	tmpHome := t.TempDir()

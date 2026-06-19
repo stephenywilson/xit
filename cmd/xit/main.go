@@ -2904,10 +2904,10 @@ func computeClaudeStatuslineText() (string, map[string]interface{}) {
 
 	switch {
 	case autostate.IsRunningFresh(autoState, now):
-		line = "吸T神功 · 正在吸T中"
+		line = "吸T神功 · Claude · 正在吸T中"
 		source = "autostate_running"
 	case autostate.IsCompletedFresh(autoState, now) && autoState != nil && autoState.SavedBytes > 0:
-		line = fmt.Sprintf("吸T神功 · 本次省%s Token", formatTokenCount(int(autoState.SavedBytes/4)))
+		line = fmt.Sprintf("吸T神功 · Claude · 本次省%s Token", formatTokenCount(int(autoState.SavedBytes/4)))
 		source = "autostate_completed"
 	default:
 		// Recent hitrate (10 min window).
@@ -3362,10 +3362,10 @@ func computeAntigravityStatuslineText() (string, map[string]interface{}) {
 
 	switch {
 	case autostate.IsRunningFresh(autoState, now):
-		line = "吸T神功 · 正在吸T中"
+		line = "吸T神功 · Antigravity · 正在吸T中"
 		source = "autostate_running"
 	case autostate.IsCompletedFresh(autoState, now) && autoState != nil && autoState.SavedBytes > 0:
-		line = fmt.Sprintf("吸T神功 · 本次省%s Token", formatTokenCount(int(autoState.SavedBytes/4)))
+		line = fmt.Sprintf("吸T神功 · Antigravity · 本次省%s Token", formatTokenCount(int(autoState.SavedBytes/4)))
 		source = "autostate_completed"
 	default:
 		// Recent hitrate (10 min window). For Antigravity this is history-only.
@@ -3394,7 +3394,7 @@ func computeAntigravityStatuslineText() (string, map[string]interface{}) {
 		}
 
 		if savedTokens > 0 {
-			line = fmt.Sprintf("吸T神功 · 本次省%s Token", formatTokenCount(savedTokens))
+			line = fmt.Sprintf("吸T神功 · Antigravity · 本次省%s Token", formatTokenCount(savedTokens))
 		} else if hasRecentEvents {
 			line = antigravityStatusLineReady
 		} else {

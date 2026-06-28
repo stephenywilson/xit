@@ -27,9 +27,9 @@ type BottomToolbarAuditResult struct {
 
 // InjectionPath describes a possible injection mechanism.
 type InjectionPath struct {
-	Name        string
-	Available   bool
-	Limitation  string
+	Name         string
+	Available    bool
+	Limitation   string
 	Experimental bool
 }
 
@@ -58,45 +58,45 @@ func RunAudit() *BottomToolbarAuditResult {
 
 	res.InjectionPaths = []InjectionPath{
 		{
-			Name:        "Config file extension",
-			Available:   false,
-			Limitation:  "Kimi config has no bottom_toolbar or custom_status field",
+			Name:         "Config file extension",
+			Available:    false,
+			Limitation:   "Kimi config has no bottom_toolbar or custom_status field",
 			Experimental: false,
 		},
 		{
-			Name:        "Hook event UI channel",
-			Available:   false,
-			Limitation:  "PreToolUse/PostToolUse hooks are shell scripts; stdout is parsed for deny decision only, not rendered to UI",
+			Name:         "Hook event UI channel",
+			Available:    false,
+			Limitation:   "PreToolUse/PostToolUse hooks are shell scripts; stdout is parsed for deny decision only, not rendered to UI",
 			Experimental: false,
 		},
 		{
-			Name:        "Toast injection (right position)",
-			Available:   true,
-			Limitation:  "Requires running inside Kimi Python process; external process cannot call toast() on global queue",
+			Name:         "Toast injection (right position)",
+			Available:    true,
+			Limitation:   "Requires running inside Kimi Python process; external process cannot call toast() on global queue",
 			Experimental: true,
 		},
 		{
-			Name:        "Monkey patch _render_bottom_toolbar",
-			Available:   true,
-			Limitation:  "Requires modifying installed Python package or sitecustomize injection; breaks on Kimi updates",
+			Name:         "Monkey patch _render_bottom_toolbar",
+			Available:    true,
+			Limitation:   "Requires modifying installed Python package or sitecustomize injection; breaks on Kimi updates",
 			Experimental: true,
 		},
 		{
-			Name:        "Sitecustomize Python injection",
-			Available:   runtime.GOOS != "windows",
-			Limitation:  "May not affect uv-isolated environments; fragile across updates",
+			Name:         "Sitecustomize Python injection",
+			Available:    runtime.GOOS != "windows",
+			Limitation:   "May not affect uv-isolated environments; fragile across updates",
 			Experimental: true,
 		},
 		{
-			Name:        "Kimi Skill / Plugin API",
-			Available:   false,
-			Limitation:  "Skills are Markdown-only; plugin.json only registers tools, not UI extensions",
+			Name:         "Kimi Skill / Plugin API",
+			Available:    false,
+			Limitation:   "Skills are Markdown-only; plugin.json only registers tools, not UI extensions",
 			Experimental: false,
 		},
 		{
-			Name:        "ACP (Agent Control Protocol)",
-			Available:   true,
-			Limitation:  "ACP is for IDE embedding (VS Code), not terminal UI; cannot inject into prompt_toolkit bottom_toolbar",
+			Name:         "ACP (Agent Control Protocol)",
+			Available:    true,
+			Limitation:   "ACP is for IDE embedding (VS Code), not terminal UI; cannot inject into prompt_toolkit bottom_toolbar",
 			Experimental: false,
 		},
 	}

@@ -1,8 +1,16 @@
 import * as vscode from 'vscode';
-import { isHighOutputCommand, readLatestRun } from './xit';
+import { buildXiTAutoCommand, isAlreadyWrappedByXiT, isHighOutputCommand } from './logic';
+import { readLatestRun } from './xit';
 import { updateDashboardIfOpen } from './dashboard';
 
 let xitTerminal: vscode.Terminal | undefined;
+
+export interface VsCodeCommandRunRequest {
+  originalCommand: string;
+  finalCommand: string;
+  mode: "auto" | "passthrough";
+  terminalName: string;
+}
 
 export function getXiTTerminal(): vscode.Terminal {
   if (xitTerminal) {
@@ -28,19 +36,31 @@ export function runInXiTTerminal(command: string): void {
   terminal.sendText(command, true);
 }
 
-export async function promptRunCommand(): Promise<void> {
+export async function promptRunCommand(
+  onWillRun?: (request: VsCodeCommandRunRequest) => void,
+): Promise<VsCodeCommandRunRequest | undefined> {
   const command = await vscode.window.showInputBox({
     prompt: 'Enter shell command',
     placeHolder: 'go test -v ./...',
   });
   if (!command || !command.trim()) {
-    return;
+    return undefined;
   }
 
-  const isHigh = isHighOutputCommand(command);
+  const trimmed = command.trim();
+  const isHigh = isHighOutputCommand(trimmed);
   if (isHigh) {
-    runInXiTTerminal(`xit auto ${command}`);
+    const finalCommand = buildXiTAutoCommand(trimmed);
+    const request = {
+      originalCommand: trimmed,
+      finalCommand,
+      mode: "auto" as const,
+      terminalName: getXiTTerminal().name,
+    };
+    onWillRun?.(request);
+    runInXiTTerminal(finalCommand);
     vscode.window.showInformationMessage(`XiT: running high-output command with auto compression`);
+    return request;
   } else {
     const choice = await vscode.window.showInformationMessage(
       `XiT: passthrough command detected`,
@@ -49,26 +69,56 @@ export async function promptRunCommand(): Promise<void> {
       'Run with xit auto'
     );
     if (choice === 'Run with xit auto') {
-      runInXiTTerminal(`xit auto ${command}`);
+      const finalCommand = buildXiTAutoCommand(trimmed);
+      const request = {
+        originalCommand: trimmed,
+        finalCommand,
+        mode: "auto" as const,
+        terminalName: getXiTTerminal().name,
+      };
+      onWillRun?.(request);
+      runInXiTTerminal(finalCommand);
+      return request;
     } else if (choice === 'Run directly') {
-      runInXiTTerminal(command);
+      const request = {
+        originalCommand: trimmed,
+        finalCommand: trimmed,
+        mode: "passthrough" as const,
+        terminalName: getXiTTerminal().name,
+      };
+      onWillRun?.(request);
+      runInXiTTerminal(trimmed);
+      return request;
     }
   }
+  return undefined;
 }
 
-export async function promptRunWithAutoCompression(): Promise<void> {
+export async function promptRunWithAutoCompression(
+  onWillRun?: (request: VsCodeCommandRunRequest) => void,
+): Promise<VsCodeCommandRunRequest | undefined> {
   const command = await vscode.window.showInputBox({
     prompt: 'Enter shell command (will run with xit auto)',
     placeHolder: 'go test -v ./...',
   });
   if (!command || !command.trim()) {
-    return;
+    return undefined;
   }
-  runInXiTTerminal(`xit auto ${command}`);
+  const trimmed = command.trim();
+  const finalCommand = buildXiTAutoCommand(trimmed);
+  const request = {
+    originalCommand: trimmed,
+    finalCommand,
+    mode: "auto" as const,
+    terminalName: getXiTTerminal().name,
+  };
+  onWillRun?.(request);
+  runInXiTTerminal(finalCommand);
+  return request;
 }
 
 export async function handleTerminalHighOutput(commandLine: string): Promise<void> {
-  if (commandLine.includes('xit auto')) {
+  if (isAlreadyWrappedByXiT(commandLine)) {
     return;
   }
   if (!isHighOutputCommand(commandLine)) {
@@ -84,10 +134,10 @@ export async function handleTerminalHighOutput(commandLine: string): Promise<voi
   );
 
   if (action === 'Copy xit auto command') {
-    await vscode.env.clipboard.writeText(`xit auto ${commandLine}`);
+    await vscode.env.clipboard.writeText(buildXiTAutoCommand(commandLine));
     vscode.window.showInformationMessage('Copied to clipboard');
   } else if (action === 'Run in XiT Terminal') {
-    runInXiTTerminal(`xit auto ${commandLine}`);
+    runInXiTTerminal(buildXiTAutoCommand(commandLine));
   }
 }
 

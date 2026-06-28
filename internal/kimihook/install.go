@@ -217,19 +217,19 @@ func Uninstall(configPath, home string, dryRun bool) error {
 }
 
 type StatusResult struct {
-	ConfigPath       string
-	Installed        bool
-	ScriptPath       string
-	HasEvents        bool
-	Format           ConfigFormat
-	HasConflict      bool
-	Mode             string
-	Reroute          bool
-	InlineStatus     bool
-	StatusStyle      string
-	TurnLifecycle    bool
-	TurnEvents       map[string]bool
-	TurnScripts      map[string]bool
+	ConfigPath    string
+	Installed     bool
+	ScriptPath    string
+	HasEvents     bool
+	Format        ConfigFormat
+	HasConflict   bool
+	Mode          string
+	Reroute       bool
+	InlineStatus  bool
+	StatusStyle   string
+	TurnLifecycle bool
+	TurnEvents    map[string]bool
+	TurnScripts   map[string]bool
 }
 
 func Status(configPath, home string) (*StatusResult, error) {

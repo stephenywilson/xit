@@ -1,175 +1,98 @@
-# Codex CLI 实战适配
+# Codex CLI 适配
 
-Codex CLI 是 XiT 的下一套 AI CLI 适配对象。
+Codex CLI 没有 XiT 可控制的动态底部状态栏。Codex 适配不模仿
+Antigravity / Claude 的状态栏，而是使用官方 hooks 做一轮内的统计累计。
 
-当前阶段：
-
-- `AGENTS.md` rules：已建立
-- Codex hook observe：✅ 已启用
-- Codex hitrate 审计：✅ 已可用
-- Codex bottom statusLine：❌ 不支持
-- reroute / strict：暂不启用
-- shim / takeover：暂不启用
-
-## 安装 Codex CLI
+## 安装
 
 ```bash
-npm i -g @openai/codex
+xit init codex --method official_hook --yes
 ```
 
-启动：
+安装目标是项目级 `.codex/hooks.json`，包含四个 Codex 生命周期 hooks：
 
-```bash
-cd /Users/dongjiayang/projects/xit
-codex
+- `UserPromptSubmit`
+- `PreToolUse`，matcher 为 `^Bash$`
+- `PostToolUse`，matcher 为 `^Bash$`
+- `Stop`
+
+安装或更新后，Codex 会要求重新 review / trust hooks。进入 Codex 后运行：
+
+```text
+/hooks
 ```
 
-## XiT 规则
+然后 trust XiT 的 `UserPromptSubmit`、`PreToolUse`、`PostToolUse` 和 `Stop`。
 
-Codex 会读取仓库根目录的 `AGENTS.md`。本项目要求：
+## 工具卡片
 
-- 高噪音命令使用 `xit auto`
-- 短命令直接执行
-- 不粘贴 raw output
-- 报告中保留 `exit_code`、`reduction`、`saved_tokens`、`raw_log`
+每次 `xit auto` 的工具输出只显示压缩后的有效诊断内容。
 
-## 安装 Codex Hook
+如果没有值得展开的诊断，输出：
 
-Codex CLI 使用项目级 `.codex/hooks.json` 配置 hooks。XiT 支持 observe 模式（只记录，不拦截）。
-
-```bash
-xit hook install codex --scope project --yes
+```text
+命令执行成功，无需展开重复输出。
 ```
 
-安装后 `.codex/hooks.json` 内容示例：
+工具卡片不显示 XiT footer、token 统计、raw log 路径或机器字段。
+
+## 最终回答 footer
+
+一个用户 prompt 是一轮。同一轮里可以执行多次 `xit auto`。
+
+当本轮至少执行过一次 Codex `xit auto` 时，最终 assistant 回答末尾追加一次：
+
+```text
+吸T神功 · Codex · 守护你的T
+本次省 约 18.53k Token · 本轮共吸 2次
+```
+
+小于 1000 Token 时不使用 k：
+
+```text
+吸T神功 · Codex · 守护你的T
+本次省 841 Token · 本轮共吸 1次
+```
+
+未执行 `xit auto` 的轮次不显示 footer。
+
+## Turn State
+
+Codex turn state 只保存计数和标识，位置为：
+
+```text
+<XIT_HOME>/state/codex-turns/<safe-session-id>/<safe-turn-id>.json
+```
+
+内容边界：
 
 ```json
 {
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/Users/dongjiayang/.xit/hooks/codex-pretooluse-bash.sh",
-            "timeout": 30
-          }
-        ]
-      }
-    ]
-  }
+  "session_id": "...",
+  "turn_id": "...",
+  "run_count": 2,
+  "saved_tokens_total": 18532,
+  "footer_continuation_used": false,
+  "updated_at": "..."
 }
 ```
 
-查看状态：
+不会保存用户完整 prompt、原始命令输出、raw log、transcript 内容或密钥。
+状态在 footer 确认出现或 fail-open 后清理，陈旧状态会自动过期。
+
+## Hook 行为
+
+`UserPromptSubmit` 初始化新 turn；同一 `session_id + turn_id` 的重复事件不清空已有累计。
+Stop continuation 使用 `[XIT_CODEX_FOOTER_CONTINUATION]` marker，避免把内部续写当成新 turn。
+
+`PreToolUse` 在 Bash 命令包含 `xit auto` 或可安全重写为 `xit auto` 时注入：
 
 ```bash
-xit hook status codex
+XIT_ADAPTER=codex XIT_CODEX_SESSION_ID='...' XIT_CODEX_TURN_ID='...'
 ```
 
-卸载：
+`PostToolUse` 只记录生命周期事件，stdout 保持为空；不会返回
+`hookSpecificOutput.additionalContext`，避免 Codex UI 在工具卡片后显示 hook context。
 
-```bash
-xit hook uninstall codex --scope project --yes
-```
-
-## Live 验证
-
-启动 Codex 时启用 hooks：
-
-```bash
-codex --enable hooks
-```
-
-首次启动时，Codex 可能提示 review/trust hook，请在 UI 中批准。
-
-运行一些命令后验证事件：
-
-```bash
-xit hook stats codex
-xit hook hitrate codex
-```
-
-## Hook 统计
-
-```bash
-xit hook stats codex
-```
-
-输出示例：
-
-```
-XiT Codex Hook Stats
-
-events:      12
-observed:    10
-passthrough: 1
-errors:      1
-```
-
-事件记录在 `~/.xit/codex-hooks/events.jsonl`。
-
-## 命中率审计
-
-```bash
-xit hook hitrate codex              # 最近 2 小时
-xit hook hitrate codex --last 10m   # 最近 10 分钟
-xit hook hitrate codex --json       # JSON 格式
-```
-
-判定标准：
-
-| 指标 | 目标 |
-|------|------|
-| compress_recall | ≥ 90% |
-| passthrough_precision | ≥ 98% |
-| verdict | pass |
-
-`correct_wrapped` = 高噪音命令被正确包裹  
-`missed` = 漏掉的高噪音命令（需强化 AGENTS.md rules）  
-`correct_passthrough` = 短命令正确直通  
-`false_positive` = 短命令被错误包裹
-
-## 推荐测试
-
-短命令：
-
-```bash
-git status
-```
-
-高噪音命令：
-
-```bash
-xit auto go test -v ./...
-xit auto rg "TODO|FIXME|panic|error" .
-```
-
-## 当前边界
-
-Codex Phase D7 启用 hooks，但仅限 observe 模式：
-
-- ✅ PreToolUse Bash hook 已安装到 `.codex/hooks.json`
-- ✅ 使用 Codex 官方 `hooks` schema（非自定义 `handlers`）
-- ✅ 记录命令分类到 `events.jsonl`
-- ✅ `xit hook hitrate codex` 验证命中率
-- ❌ 不启用 reroute / deny（Codex 暂无官方 statusLine）
-- ❌ 不修改 `~/.codex/config.toml`
-- ❌ 不安装全局 hook（仅 project scope）
-
-hook 脚本内容：
-
-```sh
-#!/bin/sh
-# XiT managed Codex hook
-# event: PreToolUse
-# matcher: Bash
-exec xit codex-hook pretooluse-bash
-```
-
-XiT 处理器读取 Codex 发来的 JSON payload，使用 `filters.ClassifyPolicy()` 分类命令，记录事件后以 exit code 0 静默返回（fail-open），不输出任何 JSON 到 stdout。
-
-隐私说明：所有事件只写入本地 `~/.xit/codex-hooks/events.jsonl`，不上传云端。
-
-下一步：持续观察 Codex CLI 更新，待官方支持 statusLine 或持久化底部栏后再评估集成。
+`Stop` 在最终回答缺 footer 时只 block 一次，要求 Codex 续写同一回答的 footer；如果
+`stop_hook_active=true` 或本 turn 已经续写过，则 fail-open，避免循环。

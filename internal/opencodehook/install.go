@@ -66,10 +66,10 @@ func Uninstall(projectDir string) error {
 }
 
 type StatusResult struct {
-	PluginPath  string
-	Installed   bool
-	HasEvents   bool
-	EventsPath  string
+	PluginPath string
+	Installed  bool
+	HasEvents  bool
+	EventsPath string
 }
 
 // Status checks whether the XiT OpenCode plugin is installed.

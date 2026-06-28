@@ -1,11 +1,87 @@
 package claudehook
 
 import (
+	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/stephenywilson/xit/internal/vscodebridge"
 )
+
+// runHookCommand pipes payload into RunHookCommand's stdin and captures its
+// stdout, mirroring internal/codexhook's test helper of the same shape.
+func runHookCommand(t *testing.T, fallbackHome, payload string) string {
+	t.Helper()
+	oldStdin, oldStdout := os.Stdin, os.Stdout
+	defer func() { os.Stdin, os.Stdout = oldStdin, oldStdout }()
+
+	r, w, _ := os.Pipe()
+	os.Stdin = r
+	go func() {
+		w.WriteString(payload)
+		w.Close()
+	}()
+	outR, outW, _ := os.Pipe()
+	os.Stdout = outW
+
+	if err := RunHookCommand(fallbackHome); err != nil {
+		t.Fatalf("RunHookCommand failed: %v", err)
+	}
+	outW.Close()
+	out, _ := io.ReadAll(outR)
+	return string(out)
+}
+
+// runTurnHookCommand mirrors runHookCommand but for the turn-level handlers
+// (HandleUserPromptSubmit / HandleStop), which share RunHookCommand's exact
+// `func(fallbackHome string) error` shape but are exercised separately.
+func runTurnHookCommand(t *testing.T, fallbackHome, payload string, handler func(string) error) string {
+	t.Helper()
+	oldStdin, oldStdout := os.Stdin, os.Stdout
+	defer func() { os.Stdin, os.Stdout = oldStdin, oldStdout }()
+
+	r, w, _ := os.Pipe()
+	os.Stdin = r
+	go func() {
+		w.WriteString(payload)
+		w.Close()
+	}()
+	outR, outW, _ := os.Pipe()
+	os.Stdout = outW
+
+	if err := handler(fallbackHome); err != nil {
+		t.Fatalf("handler failed: %v", err)
+	}
+	outW.Close()
+	out, _ := io.ReadAll(outR)
+	return string(out)
+}
+
+func claudeBridgeEventTypes(t *testing.T, home string) []string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(home, "events", "vscode-ai-bridge.jsonl"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		t.Fatal(err)
+	}
+	var types []string
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if line == "" {
+			continue
+		}
+		var e vscodebridge.Event
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			t.Fatalf("invalid bridge event JSON: %v\n%s", err, line)
+		}
+		types = append(types, e.Event)
+	}
+	return types
+}
 
 func TestProjectSettingsPath(t *testing.T) {
 	p := ProjectSettingsPath()
@@ -533,5 +609,271 @@ func TestStatsCounts(t *testing.T) {
 	}
 	if stats.TopCommands[0].Command != "go test -v ./..." || stats.TopCommands[0].Count != 2 {
 		t.Errorf("unexpected top command: %+v", stats.TopCommands[0])
+	}
+}
+
+// TestShouldRerouteFindHighDepth: `find . -maxdepth 4 -type f` is exactly
+// the real-world command from the VS Code Claude Code panel screenshot that
+// exposed this bug — it must classify as high-output.
+func TestShouldRerouteFindHighDepth(t *testing.T) {
+	ok, cmd := ShouldReroute("find . -maxdepth 4 -type f")
+	if !ok {
+		t.Fatal("expected find to reroute")
+	}
+	if cmd != "xit auto find . -maxdepth 4 -type f" {
+		t.Errorf("expected xit auto find . -maxdepth 4 -type f, got %s", cmd)
+	}
+}
+
+// TestShouldNotRerouteLowOutputCommands guards against over-eager
+// classification flagging short, low-noise commands.
+func TestShouldNotRerouteLowOutputCommands(t *testing.T) {
+	for _, cmd := range []string{"pwd", "whoami", "echo hello", "git status --short"} {
+		if ok, _ := ShouldReroute(cmd); ok {
+			t.Errorf("expected %q not to reroute", cmd)
+		}
+	}
+}
+
+// TestIsAlreadyWrappedPreventsDoubleWrap: once a command is already
+// "xit auto ...", ShouldReroute must never wrap it again (it sees tool="xit",
+// not "find"/"go"/etc.), and isAlreadyWrapped must recognize it directly.
+func TestIsAlreadyWrappedPreventsDoubleWrap(t *testing.T) {
+	cmd := "xit auto find . -maxdepth 4 -type f"
+	if !isAlreadyWrapped(cmd) {
+		t.Fatal("expected isAlreadyWrapped to recognize an already-wrapped command")
+	}
+	if ok, _ := ShouldReroute(cmd); ok {
+		t.Errorf("expected an already-wrapped command not to be rerouted again, got reroute for: %s", cmd)
+	}
+	if !isAlreadyWrapped("./xit auto go test -v ./...") {
+		t.Fatal("expected isAlreadyWrapped to recognize the ./xit auto form too")
+	}
+	if isAlreadyWrapped("go test -v ./...") {
+		t.Fatal("expected isAlreadyWrapped to be false for an unwrapped command")
+	}
+}
+
+// TestResolveClaudeHomePrefersPayloadCwd is the regression test for the
+// real bug this task found: RunHookCommand previously always used the
+// caller-supplied fallback (~/.xit), completely ignoring which project
+// Claude Code was actually working in. That meant a project-local
+// .xit/claude-hooks/config.json with "mode": "reroute" was silently never
+// read — only the global ~/.xit/claude-hooks/config.json (mode: "observe")
+// ever applied, for every project, including from inside the VS Code Claude
+// Code panel.
+func TestResolveClaudeHomePrefersPayloadCwd(t *testing.T) {
+	fallback := "/Users/someone/.xit"
+	projectCwd := "/Users/someone/projects/xit"
+	got := resolveClaudeHome(fallback, projectCwd)
+	want := filepath.Join(projectCwd, ".xit")
+	if got != want {
+		t.Fatalf("resolveClaudeHome(%q, %q) = %q, want %q", fallback, projectCwd, got, want)
+	}
+}
+
+func TestResolveClaudeHomeFallsBackWhenCwdEmpty(t *testing.T) {
+	fallback := "/Users/someone/.xit"
+	if got := resolveClaudeHome(fallback, ""); got != fallback {
+		t.Fatalf("resolveClaudeHome(%q, \"\") = %q, want fallback %q", fallback, got, fallback)
+	}
+}
+
+func TestResolveClaudeHomeXITHomeEnvWins(t *testing.T) {
+	t.Setenv("XIT_HOME", "/explicit/xit/home")
+	if got := resolveClaudeHome("/fallback/.xit", "/some/project"); got != "/explicit/xit/home" {
+		t.Fatalf("expected explicit XIT_HOME to win, got %q", got)
+	}
+}
+
+// TestRunHookCommandUsesProjectLocalConfigViaPayloadCwd is the end-to-end
+// regression test for the home-resolution bug: a project-local
+// .xit/claude-hooks/config.json with "mode": "reroute" must actually be
+// read (and acted on) when the hook payload's cwd points at that project —
+// even though fallbackHome (simulating the global ~/.xit) has "observe".
+func TestRunHookCommandUsesProjectLocalConfigViaPayloadCwd(t *testing.T) {
+	globalHome := filepath.Join(t.TempDir(), "global-xit")
+	if err := WriteHookConfig(globalHome, &HookConfig{Mode: "observe", FailOpen: true}); err != nil {
+		t.Fatal(err)
+	}
+	projectDir := t.TempDir()
+	projectHome := filepath.Join(projectDir, ".xit")
+	if err := WriteHookConfig(projectHome, &HookConfig{Mode: "reroute", FailOpen: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	payload := `{"session_id":"s1","cwd":"` + projectDir + `","tool_name":"Bash","tool_input":{"command":"find . -maxdepth 4 -type f"}}`
+	out := runHookCommand(t, globalHome, payload)
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, out)
+	}
+	hso, _ := resp["hookSpecificOutput"].(map[string]interface{})
+	if hso == nil || hso["permissionDecision"] != "deny" {
+		t.Fatalf("expected a deny decision (project-local reroute mode), got: %s", out)
+	}
+	reason, _ := hso["permissionDecisionReason"].(string)
+	if !strings.Contains(reason, "xit auto find . -maxdepth 4 -type f") {
+		t.Errorf("expected recommended command in reason, got: %q", reason)
+	}
+
+	// Confirm it logged to the PROJECT-local events file, not the global one.
+	if _, err := os.Stat(filepath.Join(projectHome, "claude-hooks", "events.jsonl")); err != nil {
+		t.Fatalf("expected project-local events.jsonl to exist: %v", err)
+	}
+}
+
+// TestRunHookCommandStartsVSCodeBridgeForAlreadyWrappedCommand: Claude
+// Code's PreToolUse hook protocol can't mutate tool_input like Codex's can
+// (see isAlreadyWrapped's doc comment), so XiT can only start tracking a VS
+// Code bridge run once the command is ALREADY "xit auto ..." — either the AI
+// wrote it directly (CLAUDE.md rules) or it's the retry after a reroute
+// recommendation.
+func TestRunHookCommandStartsVSCodeBridgeForAlreadyWrappedCommand(t *testing.T) {
+	t.Setenv("VSCODE_PID", "4242")
+	projectDir := t.TempDir()
+	projectHome := filepath.Join(projectDir, ".xit")
+
+	payload := `{"session_id":"s1","cwd":"` + projectDir + `","tool_name":"Bash","tool_input":{"command":"xit auto find . -maxdepth 4 -type f"}}`
+	out := runHookCommand(t, filepath.Join(t.TempDir(), "global-xit"), payload)
+
+	if strings.TrimSpace(out) != "{}" {
+		t.Fatalf("expected allow ({}) for an already-wrapped command, got: %s", out)
+	}
+
+	data, err := os.ReadFile(filepath.Join(projectHome, "events", "vscode-ai-bridge.jsonl"))
+	if err != nil {
+		t.Fatalf("expected a VS Code bridge run.started event: %v", err)
+	}
+	var event vscodebridge.Event
+	if err := json.Unmarshal(data, &event); err != nil {
+		t.Fatalf("invalid bridge event JSON: %v\n%s", err, data)
+	}
+	if event.Event != "run.started" || event.Adapter != vscodebridge.AdapterClaude || event.Surface != vscodebridge.SurfaceClaudeCode {
+		t.Fatalf("bad bridge started event: %+v", event)
+	}
+	if strings.Contains(string(data), "find . -maxdepth 4") || strings.Contains(string(data), projectDir) {
+		t.Fatalf("bridge event leaked raw command/cwd: %s", data)
+	}
+}
+
+// TestRunHookCommandDoesNotStartVSCodeBridgeOutsideVSCode confirms ordinary
+// Claude CLI usage (no VSCODE_PID) never starts a bridge run, even for an
+// already-wrapped command.
+func TestRunHookCommandDoesNotStartVSCodeBridgeOutsideVSCode(t *testing.T) {
+	t.Setenv("VSCODE_PID", "")
+	projectDir := t.TempDir()
+	projectHome := filepath.Join(projectDir, ".xit")
+
+	payload := `{"session_id":"s1","cwd":"` + projectDir + `","tool_name":"Bash","tool_input":{"command":"xit auto go test -v ./..."}}`
+	_ = runHookCommand(t, filepath.Join(t.TempDir(), "global-xit"), payload)
+
+	if _, err := os.Stat(filepath.Join(projectHome, "events", "vscode-ai-bridge.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("expected no bridge file for ordinary Claude CLI usage, err=%v", err)
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────
+// HandleUserPromptSubmit / HandleStop: turn-LEVEL VS Code Bridge signals.
+// NOT installed by default (see install.go / docs/claude.md) — whether the
+// real VS Code Claude Code panel reliably triggers UserPromptSubmit/Stop is
+// unconfirmed. These tests cover the capability itself so it is ready to
+// enable once that's verified, without claiming it is wired into the
+// default `.claude/settings.json` install.
+// ──────────────────────────────────────────────────────────────────
+
+func TestHandleUserPromptSubmitStartsVSCodeBridgeTurn(t *testing.T) {
+	projectDir := t.TempDir()
+	projectHome := filepath.Join(projectDir, ".xit")
+	t.Setenv("VSCODE_PID", "4242")
+
+	payload := `{"session_id":"s1","cwd":"` + projectDir + `","prompt":"please run the tests"}`
+	out := runTurnHookCommand(t, filepath.Join(t.TempDir(), "global-xit"), payload, HandleUserPromptSubmit)
+	if strings.TrimSpace(out) != "{}" {
+		t.Fatalf("expected {} (allow), got: %q", out)
+	}
+	types := claudeBridgeEventTypes(t, projectHome)
+	if len(types) != 1 || types[0] != "turn.started" {
+		t.Fatalf("expected exactly one turn.started bridge event, got: %v", types)
+	}
+}
+
+func TestHandleUserPromptSubmitNoBridgeOutsideVSCode(t *testing.T) {
+	projectDir := t.TempDir()
+	projectHome := filepath.Join(projectDir, ".xit")
+	t.Setenv("VSCODE_PID", "")
+
+	payload := `{"session_id":"s1","cwd":"` + projectDir + `","prompt":"please run the tests"}`
+	runTurnHookCommand(t, filepath.Join(t.TempDir(), "global-xit"), payload, HandleUserPromptSubmit)
+	if types := claudeBridgeEventTypes(t, projectHome); types != nil {
+		t.Fatalf("expected no bridge event outside VS Code, got: %v", types)
+	}
+}
+
+func TestHandleUserPromptSubmitNoSessionIDIsNoop(t *testing.T) {
+	projectDir := t.TempDir()
+	projectHome := filepath.Join(projectDir, ".xit")
+	t.Setenv("VSCODE_PID", "4242")
+
+	payload := `{"cwd":"` + projectDir + `","prompt":"please run the tests"}`
+	runTurnHookCommand(t, filepath.Join(t.TempDir(), "global-xit"), payload, HandleUserPromptSubmit)
+	if types := claudeBridgeEventTypes(t, projectHome); types != nil {
+		t.Fatalf("expected no bridge event without a session_id, got: %v", types)
+	}
+}
+
+func TestHandleStopFinishesVSCodeBridgeTurn(t *testing.T) {
+	projectDir := t.TempDir()
+	projectHome := filepath.Join(projectDir, ".xit")
+	t.Setenv("VSCODE_PID", "4242")
+
+	payload := `{"session_id":"s1","cwd":"` + projectDir + `"}`
+	out := runTurnHookCommand(t, filepath.Join(t.TempDir(), "global-xit"), payload, HandleStop)
+	if strings.TrimSpace(out) != "{}" {
+		t.Fatalf("expected {} (allow), got: %q", out)
+	}
+	types := claudeBridgeEventTypes(t, projectHome)
+	if len(types) != 1 || types[0] != "turn.finished" {
+		t.Fatalf("expected exactly one turn.finished bridge event, got: %v", types)
+	}
+}
+
+func TestHandleStopNoBridgeOutsideVSCode(t *testing.T) {
+	projectDir := t.TempDir()
+	projectHome := filepath.Join(projectDir, ".xit")
+	t.Setenv("VSCODE_PID", "")
+
+	payload := `{"session_id":"s1","cwd":"` + projectDir + `"}`
+	runTurnHookCommand(t, filepath.Join(t.TempDir(), "global-xit"), payload, HandleStop)
+	if types := claudeBridgeEventTypes(t, projectHome); types != nil {
+		t.Fatalf("expected no bridge event outside VS Code, got: %v", types)
+	}
+}
+
+// TestPreToolUseRerouteDenyUnaffectedByTurnHooks: the existing deny +
+// recommended-command behavior (PreToolUse, "reroute" mode) must not
+// regress now that HandleUserPromptSubmit/HandleStop also exist.
+func TestPreToolUseRerouteDenyUnaffectedByTurnHooks(t *testing.T) {
+	home := filepath.Join(t.TempDir(), ".xit")
+	if err := WriteHookConfig(home, &HookConfig{Mode: "reroute", FailOpen: true}); err != nil {
+		t.Fatal(err)
+	}
+	// No "cwd" field in the payload, so resolveClaudeHome falls back to the
+	// fallbackHome passed below (= home) — same as the existing reroute
+	// tests in cmd/xit/main_test.go.
+	payload := `{"session_id":"s1","tool_name":"Bash","tool_input":{"command":"find . -maxdepth 4 -type f"}}`
+	out := runHookCommand(t, home, payload)
+	var resp map[string]interface{}
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, out)
+	}
+	hso, _ := resp["hookSpecificOutput"].(map[string]interface{})
+	if hso == nil || hso["permissionDecision"] != "deny" {
+		t.Fatalf("expected deny decision unaffected by the new turn hooks, got: %s", out)
+	}
+	reason, _ := hso["permissionDecisionReason"].(string)
+	if !strings.Contains(reason, "xit auto find . -maxdepth 4 -type f") {
+		t.Errorf("expected recommended command in reason, got: %q", reason)
 	}
 }

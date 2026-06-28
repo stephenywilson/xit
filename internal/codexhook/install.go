@@ -8,64 +8,154 @@ import (
 	"strings"
 )
 
-type InstallResult struct {
-	HooksPath        string
-	ScriptPath       string
-	AlreadyInstalled bool
+// EventInstallStatus reports the install state of one lifecycle hook.
+type EventInstallStatus struct {
+	Event      string
+	Matcher    string
+	ScriptPath string
+	Installed  bool
 }
 
-// Install writes the XiT Codex hook script and merges .codex/hooks.json.
-func Install(projectPath, home string, dryRun bool) (*InstallResult, error) {
-	scriptPath := filepath.Join(home, "hooks", "codex-pretooluse-bash.sh")
+type InstallResult struct {
+	HooksPath        string
+	Events           []EventInstallStatus
+	AlreadyInstalled bool // true only if ALL four events were already installed
+}
 
+func scriptPathFor(home string, ev xitEvent) string {
+	return filepath.Join(home, "hooks", ev.ScriptName)
+}
+
+func scriptBody(ev xitEvent, xitPath string) string {
+	return fmt.Sprintf(`#!/bin/sh
+# XiT managed Codex hook
+# event: %s
+# matcher: %s
+exec %s codex-hook %s
+`, ev.Name, ev.Matcher, xitPath, hookSubcommandFor(ev.Name))
+}
+
+func hookSubcommandFor(eventName string) string {
+	switch eventName {
+	case "UserPromptSubmit":
+		return "user-prompt-submit"
+	case "PreToolUse":
+		return "pre-tool-use"
+	case "PostToolUse":
+		return "post-tool-use"
+	case "Stop":
+		return "stop"
+	default:
+		return strings.ToLower(eventName)
+	}
+}
+
+// resolveXitPath finds an absolute path to the `xit` binary so the installed
+// hook script does not depend on PATH at Codex's hook-execution time. Falls
+// back to the literal "xit" if none of the common locations are found.
+func resolveXitPath() string {
+	candidates := []string{
+		filepath.Join(os.Getenv("HOME"), ".local", "bin", "xit"),
+		"/usr/local/bin/xit",
+		"/opt/homebrew/bin/xit",
+	}
+	for _, c := range candidates {
+		if c == "" {
+			continue
+		}
+		if st, err := os.Stat(c); err == nil && !st.IsDir() {
+			return c
+		}
+	}
+	if exe, err := os.Executable(); err == nil && exe != "" {
+		return exe
+	}
+	return "xit"
+}
+
+// Install writes the four XiT Codex lifecycle hook scripts (UserPromptSubmit,
+// PreToolUse, PostToolUse, Stop) and merges them into .codex/hooks.json,
+// preserving any other hooks the user has configured. Re-running Install
+// upgrades a legacy PreToolUse-only install to the full lifecycle.
+func Install(projectPath, home string, dryRun bool) (*InstallResult, error) {
 	cfg, err := ReadHooksConfig(projectPath)
 	if err != nil {
 		return nil, err
 	}
 
-	alreadyInstalled := HasXiTHook(cfg)
+	events := xitEvents()
+	var statuses []EventInstallStatus
+	allAlready := true
+	for _, ev := range events {
+		installed := HasXiTHookForEvent(cfg, ev.Name, ev.Matcher)
+		if !installed {
+			allAlready = false
+		}
+		statuses = append(statuses, EventInstallStatus{
+			Event:      ev.Name,
+			Matcher:    ev.Matcher,
+			ScriptPath: scriptPathFor(home, ev),
+			Installed:  installed,
+		})
+	}
 
 	if dryRun {
 		return &InstallResult{
 			HooksPath:        filepath.Join(projectPath, ".codex", "hooks.json"),
-			ScriptPath:       scriptPath,
-			AlreadyInstalled: alreadyInstalled,
+			Events:           statuses,
+			AlreadyInstalled: allAlready,
 		}, nil
 	}
 
-	if err := os.MkdirAll(filepath.Dir(scriptPath), 0755); err != nil {
+	xitPath := resolveXitPath()
+	if err := os.MkdirAll(filepath.Join(home, "hooks"), 0755); err != nil {
 		return nil, err
 	}
-	script := `#!/bin/sh
-# XiT managed Codex hook
-# event: PreToolUse
-# matcher: Bash
-exec xit codex-hook pretooluse-bash
-`
-	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
-		return nil, err
+	for i, ev := range events {
+		sp := scriptPathFor(home, ev)
+		if err := os.WriteFile(sp, []byte(scriptBody(ev, xitPath)), 0755); err != nil {
+			return nil, err
+		}
+		statuses[i].Installed = true
 	}
 
-	AddXiTHook(cfg, scriptPath)
+	AddXiTHook(cfg, func(ev xitEvent) string { return scriptPathFor(home, ev) })
 	if err := WriteHooksConfig(projectPath, cfg); err != nil {
 		return nil, err
 	}
 
 	return &InstallResult{
 		HooksPath:        filepath.Join(projectPath, ".codex", "hooks.json"),
-		ScriptPath:       scriptPath,
-		AlreadyInstalled: alreadyInstalled,
+		Events:           statuses,
+		AlreadyInstalled: allAlready,
 	}, nil
 }
 
-// Uninstall removes the XiT handler from .codex/hooks.json.
+// hasAnyXiTHook reports whether ANY hook command anywhere in cfg matches an
+// XiT-managed script, regardless of event/matcher (matcher-agnostic — a
+// partial or legacy install may use a different matcher string than the
+// current default).
+func hasAnyXiTHook(cfg *HooksConfig) bool {
+	for _, groups := range cfg.Hooks {
+		for _, g := range groups {
+			for _, h := range g.Hooks {
+				if h.Type == "command" && isXiTScriptCommand(h.Command) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// Uninstall removes all XiT-managed handlers from .codex/hooks.json.
 func Uninstall(projectPath string) error {
 	cfg, err := ReadHooksConfig(projectPath)
 	if err != nil {
 		return err
 	}
 
-	if !HasXiTHook(cfg) {
+	if !hasAnyXiTHook(cfg) {
 		return fmt.Errorf("XiT Codex hook not found in %s", filepath.Join(projectPath, ".codex", "hooks.json"))
 	}
 
@@ -77,26 +167,37 @@ func Uninstall(projectPath string) error {
 }
 
 type StatusResult struct {
-	HooksPath   string
-	Installed   bool
-	ScriptPath  string
-	Mode        string
-	Reroute     bool
-	Strict      bool
-	FailOpen    bool
-	HasEvents   bool
+	HooksPath string
+	Installed bool // true only if ALL four lifecycle events are installed
+	Events    []EventInstallStatus
+	Mode      string
+	Reroute   bool
+	Strict    bool
+	FailOpen  bool
+	HasEvents bool
 }
 
-// Status checks whether the XiT Codex hook is installed.
+// Status checks whether the XiT Codex hooks are installed, per event.
 func Status(projectPath, home string) (*StatusResult, error) {
-	scriptPath := filepath.Join(home, "hooks", "codex-pretooluse-bash.sh")
-
 	cfg, err := ReadHooksConfig(projectPath)
 	if err != nil {
 		return nil, err
 	}
 
-	installed := HasXiTHook(cfg)
+	var statuses []EventInstallStatus
+	allInstalled := true
+	for _, ev := range xitEvents() {
+		installed := HasXiTHookForEvent(cfg, ev.Name, ev.Matcher)
+		if !installed {
+			allInstalled = false
+		}
+		statuses = append(statuses, EventInstallStatus{
+			Event:      ev.Name,
+			Matcher:    ev.Matcher,
+			ScriptPath: scriptPathFor(home, ev),
+			Installed:  installed,
+		})
+	}
 
 	eventsPath := filepath.Join(home, "codex-hooks", "events.jsonl")
 	_, err = os.Stat(eventsPath)
@@ -104,10 +205,10 @@ func Status(projectPath, home string) (*StatusResult, error) {
 
 	return &StatusResult{
 		HooksPath: filepath.Join(projectPath, ".codex", "hooks.json"),
-		Installed: installed,
-		ScriptPath: scriptPath,
-		Mode:      "observe",
-		Reroute:   false,
+		Installed: allInstalled,
+		Events:    statuses,
+		Mode:      "observe+turn_lifecycle",
+		Reroute:   true,
 		Strict:    false,
 		FailOpen:  true,
 		HasEvents: hasEvents,

@@ -191,6 +191,18 @@ p {
   margin-bottom: 12px;
 }
 
+/* Side-by-side panel pair (e.g. 今日功力 + 功力累计) */
+.panel-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.panel-row .panel {
+  margin-bottom: 0;
+}
+
 .panel-active {
   border-color: var(--border-strong);
 }
@@ -248,6 +260,11 @@ p {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
+/* Two metric tiles inside a narrower panel-row column should split 1/2, not 1/4 */
+.report-grid.two-col {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .metric-tile {
   padding: 14px 13px;
   border: 1px solid var(--border);
@@ -303,6 +320,20 @@ p {
 
   .hero-status {
     min-width: 0;
+  }
+}
+
+@media (max-width: 700px) {
+  .panel-row {
+    grid-template-columns: 1fr;
+  }
+
+  .panel-row .panel {
+    margin-bottom: 12px;
+  }
+
+  .panel-row .panel:last-child {
+    margin-bottom: 0;
   }
 }
 

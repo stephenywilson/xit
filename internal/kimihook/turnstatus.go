@@ -17,13 +17,13 @@ type TurnStats struct {
 
 // TurnStatusResult holds the parsed turn status for display.
 type TurnStatusResult struct {
-	StateFile         string      `json:"state_file"`
-	FallbackStateFile string      `json:"fallback_state_file"`
-	Source            string      `json:"source"`
-	CurrentTurn       TurnState   `json:"current_turn"`
-	AutoState         AutoState   `json:"auto_state"`
-	TurnStats         TurnStats   `json:"turn_stats"`
-	ToolbarExpected   string      `json:"toolbar_expected"`
+	StateFile         string    `json:"state_file"`
+	FallbackStateFile string    `json:"fallback_state_file"`
+	Source            string    `json:"source"`
+	CurrentTurn       TurnState `json:"current_turn"`
+	AutoState         AutoState `json:"auto_state"`
+	TurnStats         TurnStats `json:"turn_stats"`
+	ToolbarExpected   string    `json:"toolbar_expected"`
 }
 
 // AutoState mirrors the current.json structure.
@@ -81,7 +81,7 @@ func ReadTurnStatus(home string) *TurnStatusResult {
 // FormatSavedTokens converts saved bytes to a token display string.
 // saved_tokens = saved_bytes / 4
 // <1000 tokens: "省{N} Token"
-// >=1000 tokens: "省{round(N/1000)}k Token"
+// >=1000 tokens: "省约 {N/1000 to 2dp}k Token"
 func FormatSavedTokens(savedBytes int) string {
 	savedTokens := savedBytes / 4
 	if savedTokens <= 0 {
@@ -90,7 +90,7 @@ func FormatSavedTokens(savedBytes int) string {
 	if savedTokens < 1000 {
 		return fmt.Sprintf("省%d Token", savedTokens)
 	}
-	return fmt.Sprintf("省%dk Token", (savedTokens+500)/1000)
+	return fmt.Sprintf("省约 %.2fk Token", float64(savedTokens)/1000)
 }
 
 // ComputeToolbarText implements the visual turn state machine.

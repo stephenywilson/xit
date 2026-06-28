@@ -8,11 +8,11 @@ import (
 )
 
 type HookConfig struct {
-	Mode          string `json:"mode"`
+	Mode           string `json:"mode"`
 	RerouteEnabled bool   `json:"reroute_enabled"`
-	FailOpen      bool   `json:"fail_open"`
-	InlineStatus  bool   `json:"inline_status"`
-	StatusStyle   string `json:"status_style"`
+	FailOpen       bool   `json:"fail_open"`
+	InlineStatus   bool   `json:"inline_status"`
+	StatusStyle    string `json:"status_style"`
 }
 
 func DefaultHookConfig() *HookConfig {

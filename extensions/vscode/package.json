@@ -1,8 +1,8 @@
 {
   "name": "xit-vscode",
   "displayName": "吸T神功（XiT）",
-  "description": "为 Claude、Codex、Gemini、Cursor 等 AI 编程工作流压缩高噪音终端输出，减少 token 浪费。",
-  "version": "0.0.32",
+  "description": "压缩高噪音终端输出，在 VS Code 状态栏和 Dashboard 中展示 AI 编程工作流的 Token 节省效果。",
+  "version": "0.0.33",
   "publisher": "XiT",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -156,6 +156,7 @@
   },
   "scripts": {
     "compile": "tsc -p ./",
+    "test": "npm run compile && node --test out/test/**/*.test.js",
     "watch": "tsc -watch -p ./",
     "package": "vsce package",
     "vscode:prepublish": "npm run compile"

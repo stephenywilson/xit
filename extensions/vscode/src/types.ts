@@ -218,7 +218,15 @@ export interface StaleTurnRecord {
 }
 
 export type LiveStatusKind =
+  // AI is thinking about a new prompt — no tool call yet. Bridge-only
+  // (turn.started); there is no local/manual equivalent.
+  | "xit_turn_active"
   | "xit_running"
+  // run.finished accepted (data ready: saved tokens/reduction/run count),
+  // but the AI's final answer for this turn isn't done yet — bridge-only
+  // (turn.finished, or a fallback timer, promotes this to xit_completed /
+  // agent_not_routed). "Data ready" is not "experience done".
+  | "xit_settling"
   | "xit_completed"
   | "agent_observing"
   | "agent_not_routed"
@@ -235,6 +243,38 @@ export interface LiveStatusView {
   source?: string;
   updatedAt?: string;
   savedTokensDisplay?: string;
+  exitCode?: number;
+  reductionPct?: number;
+  summaryBytes?: number;
+  savedTokens?: number;
+  savedBytes?: number;
+  runCount?: number;
+}
+
+export interface VscodeAiBridgeEvent {
+  schema: "xit.vscode-ai-bridge.v1";
+  // turn.started/turn.finished are turn-LEVEL lifecycle signals ("AI started
+  // thinking about a new prompt" / "AI's final answer for this turn is
+  // done") — distinct from run.started/run.finished, which are per-tool-call.
+  event: "run.started" | "run.finished" | "turn.started" | "turn.finished";
+  host: "vscode";
+  surface: "codex_chat" | "claude_code";
+  adapter: "codex" | "claude";
+  workspace_hash: string;
+  host_instance_hash: string;
+  // thread_hash is Codex-only diagnostics (hashed session id) — Claude
+  // Code's PreToolUse hook bridge has no equivalent signal to hash, so it's
+  // omitted there rather than faked.
+  thread_hash?: string;
+  run_id: string;
+  command_hash: string;
+  started_at: string;
+  finished_at?: string;
+  exit_code?: number;
+  saved_tokens?: number;
+  saved_bytes?: number;
+  summary_bytes?: number;
+  run_count?: number;
 }
 
 export interface AgentTurnView {

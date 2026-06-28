@@ -848,8 +848,8 @@ func TestComputeToolbarPreviewTokenFields(t *testing.T) {
 	if preview.TokenMethod != "saved_bytes / 4" {
 		t.Errorf("expected token_method saved_bytes / 4, got %s", preview.TokenMethod)
 	}
-	if preview.ToolbarExample != "本次吸T1次 · 省9k Token" {
-		t.Errorf("expected toolbar_example 本次吸T1次 · 省9k Token, got %s", preview.ToolbarExample)
+	if preview.ToolbarExample != "本次吸T1次 · 省约 9.00k Token" {
+		t.Errorf("expected toolbar_example 本次吸T1次 · 省约 9.00k Token, got %s", preview.ToolbarExample)
 	}
 }
 
@@ -862,8 +862,8 @@ func TestComputeToolbarPreviewRotationInterval(t *testing.T) {
 
 func TestComputeToolbarPreviewCompletedText(t *testing.T) {
 	preview := ComputeToolbarPreview("/nonexistent")
-	if preview.CompletedText != "吸T完成 · Kimi · 本次省9k Token" {
-		t.Errorf("expected completed_text 吸T完成 · Kimi · 本次省9k Token, got %s", preview.CompletedText)
+	if preview.CompletedText != "吸T完成 · Kimi · 本次省约 9.00k Token" {
+		t.Errorf("expected completed_text 吸T完成 · Kimi · 本次省约 9.00k Token, got %s", preview.CompletedText)
 	}
 }
 
@@ -872,13 +872,13 @@ func TestComputeToolbarPreviewAutoCompletedShowsTokens(t *testing.T) {
 	stateDir := filepath.Join(tmp, "state")
 	os.MkdirAll(stateDir, 0755)
 	now := time.Now().UTC()
-	// 36035 bytes -> 9008 tokens -> 省9k Token
+	// 36035 bytes -> 9008 tokens -> 省约 9.01k Token
 	state := fmt.Sprintf(`{"status":"completed","started_at":"","finished_at":"%s","saved_bytes":36035}`, now.Add(-5*time.Second).Format(time.RFC3339))
 	os.WriteFile(filepath.Join(stateDir, "current.json"), []byte(state), 0644)
 
 	preview := ComputeToolbarPreview(tmp)
-	if preview.Preview != "吸T完成 · Kimi · 本次省9k Token" {
-		t.Errorf("expected preview 吸T完成 · Kimi · 本次省9k Token, got %s", preview.Preview)
+	if preview.Preview != "吸T完成 · Kimi · 本次省约 9.01k Token" {
+		t.Errorf("expected preview 吸T完成 · Kimi · 本次省约 9.01k Token, got %s", preview.Preview)
 	}
 }
 
@@ -896,13 +896,18 @@ func TestHelperDoesNotUseSavedBytesDividedBy1024(t *testing.T) {
 	}
 }
 
-func TestHelperDoesNotContainApproxOrKT(t *testing.T) {
+func TestHelperUsesStandardTokenFormat(t *testing.T) {
 	h := helperFunction("/tmp/xit")
-	if strings.Contains(h, "省约") {
-		t.Error("helper should not contain '省约'")
+	// New global standard: ">=1000 tokens -> 省约 X.XXk Token".
+	if !strings.Contains(h, "省约 ") {
+		t.Error("expected helper to use standard '省约 X.XXk Token' format")
 	}
+	if !strings.Contains(h, "k Token") {
+		t.Error("expected 'k Token' suffix in helper")
+	}
+	// "kT" (k immediately followed by Token, no space) would be malformed.
 	if strings.Contains(h, "kT") {
-		t.Error("helper should not contain 'kT'")
+		t.Error("helper should not contain malformed 'kT'")
 	}
 }
 

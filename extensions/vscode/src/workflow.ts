@@ -34,6 +34,11 @@ import {
   readCurrentRunState,
   resolveWorkspaceCwd,
 } from "./xit";
+import {
+  estimateTokensFromBytes as estimateTokensFromBytesCore,
+  formatSavedTokens,
+  savedTokensFromRun,
+} from "./logic";
 
 const RULES_START = "<!-- XIT_AI_RULES_START -->";
 const RULES_END = "<!-- XIT_AI_RULES_END -->";
@@ -704,17 +709,13 @@ export function formatSavedBytes(bytes: number): string {
 }
 
 export function estimateTokensFromBytes(bytes: number): number {
-  return Math.max(0, Math.round(bytes / 4));
+  return estimateTokensFromBytesCore(bytes);
 }
 
+// formatTokenCount is the standard user-visible token format, matching the CLI:
+// >=1000 -> "约 10.29k Token" (two decimals, 约 prefix), <1000 -> "293 Token".
 export function formatTokenCount(tokens: number): string {
-  if (tokens >= 1000000) {
-    return `~${Math.round(tokens / 100000) / 10}M Token`;
-  }
-  if (tokens >= 1000) {
-    return `~${Math.round(tokens / 1000)}k Token`;
-  }
-  return `${tokens} Token`;
+  return formatSavedTokens(tokens) || "0 Token";
 }
 
 export function formatSavedTokensFromBytes(bytes: number): string {
@@ -725,17 +726,7 @@ export function formatSavedTokensForRun(run: LatestRun | undefined): string {
   if (!run) {
     return "0 Token";
   }
-  if (run.saved_tokens_display) {
-    return run.saved_tokens_display.includes("Token")
-      ? run.saved_tokens_display
-      : `${run.saved_tokens_display} Token`;
-  }
-  if (typeof run.saved_tokens === "number") {
-    return formatTokenCount(run.saved_tokens);
-  }
-  return formatSavedTokensFromBytes(
-    Math.max(0, run.raw_bytes - run.summary_bytes),
-  );
+  return formatTokenCount(savedTokensFromRun(run));
 }
 
 export function getTokenMetricsForRun(
@@ -746,15 +737,10 @@ export function getTokenMetricsForRun(
   }
   const rawTokens = estimateTokensFromBytes(Math.max(0, run.raw_bytes));
   const summaryTokens = estimateTokensFromBytes(Math.max(0, run.summary_bytes));
-  const savedTokens =
-    typeof run.saved_tokens === "number"
-      ? Math.max(0, run.saved_tokens)
-      : Math.max(0, rawTokens - summaryTokens);
-  const savedDisplay = run.saved_tokens_display
-    ? run.saved_tokens_display.includes("Token")
-      ? run.saved_tokens_display
-      : `${run.saved_tokens_display} Token`
-    : formatTokenCount(savedTokens);
+  const savedTokens = savedTokensFromRun(run);
+  // Always render from the numeric token count so the display uses the single
+  // standard format ("约 10.29k Token"), regardless of any legacy display string.
+  const savedDisplay = formatTokenCount(savedTokens);
   const reductionPct = rawTokens > 0 ? (savedTokens / rawTokens) * 100 : 0;
 
   return {
@@ -1160,7 +1146,7 @@ export function buildLiveStatusView(options?: {
     if (heartbeatMs !== undefined && now - heartbeatMs <= XIT_RUNNING_HEARTBEAT_MS) {
       return {
         kind: "xit_running",
-        label: "正在吸T中",
+        label: "正在吸T",
         command: currentRun.command,
         reason: "fresh current-run heartbeat",
         source: "current-run.json",
@@ -1189,7 +1175,7 @@ export function buildLiveStatusView(options?: {
     ) {
       return {
         kind: "xit_completed",
-        label: "吸T完成",
+        label: "本次省",
         command: latestRun.command,
         reason: "xit run more recent than observe event",
         source: "history.jsonl",
@@ -1202,7 +1188,7 @@ export function buildLiveStatusView(options?: {
     if (activity.routedThroughXit) {
       return {
         kind: "agent_routed_pending_state",
-        label: "守护你的T",
+        label: "准备就绪",
         adapter,
         command: activity.command,
         reason: activity.reason || "routed",
@@ -1212,7 +1198,7 @@ export function buildLiveStatusView(options?: {
     }
     return {
       kind: "agent_observing",
-      label: "守护你的T",
+      label: "准备就绪",
       adapter,
       command: activity.command,
       reason: activity.reason || "not routed",
@@ -1231,7 +1217,7 @@ export function buildLiveStatusView(options?: {
     const adapter = adapterDisplayName(activity.adapter);
     return {
       kind: "agent_not_routed",
-      label: "本轮未触发吸T",
+      label: "本次无需发功",
       adapter,
       command: activity.command,
       reason: activity.reason || "not routed",
@@ -1249,7 +1235,7 @@ export function buildLiveStatusView(options?: {
     const hasSavings = latestRunMetrics.savedTokens > 0;
     return {
       kind: hasSavings ? "xit_completed" : "agent_not_routed",
-      label: hasSavings ? "吸T完成" : "本轮未触发吸T",
+      label: hasSavings ? "本次省" : "本次无需发功",
       command: latestRun.command,
       reason: hasSavings ? "history append with savings" : "history append without savings",
       source: "history.jsonl",
@@ -1260,7 +1246,7 @@ export function buildLiveStatusView(options?: {
 
   return {
     kind: "idle",
-    label: "守护你的T",
+    label: "准备就绪",
     reason: "waiting for agent activity",
     source: "workspace rules",
   };

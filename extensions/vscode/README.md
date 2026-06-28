@@ -2,14 +2,14 @@
 
 吸T神功（XiT）是一个帮 AI 编程工作流省 token、减少噪音、提升命中率的 VS Code 插件。
 
-当 `go test -v ./...`、`npm test`、`docker logs`、`tsc`、`eslint` 这类命令输出太长时，吸T神功会先对高噪音输出进行压缩，再交给 Claude、Codex、Gemini、Cursor 等 AI 编程工作流使用，避免上下文被无效输出占满。
+当 `go test -v ./...`、`npm test`、`docker logs`、`tsc`、`eslint` 这类命令输出太长时，吸T神功会先对高噪音输出进行压缩，避免 AI 编程工作流的上下文被无效输出占满。
 
 ## 核心价值
 
 - **省 token** — 把高噪音命令输出压缩后再交给 AI
 - **减少噪音上下文** — 只保留关键信息
 - **提升 AI 回答命中率** — 噪音越少，AI 越容易给出准确答案
-- **支持 Claude Code、Codex、Gemini Code Assist、Cursor、VS Code Chat**
+- **Codex Chat Bridge** — 在 VS Code 内的 Codex 对话框中运行高噪音命令时，可自动路由到 `xit auto`（其余 AI 工具需通过 `XiT: Run Command` 等命令面板手动触发）
 - **本地处理** — 不上传云端
 - **无遥测**
 - **无网络请求**
@@ -52,34 +52,29 @@ npm install -g xitsg
 
 | 状态栏                   | 含义                            |
 | ------------------------ | ------------------------------- |
-| `吸T神功 · 准备就绪`     | 插件已启动，等待任务            |
-| `吸T神功 · 守护你的T`    | 当前工作区已启用 XiT 规则       |
-| `吸T神功 · 观察 Codex`   | 观察到 AI agent 正在执行低噪音命令，未触发 XiT |
-| `吸T神功 · 接管中`       | 观察到 agent 已路由到 `xit auto`，等待 run state |
-| `吸T神功 · 正在吸T中`    | 正在接管高噪音命令输出          |
-| `吸T完成 · 省~9k Token`  | 本次命令已完成，节省约 9k Token |
-| `吸T神功 · 等待下轮发功` | 本轮完成，等待下一次任务        |
-| `吸T神功 · 本轮未触发吸T` | 最近 agent 活动没有产生 `xit auto` run |
-| `吸T神功 · 未找到 XiT`   | 没找到本地 XiT CLI              |
+| `吸T神功 · 准备就绪`     | 插件已启动，XiT CLI 可用，当前没有 VS Code 主动触发的任务 |
+| `吸T神功 · 正在吸T`      | 用户通过 VS Code 命令面板主动触发了真实 `xit auto` |
+| `吸T神功 · 神功正在收工` | 终端执行结束，正在等待本次 state/history 写入 |
+| `吸T神功 · 本次省 约 9.00k Token` | 本次 VS Code 主动任务已匹配到真实完成记录 |
+| `吸T神功 · 本次无需发功` | 用户选择直接运行，或本次命令确认无需压缩 |
+| `吸T神功 · 执行失败`     | 本次 VS Code 主动任务失败 |
+| `吸T神功 · 未接入`       | 没找到本地 XiT CLI |
 
-鼠标悬停在状态栏上可查看更多信息，包括最近一次吸T节省、原始日志路径、最新 agent activity 的 adapter / command / reason / source，以及当前工作区是否处于守护状态。运行中主状态栏只显示“正在吸T中”；任何当前输出估算都不会在主状态栏里冒充实际节省结果。
+鼠标悬停在状态栏上可查看更多信息。状态栏只表示 VS Code 主动命令的即时状态，不再用旧 adapter 事件冒充当前任务。
 
 XiT CLI 在运行 `xit auto` 时还会把当前 active run 写到工作区 `.xit/state/current-run.json`（兼容保留 `.xit/state/current.json`）。扩展优先监听这个 state 文件来感知 running / completed 状态，再用 `.xit/history.jsonl` 做完成态与历史回放兜底。
 
-从 0.0.22 起，状态栏和 Dashboard 顶部 Current Status 共用同一个 live status 视图。除了 `.xit/state/current-run.json` 和 `.xit/history.jsonl`，扩展还会监听本地 adapter hook metadata（`~/.xit/codex-hooks/events.jsonl`、`~/.xit/claude-hooks/events.jsonl`、`~/.xit/kimi-hooks/events.jsonl`、`~/.xit/cursor-hooks/events.jsonl`、`~/.xit/kimi-hooks/turn-events.jsonl`），用来显示“观察中 / 接管中 / 本轮未触发吸T”等实时状态。扩展不会读取 Claude、Codex、Gemini 或 Cursor 的聊天内容。
+VS Code 扩展是宿主 UI 型集成：状态栏展示当前 VS Code 主动命令，Dashboard 展示本次、今日和累计统计，Output Channel 提供诊断。扩展仍可读取本地 hook metadata 做诊断，但这些旧事件不会驱动状态栏瞬时状态。
 
 ## Dashboard 0.0.17
 
 深色工具风 Dashboard，黑金 accent，本地完全无遥测。默认首屏显示：
 
-- Current Status
-- Latest Saved
-- Today Saved
-- Workspace Total
-- AI Adapter Health 卡片
-- Top Token-Heavy Commands 表格
+- 本次发功
+- 今日功力
+- 功力累计
 
-没有真实 run 时（或 state 文件为空）显示温和空状态，不会展示测试命令。调试信息如 binary path、workspace cwd、attempted paths、VS Code terminal events 已移入默认折叠的 `Advanced / Debug` 区域，低层警告也仅在此显示。
+没有真实 run 时（或 state 文件为空）显示温和空状态，不会展示测试命令。
 
 **边界说明：** 吸T神功**不会读取** AI 聊天内容，也不会读取私有 Webview。它通过本地命令输出、workspace 规则和 `.xit` 运行记录帮助 AI coding workflow 降噪。
 
@@ -117,9 +112,10 @@ XiT CLI 在运行 `xit auto` 时还会把当前 active run 写到工作区 `.xit
 ## Token 估算说明
 
 - 状态栏、tooltip 和 Dashboard 中的 token 数字默认是**估算值**
-- 如果 XiT history / gain 已提供 `saved_tokens` 或 `saved_tokens_display`，插件会优先使用这些字段
-- 如果没有现成 token 字段，插件会按 `bytes / 4` 做保守估算
-- 不同 AI 模型的 tokenizer 不同，所以 `~10k Token` 应理解为本地近似统计，不是某个模型 API 的精确 billing 数字
+- 如果 XiT history / gain 已提供数值字段 `saved_tokens`，插件优先使用该字段
+- 如果没有 `saved_tokens`，插件按 `saved_bytes / 4` 或 `(raw_bytes - summary_bytes) / 4` 做保守估算
+- 旧记录里的 `saved_tokens_display` 只作为 schema 兼容字段保留，不作为新 UI 的优先来源
+- 不同 AI 模型的 tokenizer 不同，所以 `约 10.00k Token` 应理解为本地近似统计，不是某个模型 API 的精确 billing 数字
 - 这些 token 统计默认只保留在本地工作区和本地 XiT 数据目录，不会上传
 
 ## 从 VSIX 安装

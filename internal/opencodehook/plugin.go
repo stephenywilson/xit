@@ -68,15 +68,13 @@ function shouldCompress(cmd) {
 }
 
 // buildFinalCommand rewrites cmd to run via xit auto.
-// envPrefix is prepended immediately before "xit auto" so that callers can
-// inject per-invocation env vars (e.g. XIT_ADAPTER=opencode).
-function buildFinalCommand(cmd, envPrefix) {
-  const xitCmd = (envPrefix || "") + "xit auto ";
+function buildFinalCommand(cmd) {
+  const xitCmd = "xit auto ";
   const c = cmd.trim();
 
   const shellMatch = c.match(/^(bash|sh)((?:\s+-[a-z]+)*)\s+["'](.+)["']$/i);
   if (shellMatch) {
-    const inner = buildFinalCommand(shellMatch[3], envPrefix);
+    const inner = buildFinalCommand(shellMatch[3]);
     return shellMatch[1] + shellMatch[2] + ' "' + inner + '"';
   }
 
@@ -98,6 +96,92 @@ function buildFinalCommand(cmd, envPrefix) {
   }
 
   return xitCmd + c;
+}
+
+function splitLastAndOr(c) {
+  const lastAnd = c.lastIndexOf("&&");
+  const lastOr = c.lastIndexOf("||");
+  const splitAt = Math.max(lastAnd, lastOr);
+  if (splitAt <= 0) return null;
+  return {
+    prefix: c.slice(0, splitAt + 2),
+    suffix: c.slice(splitAt + 2).trim(),
+  };
+}
+
+function isXitAutoCommand(cmd) {
+  const core = extractCoreCommand(cmd);
+  return core.startsWith("xit auto ") || core.startsWith("./xit auto ");
+}
+
+function injectEnvIntoXitAuto(cmd) {
+  const c = cmd.trim();
+
+  const shellMatch = c.match(/^(bash|sh)((?:\s+-[a-z]+)*)\s+["'](.+)["']$/i);
+  if (shellMatch) {
+    const inner = injectEnvIntoXitAuto(shellMatch[3]);
+    return shellMatch[1] + shellMatch[2] + ' "' + inner + '"';
+  }
+
+  const split = splitLastAndOr(c);
+  if (split) {
+    return split.prefix + " " + injectEnvIntoXitAuto(split.suffix);
+  }
+
+  let target = c;
+  if (target.startsWith("command ")) {
+    target = target.slice(8).trim();
+  }
+  target = stripLeadingOpenCodeAdapterEnv(target);
+  return target;
+}
+
+function sha256Hex(s) {
+  try {
+    const crypto = require("crypto");
+    return crypto.createHash("sha256").update(String(s || "")).digest("hex");
+  } catch {
+    return "";
+  }
+}
+
+function opencodeTurnKey(sessionID, userMessageID) {
+  if (!sessionID || !userMessageID) return "";
+  const hex = sha256Hex(String(sessionID) + "\x00" + String(userMessageID));
+  return hex ? hex.slice(0, 24) : "";
+}
+
+function stripLeadingOpenCodeAdapterEnv(cmd) {
+  return cmd.trim()
+    .replace(/^XIT_ADAPTER=opencode\s+/, "")
+    .replace(/^XIT_OPENCODE_TURN_KEY=(?:'[^']*'|"[^"]*"|\S+)\s+/, "");
+}
+
+function eventTypeOf(input) {
+  const ev = input && input.event ? input.event : input;
+  return (ev && ev.type ? ev.type : (input && input.type ? input.type : "")).toString();
+}
+
+function eventMessageOf(input) {
+  const ev = input && input.event ? input.event : input;
+  const props = ev && ev.properties ? ev.properties : {};
+  return props.info || props.message || (ev && ev.message) || (input && input.message) || {};
+}
+
+function eventSessionIDOf(input, msg) {
+  const ev = input && input.event ? input.event : input;
+  const props = ev && ev.properties ? ev.properties : {};
+  const session = (ev && ev.session) || (input && input.session) || {};
+  return (input && input.sessionID) ||
+    (ev && ev.sessionID) ||
+    props.sessionID ||
+    (input && input.sessionId) ||
+    (ev && ev.sessionId) ||
+    props.sessionId ||
+    session.id ||
+    (msg && msg.sessionID) ||
+    (msg && msg.sessionId) ||
+    "";
 }
 
 function logEvent(home, record) {
@@ -130,6 +214,50 @@ function logDebug(home, record) {
 export const XiTPlugin = async ({ directory, worktree }) => {
   const home = process.env.HOME || process.env.USERPROFILE || "/tmp";
   const callState = new Map();
+  const activeTurnBySession = new Map();
+
+  function activateUserTurn(sessionID, userMessageID, source, allowReplace) {
+    if (!sessionID || !userMessageID) return "";
+    const current = activeTurnBySession.get(sessionID);
+    if (current && current.turnOpen && !allowReplace) {
+      return current.turnKey || "";
+    }
+    const turnKey = opencodeTurnKey(sessionID, userMessageID);
+    if (!turnKey) return "";
+    const sameTurn = current && current.userMessageID === userMessageID && current.turnKey === turnKey;
+    activeTurnBySession.set(sessionID, {
+      turnKey,
+      userMessageID,
+      turnOpen: true,
+    });
+    if (!sameTurn) {
+      logEvent(home, {
+        timestamp: new Date().toISOString(),
+        adapter: "opencode",
+        cwd: directory || worktree || process.cwd(),
+        action: "observe",
+        reason: "user_message_turn_start",
+        turnKey,
+        source: source || "",
+        stage: "turn_activate",
+      });
+    }
+    return turnKey;
+  }
+
+  function clearActiveTurn(sessionID, source) {
+    if (!sessionID) return;
+    activeTurnBySession.delete(sessionID);
+    logEvent(home, {
+      timestamp: new Date().toISOString(),
+      adapter: "opencode",
+      cwd: directory || worktree || process.cwd(),
+      action: "observe",
+      reason: "session_idle_clear_active_turn",
+      source: source || "",
+      stage: "turn_clear",
+    });
+  }
 
   // Diagnostic: plugin initialized
   logDebug(home, {
@@ -141,22 +269,41 @@ export const XiTPlugin = async ({ directory, worktree }) => {
   });
 
   const hooks = {
+    "chat.message": async (input, output) => {
+      const msg = output && output.message ? output.message : {};
+      if (input && input.sessionID && msg && msg.role === "user" && msg.id) {
+        activateUserTurn(input.sessionID, msg.id, "chat.message", true);
+      }
+    },
+
+    "event": async (input) => {
+      const type = eventTypeOf(input);
+      const msg = eventMessageOf(input);
+      const sessionID = eventSessionIDOf(input, msg);
+
+      if (type === "message.updated" && msg && msg.role === "user" && msg.id && sessionID) {
+        activateUserTurn(sessionID, msg.id, "message.updated", false);
+        return;
+      }
+
+      if (type === "session.idle" && sessionID) {
+        clearActiveTurn(sessionID, "session.idle");
+      }
+    },
+
     "tool.execute.before": async (input, output) => {
       logDebug(home, {
         timestamp: new Date().toISOString(),
         adapter: "opencode",
         stage: "tool_execute_before_entered",
         tool: input.tool,
-        sessionID: input.sessionID,
-        callID: input.callID,
+        hasCallID: !!input.callID,
         cwd: directory || worktree || process.cwd(),
       });
 
       if (input.tool !== "bash" && input.tool !== "Bash") return;
       const cmd = (output.args && output.args.command ? output.args.command : (output.args && output.args.cmd ? output.args.cmd : "")).toString();
-      const alreadyWrapped =
-        cmd.trim().startsWith("xit auto ") ||
-        cmd.trim().startsWith("./xit auto ");
+      const alreadyWrapped = isXitAutoCommand(cmd);
 
       let action = "observe";
       let reason = "low_noise";
@@ -164,6 +311,8 @@ export const XiTPlugin = async ({ directory, worktree }) => {
 
       const coreCmd = extractCoreCommand(cmd);
       const compressDecision = shouldCompress(cmd);
+      const activeTurn = activeTurnBySession.get(input.sessionID);
+      const turnKey = activeTurn && activeTurn.turnOpen ? activeTurn.turnKey : "";
 
       logDebug(home, {
         timestamp: new Date().toISOString(),
@@ -175,29 +324,29 @@ export const XiTPlugin = async ({ directory, worktree }) => {
         alreadyWrapped,
       });
 
-      const hasEnvPrefix = cmd.includes("XIT_ADAPTER=opencode");
-
-      if (alreadyWrapped && !hasEnvPrefix) {
-        // AI wrote "xit auto ..." itself — inject adapter env without double-wrapping
-        action = "reroute";
-        reason = "already_xit_auto_inject_env";
-        finalCmd = "XIT_ADAPTER=opencode " + cmd.trim();
+      if (alreadyWrapped) {
+        // AI wrote "xit auto ..." itself — normalize visible command without double-wrapping.
+        finalCmd = injectEnvIntoXitAuto(cmd);
+        if (finalCmd !== cmd) {
+          action = "reroute";
+          reason = "already_xit_auto";
+        } else {
+          action = "observe";
+          reason = "already_xit_auto";
+        }
         if (output.args && typeof output.args === "object") {
           output.args.command = finalCmd;
         }
-      } else if (alreadyWrapped && hasEnvPrefix) {
-        action = "observe";
-        reason = "already_xit_auto_with_env";
       } else if (compressDecision) {
         action = "reroute";
         reason = "should_compress";
-        finalCmd = buildFinalCommand(cmd, "XIT_ADAPTER=opencode ");
+        finalCmd = buildFinalCommand(cmd);
         if (output.args && typeof output.args === "object") {
           output.args.command = finalCmd;
         }
       }
 
-      callState.set(input.callID, { original: cmd, final: finalCmd });
+      callState.set(input.callID, { original: cmd, final: finalCmd, turnKey, action });
 
       logEvent(home, {
         timestamp: new Date().toISOString(),
@@ -208,10 +357,23 @@ export const XiTPlugin = async ({ directory, worktree }) => {
         final_command: finalCmd,
         action,
         reason,
-        sessionID: input.sessionID,
-        callID: input.callID,
+        turnKey,
+        hasCallID: !!input.callID,
         stage: "before",
       });
+    },
+
+    "shell.env": async (input, output) => {
+      const state = input && input.callID ? callState.get(input.callID) : null;
+      const activeTurn = input && input.sessionID ? activeTurnBySession.get(input.sessionID) : null;
+      const turnKey = (state && state.turnKey) || (activeTurn && activeTurn.turnOpen ? activeTurn.turnKey : "");
+      const shouldInject = !!turnKey || (state && (state.action === "reroute" || state.final !== state.original));
+      if (!shouldInject) return;
+      if (!output.env || typeof output.env !== "object") output.env = {};
+      output.env.XIT_ADAPTER = "opencode";
+      if (turnKey) {
+        output.env.XIT_OPENCODE_TURN_KEY = turnKey;
+      }
     },
 
     "tool.execute.after": async (input, output) => {
@@ -220,8 +382,7 @@ export const XiTPlugin = async ({ directory, worktree }) => {
         adapter: "opencode",
         stage: "tool_execute_after_entered",
         tool: input.tool,
-        sessionID: input.sessionID,
-        callID: input.callID,
+        hasCallID: !!input.callID,
         cwd: directory || worktree || process.cwd(),
       });
 
@@ -229,6 +390,8 @@ export const XiTPlugin = async ({ directory, worktree }) => {
       const cmd = (input.args && input.args.command ? input.args.command : (input.args && input.args.cmd ? output.args.cmd : "")).toString();
       const state = callState.get(input.callID);
       const finalCmd = state ? state.final : cmd;
+      const activeTurn = activeTurnBySession.get(input.sessionID);
+      const turnKey = state ? state.turnKey : (activeTurn && activeTurn.turnOpen ? activeTurn.turnKey : "");
 
       logEvent(home, {
         timestamp: new Date().toISOString(),
@@ -240,14 +403,15 @@ export const XiTPlugin = async ({ directory, worktree }) => {
         output_excerpt: (output.output ? output.output.toString().slice(0, 200) : ""),
         action: "observe",
         reason: "after_execution",
-        sessionID: input.sessionID,
-        callID: input.callID,
+        turnKey,
+        hasCallID: !!input.callID,
         stage: "after",
         title: output.title || "",
       });
 
       callState.delete(input.callID);
     },
+
   };
 
   logDebug(home, {
@@ -256,6 +420,8 @@ export const XiTPlugin = async ({ directory, worktree }) => {
     stage: "hooks_registered",
     hasToolExecuteBefore: "tool.execute.before" in hooks,
     hasToolExecuteAfter: "tool.execute.after" in hooks,
+    hasShellEnv: "shell.env" in hooks,
+    hasEvent: "event" in hooks,
   });
 
   return hooks;

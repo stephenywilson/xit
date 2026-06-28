@@ -2,15 +2,19 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/stephenywilson/xit/internal/opencodehook"
 	"github.com/stephenywilson/xit/internal/shim"
+	"github.com/stephenywilson/xit/internal/vscodebridge"
 )
 
 func buildXit(t *testing.T) string {
@@ -39,12 +43,14 @@ func stripEnv(env []string, key string) []string {
 	return out
 }
 
-// noXitAdapterEnv returns os.Environ() with XIT_ADAPTER and XIT_OPENCODE_REROUTE_COUNT
-// stripped so that tests for the default (non-OpenCode) output path are not affected
-// by an outer shell that happens to have XIT_ADAPTER=opencode set.
+// noXitAdapterEnv returns os.Environ() with XiT adapter env stripped so tests
+// are not affected by an outer shell running under an adapter.
 func noXitAdapterEnv() []string {
 	env := stripEnv(os.Environ(), "XIT_ADAPTER")
 	env = stripEnv(env, "XIT_OPENCODE_REROUTE_COUNT")
+	env = stripEnv(env, "XIT_OPENCODE_TURN_KEY")
+	env = stripEnv(env, "XIT_OPENCODE_SESSION_ID")
+	env = stripEnv(env, "XIT_OPENCODE_USER_MESSAGE_ID")
 	return env
 }
 
@@ -299,8 +305,8 @@ func TestVersionOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("xit --version failed: %v", err)
 	}
-	if !strings.Contains(string(out), "0.2.46") {
-		t.Errorf("expected version 0.2.46, got: %s", out)
+	if !strings.Contains(string(out), "0.2.47") {
+		t.Errorf("expected version 0.2.47, got: %s", out)
 	}
 }
 
@@ -802,6 +808,164 @@ func parsePercentAfter(t *testing.T, out, label string) int {
 		t.Fatalf("could not parse percent from %q: %v", rest[:pctIdx], err)
 	}
 	return n
+}
+
+// TestFormatTokenHuman locks the global user-visible token format:
+// >=1000 -> "约 X.XXk Token" (2 decimals), <1000 -> "N Token".
+func TestFormatTokenHuman(t *testing.T) {
+	cases := []struct {
+		n    int
+		want string
+	}{
+		{0, "0 Token"},
+		{293, "293 Token"},
+		{999, "999 Token"},
+		{1000, "约 1.00k Token"},
+		{10291, "约 10.29k Token"},
+		{15234, "约 15.23k Token"},
+	}
+	for _, c := range cases {
+		if got := formatTokenHuman(c.n); got != c.want {
+			t.Errorf("formatTokenHuman(%d) = %q, want %q", c.n, got, c.want)
+		}
+	}
+}
+
+// TestFormatTokenAntigravity locks the Antigravity-only token format: two-decimal
+// k WITHOUT the "约" prefix.
+func TestFormatTokenAntigravity(t *testing.T) {
+	cases := []struct {
+		n    int
+		want string
+	}{
+		{999, "999 Token"},
+		{1000, "1.00k Token"},
+		{10283, "10.28k Token"},
+		{10291, "10.29k Token"},
+		{15234, "15.23k Token"},
+	}
+	for _, c := range cases {
+		got := formatTokenAntigravity(c.n)
+		if got != c.want {
+			t.Errorf("formatTokenAntigravity(%d) = %q, want %q", c.n, got, c.want)
+		}
+		if strings.Contains(got, "约") {
+			t.Errorf("formatTokenAntigravity(%d) must not contain 约, got %q", c.n, got)
+		}
+	}
+}
+
+// TestEffectiveAdapter verifies adapter resolution: explicit XIT_ADAPTER wins,
+// otherwise Antigravity is detected from the process ancestor chain (mocked via
+// XIT_TEST_ANCESTORS), and unrelated shells resolve to "".
+func TestEffectiveAdapter(t *testing.T) {
+	for _, k := range []string{"XIT_ADAPTER", "XIT_TEST_ANCESTORS", "XIT_TEST_CLAUDECODE"} {
+		orig, had := os.LookupEnv(k)
+		key := k
+		t.Cleanup(func() {
+			if had {
+				os.Setenv(key, orig)
+			} else {
+				os.Unsetenv(key)
+			}
+		})
+	}
+
+	cases := []struct {
+		name, adapter, ancestors, claudecode, want string
+	}{
+		{"explicit antigravity", "antigravity", "bash", "0", "antigravity"},
+		{"explicit opencode wins over ancestry+claudecode", "opencode", "agy", "1", "opencode"},
+		{"ancestor agy", "", "agy,bash,zsh", "0", "antigravity"},
+		{"ancestor antigravity-cli", "", "/usr/local/bin/antigravity-cli,bash", "0", "antigravity"},
+		{"ancestor antigravity path gemini", "", "/Users/x/.gemini/antigravity-cli/bin/gemini,zsh", "0", "antigravity"},
+		{"antigravity ancestry wins over claudecode", "", "agy,bash", "1", "antigravity"},
+		{"antigravity ancestry wins over claude ancestor", "", "agy,claude", "0", "antigravity"},
+		{"claudecode env => claude", "", "bash,zsh", "1", "claude"},
+		{"ancestor claude basename => claude", "", "/Users/x/.vscode/extensions/anthropic.claude-code-2.1.183-darwin-arm64/resources/native-binary/claude,bash", "0", "claude"},
+		{"ancestor claude-code basename => claude", "", "/usr/local/bin/claude-code,zsh", "0", "claude"},
+		{"plain shell no claudecode", "", "bash,zsh,login,Terminal", "0", ""},
+		{"legacy must not match agy", "", "legacy,bash", "0", ""},
+		{"bare gemini must not match", "", "gemini,bash", "0", ""},
+		{"node ancestor must not match claude", "", "node,bash", "0", ""},
+		{"claude-flow must not substring-match claude", "", "claude-flow,bash", "0", ""},
+		{"dir containing claude must not match", "", "/Users/claude-fan/bin/myapp,bash", "0", ""},
+	}
+	for _, c := range cases {
+		if c.adapter == "" {
+			os.Unsetenv("XIT_ADAPTER")
+		} else {
+			os.Setenv("XIT_ADAPTER", c.adapter)
+		}
+		os.Setenv("XIT_TEST_ANCESTORS", c.ancestors)
+		os.Setenv("XIT_TEST_CLAUDECODE", c.claudecode)
+		if got := effectiveAdapter(); got != c.want {
+			t.Errorf("%s: effectiveAdapter()=%q want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// TestAutoSummaryHumanTokenFormat verifies the CLI summary uses the new "约 X.XXk
+// Token" format (not the lossy "10k") and shows 压缩率 not 降噪率.
+func TestAutoSummaryHumanTokenFormat(t *testing.T) {
+	bin := buildXit(t)
+	tmpPath := t.TempDir()
+	tmpHome := t.TempDir()
+	toolPath := filepath.Join(tmpPath, "noisycmd")
+	os.WriteFile(toolPath, []byte("#!/bin/sh\ni=0\nwhile [ $i -lt 640 ]; do echo \"block line $i hello xit compress aaaa bbbb cccc dddd eeee ffff\"; i=$((i+1)); done"), 0755)
+
+	cmd := exec.Command(bin, "auto", "noisycmd")
+	cmd.Env = append(noXitAdapterEnv(), "PATH="+tmpPath, "XIT_HOME="+tmpHome, "XIT_NONINTERACTIVE=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("auto noisycmd failed: %v\n%s", err, out)
+	}
+	s := string(out)
+	if !strings.Contains(s, "本次节省: 约 ") || !strings.Contains(s, "k Token") {
+		t.Errorf("expected '本次节省: 约 X.XXk Token', got:\n%s", s)
+	}
+	if !strings.Contains(s, "压缩率") || strings.Contains(s, "降噪率") {
+		t.Errorf("expected 压缩率 and no 降噪率, got:\n%s", s)
+	}
+	// The old lossy "10k Token" form has no "约 " prefix; the new form always does.
+	if regexp.MustCompile(`[0-9]+k Token`).MatchString(s) && !strings.Contains(s, "约 ") {
+		t.Errorf("must not contain lossy 'Nk Token' form, got:\n%s", s)
+	}
+}
+
+// TestAutoOpencodeToolOutputShowsTwoLineFooter verifies OpenCode tool cards show
+// the fixed two-line XiT footer while hiding machine fields.
+func TestAutoOpencodeToolOutputShowsTwoLineFooter(t *testing.T) {
+	bin := buildXit(t)
+	tmpPath := t.TempDir()
+	tmpHome := t.TempDir()
+	toolPath := filepath.Join(tmpPath, "noisycmd")
+	os.WriteFile(toolPath, []byte("#!/bin/sh\ni=0\nwhile [ $i -lt 640 ]; do echo \"block line $i hello xit compress aaaa bbbb cccc dddd eeee ffff\"; i=$((i+1)); done"), 0755)
+
+	cmd := exec.Command(bin, "auto", "noisycmd")
+	cmd.Env = append(noXitAdapterEnv(), "PATH="+tmpPath, "XIT_HOME="+tmpHome, "XIT_NONINTERACTIVE=1", "XIT_ADAPTER=opencode", "XIT_OPENCODE_TURN_KEY=turn-format")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("auto noisycmd (opencode) failed: %v\n%s", err, out)
+	}
+	s := string(out)
+	if !strings.Contains(s, "吸T神功 · OpenCode · 守护你的T") ||
+		!strings.Contains(s, "本次省 约 ") ||
+		!strings.Contains(s, "k Token · 本轮共吸 1次") {
+		t.Errorf("expected OpenCode two-line footer, got:\n%s", s)
+	}
+	if strings.Contains(s, "命令执行成功，无需展开重复输出。") {
+		t.Errorf("OpenCode pure success should not include generic success line, got:\n%s", s)
+	}
+	for _, bad := range []string{"command:", "exit_code:", "raw_log:", "key_facts:", "降噪率", "压缩率", "saved_tokens:", ".xit/runs"} {
+		if strings.Contains(s, bad) {
+			t.Errorf("opencode output must not contain %q, got:\n%s", bad, s)
+		}
+	}
+	st := opencodehook.ReadTurnStateByKey(tmpHome, "turn-format")
+	if st == nil || st.RunCount != 1 || st.SavedTokensTotal <= 0 {
+		t.Fatalf("expected pending OpenCode turn state, got %+v", st)
+	}
 }
 
 // TestAutoSummaryShowsRealCompressionRate verifies the human summary prints a
@@ -2784,6 +2948,7 @@ func TestClaudeStatuslineNoColor(t *testing.T) {
 	// make this fallback test read a real "本次省NNk Token" line.
 	tmpProject := t.TempDir()
 	cmd := exec.Command(bin, "claude", "statusline")
+	// No active run -> the merged idle line (contains 准备就绪) is poll-safe regardless of call count.
 	cmd.Env = append(os.Environ(), "HOME="+tmpHome, "XIT_HOME="+tmpProject, "XIT_NONINTERACTIVE=1", "NO_COLOR=1")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -2794,7 +2959,7 @@ func TestClaudeStatuslineNoColor(t *testing.T) {
 		t.Errorf("NO_COLOR should not emit ANSI codes, got: %q", line)
 	}
 	if !strings.Contains(line, "准备就绪") {
-		t.Errorf("expected 准备就绪 in fallback, got: %s", line)
+		t.Errorf("expected 准备就绪 on first idle call, got: %s", line)
 	}
 }
 
@@ -2825,7 +2990,7 @@ func TestClaudeStatuslineAutostateRunning(t *testing.T) {
 	tmpProject := t.TempDir()
 
 	_ = os.MkdirAll(filepath.Join(tmpProject, "state"), 0755)
-	state := `{"status":"running","started_at":"` + time.Now().Format(time.RFC3339) + `","command":"go test"}`
+	state := `{"status":"running","adapter":"claude","started_at":"` + time.Now().Format(time.RFC3339) + `","command":"go test"}`
 	_ = os.WriteFile(filepath.Join(tmpProject, "state", "current.json"), []byte(state), 0644)
 
 	cmd := exec.Command(bin, "claude", "statusline", "--json")
@@ -2853,11 +3018,12 @@ func TestClaudeStatuslineAutostateCompleted(t *testing.T) {
 	tmpProject := t.TempDir()
 
 	_ = os.MkdirAll(filepath.Join(tmpProject, "state"), 0755)
-	state := `{"status":"completed","finished_at":"` + time.Now().Format(time.RFC3339) + `","saved_bytes":4000,"command":"go test"}`
+	state := `{"status":"completed","adapter":"claude","finished_at":"` + time.Now().Format(time.RFC3339) + `","completed_at":"` + time.Now().Format(time.RFC3339) + `","saved_bytes":4000,"command":"go test"}`
 	_ = os.WriteFile(filepath.Join(tmpProject, "state", "current.json"), []byte(state), 0644)
 
 	cmd := exec.Command(bin, "claude", "statusline", "--json")
-	cmd.Env = append(os.Environ(), "HOME="+tmpHome, "XIT_HOME="+tmpProject, "XIT_NONINTERACTIVE=1")
+	// No CLAUDE_CODE_SESSION_ID/count -> no 本轮共吸 suffix expected either.
+	cmd.Env = append(stripEnv(os.Environ(), "CLAUDE_CODE_SESSION_ID"), "HOME="+tmpHome, "XIT_HOME="+tmpProject, "XIT_NONINTERACTIVE=1")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("xit claude statusline --json failed: %v\n%s", err, out)
@@ -2867,8 +3033,11 @@ func TestClaudeStatuslineAutostateCompleted(t *testing.T) {
 		t.Fatalf("invalid JSON: %v\n%s", err, out)
 	}
 	line, _ := data["line"].(string)
-	if !strings.Contains(line, "本次省1k Token") {
-		t.Errorf("expected 本次省1k Token for completed autostate, got: %s", line)
+	if !strings.Contains(line, "吸T完成 · Claude · 本轮省 1.00k Token") {
+		t.Errorf("expected '吸T完成 · Claude · 本轮省 1.00k Token' for completed autostate, got: %s", line)
+	}
+	if strings.Contains(line, "命中率") || strings.Contains(line, "本次省") || strings.Contains(line, "约") {
+		t.Errorf("Claude completed must not contain 命中率/本次省/约, got: %s", line)
 	}
 	if data["source"] != "autostate_completed" {
 		t.Errorf("expected source autostate_completed, got %v", data["source"])
@@ -2899,7 +3068,7 @@ func antigravityStatuslineJSON(t *testing.T, tmpProject string) map[string]inter
 func TestAntigravityStatuslineRunning(t *testing.T) {
 	tmpProject := t.TempDir()
 	_ = os.MkdirAll(filepath.Join(tmpProject, "state"), 0755)
-	state := `{"status":"running","started_at":"` + time.Now().Format(time.RFC3339) + `","heartbeat_at":"` + time.Now().Format(time.RFC3339) + `","command":"go test"}`
+	state := `{"status":"running","adapter":"antigravity","started_at":"` + time.Now().Format(time.RFC3339) + `","heartbeat_at":"` + time.Now().Format(time.RFC3339) + `","command":"go test"}`
 	_ = os.WriteFile(filepath.Join(tmpProject, "state", "current-run.json"), []byte(state), 0644)
 
 	data := antigravityStatuslineJSON(t, tmpProject)
@@ -2912,22 +3081,525 @@ func TestAntigravityStatuslineRunning(t *testing.T) {
 	}
 }
 
-// TestAntigravityStatuslineCompleted verifies a fresh completed current-run with
-// savings drives the real "Antigravity · 本次省 X Token" line.
-func TestAntigravityStatuslineCompleted(t *testing.T) {
+// TestAntigravityStatuslineCompletedSettle verifies that an explicit "settling"
+// state shows "正在收功中" (correct character 功, not 工) and not the saved-token
+// line.
+func TestAntigravityStatuslineCompletedSettle(t *testing.T) {
 	tmpProject := t.TempDir()
 	_ = os.MkdirAll(filepath.Join(tmpProject, "state"), 0755)
-	state := `{"status":"completed","finished_at":"` + time.Now().Format(time.RFC3339) + `","completed_at":"` + time.Now().Format(time.RFC3339) + `","saved_bytes":4000,"command":"go test"}`
+	nowStr := time.Now().Format(time.RFC3339)
+	state := `{"status":"settling","adapter":"antigravity","started_at":"` + nowStr + `","heartbeat_at":"` + nowStr + `","saved_bytes":4000,"command":"go test"}`
 	_ = os.WriteFile(filepath.Join(tmpProject, "state", "current-run.json"), []byte(state), 0644)
 
 	data := antigravityStatuslineJSON(t, tmpProject)
 	line, _ := data["line"].(string)
-	if !strings.Contains(line, "Antigravity · 本次省") || !strings.Contains(line, "Token") {
-		t.Errorf("expected 'Antigravity · 本次省 X Token' for completed autostate, got: %s", line)
+	if !strings.Contains(line, "吸T完成 · Antigravity · 正在收功中") {
+		t.Errorf("expected '吸T完成 · Antigravity · 正在收功中' for settling state, got: %s", line)
+	}
+	if strings.Contains(line, "正在收工中") || strings.Contains(line, "结果整理中") {
+		t.Errorf("must NOT use typo 正在收工中 / old 结果整理中, got: %s", line)
+	}
+	if strings.Contains(line, "本轮省") || strings.Contains(line, "本次省") {
+		t.Errorf("must NOT show saved tokens during settling, got: %s", line)
+	}
+	if data["source"] != "autostate_settling" {
+		t.Errorf("expected source autostate_settling, got %v", data["source"])
+	}
+}
+
+// TestAntigravityStatuslineStaleSettlingFallback verifies a stale settling state
+// (heartbeat older than the freshness window) does NOT stick on 正在收功中.
+func TestAntigravityStatuslineStaleSettlingFallback(t *testing.T) {
+	tmpProject := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(tmpProject, "state"), 0755)
+	old := time.Now().Add(-30 * time.Second).Format(time.RFC3339)
+	state := `{"status":"settling","adapter":"antigravity","started_at":"` + old + `","heartbeat_at":"` + old + `","saved_bytes":4000,"command":"go test"}`
+	_ = os.WriteFile(filepath.Join(tmpProject, "state", "current-run.json"), []byte(state), 0644)
+
+	data := antigravityStatuslineJSON(t, tmpProject)
+	line, _ := data["line"].(string)
+	if strings.Contains(line, "正在收功中") {
+		t.Errorf("stale settling must NOT keep showing 正在收功中, got: %s", line)
+	}
+}
+
+// TestAntigravityStatuslineCompletedSavedAfterSettle verifies that once the settle
+// window has passed, the completed window STABLY shows the real saved-token line
+// (poll-safe: no rotation), and never the low-info "本次已发功" or settle text.
+func TestAntigravityStatuslineCompletedSavedAfterSettle(t *testing.T) {
+	tmpProject := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(tmpProject, "state"), 0755)
+	past := time.Now().Add(-10 * time.Second).Format(time.RFC3339) // past 1s settle, within 30s fresh
+	state := `{"status":"completed","adapter":"antigravity","finished_at":"` + past + `","completed_at":"` + past + `","saved_bytes":4000,"command":"go test"}`
+	_ = os.WriteFile(filepath.Join(tmpProject, "state", "current-run.json"), []byte(state), 0644)
+
+	data := antigravityStatuslineJSON(t, tmpProject)
+	line, _ := data["line"].(string)
+	if !strings.Contains(line, "吸T完成 · Antigravity · 本轮省 1.00k Token") {
+		t.Errorf("expected stable '吸T完成 · Antigravity · 本轮省 1.00k Token', got: %s", line)
+	}
+	if strings.Contains(line, "约") {
+		t.Errorf("Antigravity completed must NOT contain 约, got: %s", line)
+	}
+	for _, bad := range []string{"本次已发功", "本轮共吸", "等待下轮发功", "本次省", "正在收功中", "正在收工中"} {
+		if strings.Contains(line, bad) {
+			t.Errorf("completed line must NOT contain %q, got: %s", bad, line)
+		}
 	}
 	if data["source"] != "autostate_completed" {
 		t.Errorf("expected source autostate_completed, got %v", data["source"])
 	}
+}
+
+// TestAntigravityStatuslineWaiting verifies that after a recent run produced real
+// savings (history within the window) but no fresh completed/running state, the
+// statusline rotates into the waiting flow (等待下轮发功 / 守护你的T), not 准备就绪.
+// TestAntigravityStatuslineNoCompletedLowInfoRotation verifies that across the
+// whole completed window (1s–30s) and repeated calls, the line is always the
+// stable saved-token line and never the low-info "本次已发功" — so a host that
+// samples the statusline only once cannot get stuck on a low-value line.
+func TestAntigravityStatuslineNoCompletedLowInfoRotation(t *testing.T) {
+	bin := buildXit(t)
+	tmpHome := t.TempDir()
+	for _, ageSec := range []int{2, 5, 10, 20, 28} {
+		tmpProject := t.TempDir()
+		_ = os.MkdirAll(filepath.Join(tmpProject, "state"), 0755)
+		ts := time.Now().Add(-time.Duration(ageSec) * time.Second).Format(time.RFC3339)
+		state := `{"status":"completed","adapter":"antigravity","finished_at":"` + ts + `","completed_at":"` + ts + `","saved_bytes":41167,"command":"go test"}`
+		_ = os.WriteFile(filepath.Join(tmpProject, "state", "current-run.json"), []byte(state), 0644)
+
+		// Two back-to-back calls (different wall-clock instants) to defeat any
+		// residual time-bucket rotation.
+		for call := 0; call < 2; call++ {
+			cmd := exec.Command(bin, "antigravity", "statusline", "--json")
+			cmd.Env = append(os.Environ(), "HOME="+tmpHome, "XIT_HOME="+tmpProject, "XIT_NONINTERACTIVE=1")
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("statusline failed (age=%ds): %v\n%s", ageSec, err, out)
+			}
+			var data map[string]interface{}
+			if err := json.Unmarshal(out, &data); err != nil {
+				t.Fatalf("invalid JSON (age=%ds): %v\n%s", ageSec, err, out)
+			}
+			line, _ := data["line"].(string)
+			if strings.Contains(line, "本次已发功") {
+				t.Errorf("age=%ds call=%d: completed window must never show 本次已发功, got: %s", ageSec, call, line)
+			}
+			if !strings.Contains(line, "吸T完成 · Antigravity · 本轮省 10.29k Token") {
+				t.Errorf("age=%ds call=%d: expected stable saved-token line, got: %s", ageSec, call, line)
+			}
+			if strings.Contains(line, "约") {
+				t.Errorf("age=%ds call=%d: Antigravity completed must NOT contain 约, got: %s", ageSec, call, line)
+			}
+		}
+	}
+}
+
+// TestAntigravityStatuslineNoWaiting verifies the "等待下轮发功" state is gone:
+// recent savings in history (but no fresh state) must NOT produce a waiting line.
+func TestAntigravityStatuslineNoWaiting(t *testing.T) {
+	tmpProject := t.TempDir()
+	rec := `{"timestamp":"` + time.Now().Format(time.RFC3339) + `","command":"go test","exit_code":0,"raw_bytes":10000,"summary_bytes":500,"raw_log":"r.log"}` + "\n"
+	_ = os.WriteFile(filepath.Join(tmpProject, "history.jsonl"), []byte(rec), 0644)
+
+	data := antigravityStatuslineJSON(t, tmpProject)
+	line, _ := data["line"].(string)
+	for _, bad := range []string{"等待下轮发功", "本次已发功", "本轮共吸"} {
+		if strings.Contains(line, bad) {
+			t.Errorf("Antigravity must NOT show %q, got: %s", bad, line)
+		}
+	}
+	// With no hook events, this is idle.
+	if !strings.Contains(line, "吸T神功 · Antigravity · 准备就绪") {
+		t.Errorf("expected idle 准备就绪 (no waiting state), got: %s", line)
+	}
+}
+
+// TestAntigravityStatuslineIdle verifies the FIRST idle call of a session shows
+// "准备就绪" (single, no rotation).
+func TestAntigravityStatuslineIdle(t *testing.T) {
+	tmpProject := t.TempDir()
+	data := antigravityStatuslineJSON(t, tmpProject)
+	line, _ := data["line"].(string)
+	if !strings.Contains(line, "吸T神功 · Antigravity · 准备就绪") {
+		t.Errorf("expected first-idle line 准备就绪, got: %s", line)
+	}
+	if data["source"] != "idle_ready" {
+		t.Errorf("expected source idle_ready, got %v", data["source"])
+	}
+}
+
+// agyIdle runs `xit antigravity statusline --json` with a fixed session key and
+// returns (line, source).
+func agyIdle(t *testing.T, bin, home, sessionKey string) (string, string) {
+	t.Helper()
+	cmd := exec.Command(bin, "antigravity", "statusline", "--json")
+	cmd.Env = append(os.Environ(), "HOME="+home, "XIT_HOME="+home, "XIT_NONINTERACTIVE=1",
+		"XIT_TEST_SESSION_KEY="+sessionKey)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("statusline failed: %v\n%s", err, out)
+	}
+	var data map[string]interface{}
+	if err := json.Unmarshal(out, &data); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, out)
+	}
+	line, _ := data["line"].(string)
+	source, _ := data["source"].(string)
+	return line, source
+}
+
+// TestAntigravityStatuslineIdleFirstThenGuard verifies the session-scoped idle
+// strategy: first call -> 准备就绪, later calls -> 守护你的T; a new/stale session
+// resets to 准备就绪.
+func TestAntigravityStatuslineIdleFirstThenGuard(t *testing.T) {
+	bin := buildXit(t)
+	home := t.TempDir()
+
+	// First idle call of session "s1".
+	if l, s := agyIdle(t, bin, home, "s1"); !strings.Contains(l, "准备就绪") || s != "idle_ready" {
+		t.Errorf("call 1 expected 准备就绪/idle_ready, got %q/%q", l, s)
+	}
+	// Second + third call of the SAME session -> 守护你的T.
+	if l, s := agyIdle(t, bin, home, "s1"); !strings.Contains(l, "守护你的T") || s != "idle_guard" {
+		t.Errorf("call 2 expected 守护你的T/idle_guard, got %q/%q", l, s)
+	}
+	if l, _ := agyIdle(t, bin, home, "s1"); !strings.Contains(l, "守护你的T") {
+		t.Errorf("call 3 expected 守护你的T, got %q", l)
+	}
+	// A different session -> back to 准备就绪.
+	if l, s := agyIdle(t, bin, home, "s2"); !strings.Contains(l, "准备就绪") || s != "idle_ready" {
+		t.Errorf("new session expected 准备就绪/idle_ready, got %q/%q", l, s)
+	}
+
+	// Stale session resets to 准备就绪: backdate the recorded state for "s2".
+	statePath := filepath.Join(home, "state", "antigravity-statusline.json")
+	old := time.Now().Add(-30 * time.Minute).Format(time.RFC3339)
+	_ = os.WriteFile(statePath, []byte(`{"session_key":"s2","idle_calls":5,"updated_at":"`+old+`"}`), 0644)
+	if l, s := agyIdle(t, bin, home, "s2"); !strings.Contains(l, "准备就绪") || s != "idle_ready" {
+		t.Errorf("stale session expected 准备就绪/idle_ready, got %q/%q", l, s)
+	}
+}
+
+// TestAntigravityDefaultSettleDelayIs2s verifies the settle buffer default is 2.0s.
+func TestAntigravityDefaultSettleDelayIs2s(t *testing.T) {
+	orig, had := os.LookupEnv("XIT_ANTIGRAVITY_SETTLE_MS")
+	os.Unsetenv("XIT_ANTIGRAVITY_SETTLE_MS")
+	t.Cleanup(func() {
+		if had {
+			os.Setenv("XIT_ANTIGRAVITY_SETTLE_MS", orig)
+		}
+	})
+	if got := antigravitySettleDelay(); got != 2*time.Second {
+		t.Errorf("default antigravity settle delay = %v, want 2s", got)
+	}
+}
+
+// TestAntigravityAutoOutputNaturalLanguage verifies XiT's `xit auto` stdout under
+// XIT_ADAPTER=antigravity is a short natural-language result, hiding all machine
+// bookkeeping fields and any raw_log / .xit/runs path.
+func TestAntigravityAutoOutputNaturalLanguage(t *testing.T) {
+	bin := buildXit(t)
+	tmpPath := t.TempDir()
+	tmpHome := t.TempDir()
+	toolPath := filepath.Join(tmpPath, "noisycmd")
+	os.WriteFile(toolPath, []byte("#!/bin/sh\ni=0\nwhile [ $i -lt 300 ]; do echo \"line $i hello xit compress aaaa bbbb\"; i=$((i+1)); done"), 0755)
+
+	cmd := exec.Command(bin, "auto", "noisycmd")
+	cmd.Env = append(noXitAdapterEnv(), "PATH="+tmpPath, "XIT_HOME="+tmpHome, "XIT_NONINTERACTIVE=1", "XIT_ADAPTER=antigravity", "XIT_ANTIGRAVITY_SETTLE_MS=0")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("auto noisycmd (antigravity) failed: %v\n%s", err, out)
+	}
+	s := string(out)
+	for _, bad := range []string{
+		"command:", "exit_code:", "status:", "reduction:", "saved_tokens:",
+		"raw_log:", "key facts", "key_facts", ".xit/runs",
+		"Compressed Report", "降噪率", "压缩率", "吸T完成", "原始输出", "吸后摘要",
+	} {
+		if strings.Contains(s, bad) {
+			t.Errorf("antigravity tool output must NOT contain %q, got:\n%s", bad, s)
+		}
+	}
+	if !strings.Contains(s, "执行成功") || !strings.Contains(s, "压缩处理") {
+		t.Errorf("expected natural-language result (执行成功 … 压缩处理), got:\n%s", s)
+	}
+}
+
+// TestClaudeAutoOutputNaturalLanguage verifies XiT's `xit auto` stdout under
+// effectiveAdapter()=="claude" is a short natural-language result, hiding all
+// machine bookkeeping fields and any raw_log / .xit/runs path (the real bug:
+// Claude's tool result area was still showing command:/exit_code:/raw_log: etc).
+func TestClaudeAutoOutputNaturalLanguage(t *testing.T) {
+	bin := buildXit(t)
+	tmpPath := t.TempDir()
+	tmpHome := t.TempDir()
+	toolPath := filepath.Join(tmpPath, "noisycmd")
+	os.WriteFile(toolPath, []byte("#!/bin/sh\ni=0\nwhile [ $i -lt 300 ]; do echo \"line $i hello xit compress aaaa bbbb\"; i=$((i+1)); done"), 0755)
+
+	cmd := exec.Command(bin, "auto", "noisycmd")
+	cmd.Env = append(noXitAdapterEnv(), "PATH="+tmpPath, "XIT_HOME="+tmpHome, "XIT_NONINTERACTIVE=1", "XIT_ADAPTER=claude", "XIT_CLAUDE_SETTLE_MS=0")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("auto noisycmd (claude) failed: %v\n%s", err, out)
+	}
+	s := string(out)
+	for _, bad := range []string{
+		"command:", "exit_code:", "status:", "reduction:", "saved_tokens:",
+		"raw_log:", "key facts", "key_facts", ".xit/runs",
+		"降噪率", "压缩率", "吸T完成", "原始输出", "吸后摘要",
+	} {
+		if strings.Contains(s, bad) {
+			t.Errorf("claude tool output must NOT contain %q, got:\n%s", bad, s)
+		}
+	}
+	if !strings.Contains(s, "执行成功") || !strings.Contains(s, "压缩处理") {
+		t.Errorf("expected natural-language result (执行成功 … 压缩处理), got:\n%s", s)
+	}
+}
+
+// TestClaudeAutoDetectedFromAncestryNaturalLanguage verifies that WITHOUT
+// CLAUDECODE/CLAUDE_CODE_SESSION_ID, but with a Claude Code process ancestor
+// (mocked), `xit auto` still renders the natural-language result and hides all
+// machine fields. This is the real-Claude case the user reported: the Bash
+// tool's spawned subprocess may not inherit CLAUDECODE, so detection must also
+// work from the process ancestor chain (the direct parent is the `claude`
+// binary itself).
+func TestClaudeAutoDetectedFromAncestryNaturalLanguage(t *testing.T) {
+	bin := buildXit(t)
+	tmpPath := t.TempDir()
+	tmpHome := t.TempDir()
+	tool := filepath.Join(tmpPath, "noisycmd")
+	os.WriteFile(tool, []byte("#!/bin/sh\ni=0\nwhile [ $i -lt 300 ]; do echo \"line $i hello xit compress aaaa bbbb\"; i=$((i+1)); done"), 0755)
+
+	cmd := exec.Command(bin, "auto", "noisycmd") // NO XIT_ADAPTER, NO CLAUDECODE
+	cmd.Env = append(noXitAdapterEnv(), "PATH="+tmpPath, "XIT_HOME="+tmpHome, "XIT_NONINTERACTIVE=1",
+		"XIT_TEST_ANCESTORS=/Users/x/.vscode/extensions/anthropic.claude-code/resources/native-binary/claude,bash",
+		"XIT_CLAUDE_SETTLE_MS=0")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("auto failed: %v\n%s", err, out)
+	}
+	s := string(out)
+	if !strings.Contains(s, "执行成功") || !strings.Contains(s, "压缩处理") {
+		t.Errorf("expected natural-language result (claude detected via ancestry), got:\n%s", s)
+	}
+	for _, bad := range []string{
+		"command:", "exit_code:", "status:", "reduction:", "saved_tokens:",
+		"raw_log:", "key facts", "key_facts", ".xit/runs", "吸T完成", "压缩率", "原始输出",
+	} {
+		if strings.Contains(s, bad) {
+			t.Errorf("ancestry-detected claude output must NOT contain %q, got:\n%s", bad, s)
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(tmpHome, "state", "current-run.json"))
+	if err != nil || !strings.Contains(string(data), `"adapter":"claude"`) {
+		t.Fatalf("expected adapter=claude in state (ancestry-detected), got: %s (err %v)", data, err)
+	}
+}
+
+// antigravityLineFor runs `xit antigravity statusline --json` against the given
+// XIT_HOME and returns the rendered line.
+func antigravityLineFor(t *testing.T, bin, home string) string {
+	t.Helper()
+	cmd := exec.Command(bin, "antigravity", "statusline", "--json")
+	cmd.Env = append(os.Environ(), "HOME="+home, "XIT_HOME="+home, "XIT_NONINTERACTIVE=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("statusline failed: %v\n%s", err, out)
+	}
+	var data map[string]interface{}
+	if err := json.Unmarshal(out, &data); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, out)
+	}
+	line, _ := data["line"].(string)
+	return line
+}
+
+// TestAntigravityAutoWritesSettlingBeforeCompleted verifies the Antigravity auto
+// flow first lingers in "正在收功中" (settling) and only then shows the final
+// "本轮省 X.XXk Token" — so a single host sample can catch the settle state.
+func TestAntigravityAutoWritesSettlingBeforeCompleted(t *testing.T) {
+	bin := buildXit(t)
+	tmpPath := t.TempDir()
+	tmpHome := t.TempDir()
+	tool := filepath.Join(tmpPath, "noisycmd")
+	os.WriteFile(tool, []byte("#!/bin/sh\ni=0\nwhile [ $i -lt 300 ]; do echo \"line $i hello xit compress aaaa bbbb\"; i=$((i+1)); done"), 0755)
+
+	auto := exec.Command(bin, "auto", "noisycmd")
+	auto.Env = append(noXitAdapterEnv(), "PATH="+tmpPath, "XIT_HOME="+tmpHome, "XIT_NONINTERACTIVE=1",
+		"XIT_ADAPTER=antigravity", "XIT_ANTIGRAVITY_SETTLE_MS=1500")
+	if err := auto.Start(); err != nil {
+		t.Fatalf("start auto: %v", err)
+	}
+
+	// Sample the statusline during the settle buffer.
+	sawSettling := false
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(antigravityLineFor(t, bin, tmpHome), "正在收功中") {
+			sawSettling = true
+			break
+		}
+		time.Sleep(80 * time.Millisecond)
+	}
+	if err := auto.Wait(); err != nil {
+		t.Fatalf("auto wait: %v", err)
+	}
+	if !sawSettling {
+		t.Errorf("expected to observe '正在收功中' during the settle buffer")
+	}
+
+	// After completion the final line is the saved-token line, not settling.
+	final := antigravityLineFor(t, bin, tmpHome)
+	if !strings.Contains(final, "本轮省") || !strings.Contains(final, "Token") {
+		t.Errorf("expected final '本轮省 X.XXk Token', got: %s", final)
+	}
+	if strings.Contains(final, "正在收功中") {
+		t.Errorf("final line must not be settling, got: %s", final)
+	}
+	if strings.Contains(final, "约") {
+		t.Errorf("final line must not contain 约, got: %s", final)
+	}
+}
+
+// TestAntigravityAutoSettleDelayIsAdapterScoped verifies the settle sleep applies
+// ONLY to XIT_ADAPTER=antigravity: a default-adapter run ignores the (large)
+// settle env and never writes a settling state.
+func TestAntigravityAutoSettleDelayIsAdapterScoped(t *testing.T) {
+	bin := buildXit(t)
+	tmpPath := t.TempDir()
+	tmpHome := t.TempDir()
+	tool := filepath.Join(tmpPath, "noisycmd")
+	os.WriteFile(tool, []byte("#!/bin/sh\ni=0\nwhile [ $i -lt 300 ]; do echo \"line $i hello xit compress aaaa bbbb\"; i=$((i+1)); done"), 0755)
+
+	start := time.Now()
+	cmd := exec.Command(bin, "auto", "noisycmd") // NO XIT_ADAPTER
+	cmd.Env = append(noXitAdapterEnv(), "PATH="+tmpPath, "XIT_HOME="+tmpHome, "XIT_NONINTERACTIVE=1",
+		"XIT_ANTIGRAVITY_SETTLE_MS=4000")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("auto failed: %v\n%s", err, out)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("default-adapter auto must not apply the 4s antigravity settle; took %v", elapsed)
+	}
+	data, err := os.ReadFile(filepath.Join(tmpHome, "state", "current-run.json"))
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	if strings.Contains(string(data), `"status":"settling"`) {
+		t.Errorf("default-adapter auto must not write a settling state, got: %s", data)
+	}
+}
+
+// TestAntigravityAutoDetectedFromAncestryNaturalLanguage verifies that WITHOUT
+// XIT_ADAPTER, but with an Antigravity process ancestor (mocked), `xit auto`
+// renders the natural-language result and hides all machine fields. This is the
+// real-Agy case (Agy does not set XIT_ADAPTER on the tool process).
+func TestAntigravityAutoDetectedFromAncestryNaturalLanguage(t *testing.T) {
+	bin := buildXit(t)
+	tmpPath := t.TempDir()
+	tmpHome := t.TempDir()
+	tool := filepath.Join(tmpPath, "noisycmd")
+	os.WriteFile(tool, []byte("#!/bin/sh\ni=0\nwhile [ $i -lt 300 ]; do echo \"line $i hello xit compress aaaa bbbb\"; i=$((i+1)); done"), 0755)
+
+	cmd := exec.Command(bin, "auto", "noisycmd") // NO XIT_ADAPTER
+	cmd.Env = append(noXitAdapterEnv(), "PATH="+tmpPath, "XIT_HOME="+tmpHome, "XIT_NONINTERACTIVE=1",
+		"XIT_TEST_ANCESTORS=agy,bash,zsh", "XIT_ANTIGRAVITY_SETTLE_MS=0")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("auto failed: %v\n%s", err, out)
+	}
+	s := string(out)
+	if !strings.Contains(s, "执行成功") || !strings.Contains(s, "压缩处理") {
+		t.Errorf("expected natural-language result (detected via ancestry), got:\n%s", s)
+	}
+	for _, bad := range []string{
+		"command:", "exit_code:", "status:", "reduction:", "saved_tokens:",
+		"raw_log:", "key facts", "key_facts", ".xit/runs", "吸T完成", "压缩率", "原始输出",
+	} {
+		if strings.Contains(s, bad) {
+			t.Errorf("ancestry-detected antigravity output must NOT contain %q, got:\n%s", bad, s)
+		}
+	}
+}
+
+// TestAntigravityAutoSettlingDetectedFromAncestry verifies the settling buffer
+// also runs when Antigravity is detected via ancestry (no XIT_ADAPTER).
+func TestAntigravityAutoSettlingDetectedFromAncestry(t *testing.T) {
+	bin := buildXit(t)
+	tmpPath := t.TempDir()
+	tmpHome := t.TempDir()
+	tool := filepath.Join(tmpPath, "noisycmd")
+	os.WriteFile(tool, []byte("#!/bin/sh\ni=0\nwhile [ $i -lt 300 ]; do echo \"line $i hello xit compress aaaa bbbb\"; i=$((i+1)); done"), 0755)
+
+	auto := exec.Command(bin, "auto", "noisycmd") // NO XIT_ADAPTER
+	auto.Env = append(noXitAdapterEnv(), "PATH="+tmpPath, "XIT_HOME="+tmpHome, "XIT_NONINTERACTIVE=1",
+		"XIT_TEST_ANCESTORS=antigravity-cli,bash", "XIT_ANTIGRAVITY_SETTLE_MS=1500")
+	if err := auto.Start(); err != nil {
+		t.Fatalf("start auto: %v", err)
+	}
+	sawSettling := false
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(antigravityLineFor(t, bin, tmpHome), "正在收功中") {
+			sawSettling = true
+			break
+		}
+		time.Sleep(80 * time.Millisecond)
+	}
+	if err := auto.Wait(); err != nil {
+		t.Fatalf("auto wait: %v", err)
+	}
+	if !sawSettling {
+		t.Errorf("expected 正在收功中 during settle buffer (detected via ancestry)")
+	}
+	final := antigravityLineFor(t, bin, tmpHome)
+	if !strings.Contains(final, "本轮省") || !strings.Contains(final, "Token") {
+		t.Errorf("expected final 本轮省 X.XXk Token, got: %s", final)
+	}
+}
+
+// TestAntigravitySavedTokenTruthful verifies the run-state saved_tokens equals the
+// real savedBytes/4 (no fixed value, no clamp, no unit mixing).
+func TestAntigravitySavedTokenTruthful(t *testing.T) {
+	bin := buildXit(t)
+	tmpPath := t.TempDir()
+	tmpHome := t.TempDir()
+	toolPath := filepath.Join(tmpPath, "noisycmd")
+	os.WriteFile(toolPath, []byte("#!/bin/sh\ni=0\nwhile [ $i -lt 640 ]; do echo \"block line $i hello xit compress aaaa bbbb cccc dddd eeee ffff\"; i=$((i+1)); done"), 0755)
+
+	cmd := exec.Command(bin, "auto", "noisycmd")
+	cmd.Env = append(noXitAdapterEnv(), "PATH="+tmpPath, "XIT_HOME="+tmpHome, "XIT_NONINTERACTIVE=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("auto noisycmd failed: %v\n%s", err, out)
+	}
+
+	data, err := os.ReadFile(filepath.Join(tmpHome, "state", "current-run.json"))
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	var st struct {
+		RawBytes     int `json:"raw_bytes"`
+		SummaryBytes int `json:"summary_bytes"`
+		SavedBytes   int `json:"saved_bytes"`
+		SavedTokens  int `json:"saved_tokens"`
+	}
+	if err := json.Unmarshal(data, &st); err != nil {
+		t.Fatalf("parse state: %v", err)
+	}
+	wantSaved := st.RawBytes - st.SummaryBytes
+	if wantSaved < 0 {
+		wantSaved = 0
+	}
+	if st.SavedBytes != wantSaved {
+		t.Errorf("saved_bytes %d != rawBytes-summaryBytes %d", st.SavedBytes, wantSaved)
+	}
+	if st.SavedTokens != st.SavedBytes/4 {
+		t.Errorf("saved_tokens %d != saved_bytes/4 %d", st.SavedTokens, st.SavedBytes/4)
+	}
+	_ = out
 }
 
 // TestAntigravityStatuslineStaleRunningFallback verifies a stale running state
@@ -2936,7 +3608,7 @@ func TestAntigravityStatuslineStaleRunningFallback(t *testing.T) {
 	tmpProject := t.TempDir()
 	_ = os.MkdirAll(filepath.Join(tmpProject, "state"), 0755)
 	old := time.Now().Add(-2 * time.Minute).Format(time.RFC3339)
-	state := `{"status":"running","started_at":"` + old + `","heartbeat_at":"` + old + `","command":"go test"}`
+	state := `{"status":"running","adapter":"antigravity","started_at":"` + old + `","heartbeat_at":"` + old + `","command":"go test"}`
 	_ = os.WriteFile(filepath.Join(tmpProject, "state", "current-run.json"), []byte(state), 0644)
 
 	data := antigravityStatuslineJSON(t, tmpProject)
@@ -2953,7 +3625,7 @@ func TestClaudeStatuslineRunningLabel(t *testing.T) {
 	tmpHome := t.TempDir()
 	tmpProject := t.TempDir()
 	_ = os.MkdirAll(filepath.Join(tmpProject, "state"), 0755)
-	state := `{"status":"running","started_at":"` + time.Now().Format(time.RFC3339) + `","heartbeat_at":"` + time.Now().Format(time.RFC3339) + `","command":"go test"}`
+	state := `{"status":"running","adapter":"claude","started_at":"` + time.Now().Format(time.RFC3339) + `","heartbeat_at":"` + time.Now().Format(time.RFC3339) + `","command":"go test"}`
 	_ = os.WriteFile(filepath.Join(tmpProject, "state", "current-run.json"), []byte(state), 0644)
 
 	cmd := exec.Command(bin, "claude", "statusline", "--json")
@@ -2969,6 +3641,774 @@ func TestClaudeStatuslineRunningLabel(t *testing.T) {
 	line, _ := data["line"].(string)
 	if !strings.Contains(line, "Claude · 正在吸T中") {
 		t.Errorf("expected 'Claude · 正在吸T中' for running autostate, got: %s", line)
+	}
+}
+
+// claudeStatuslineLine returns the Claude statusline line for a fresh
+// home/project pair (idle -> the merged 守护你的T/准备就绪 line).
+func claudeStatuslineLine(t *testing.T, bin, home, project string) string {
+	t.Helper()
+	return claudeLine(t, bin, home, project)
+}
+
+// TestClaudeStatuslineIgnoresAntigravityState verifies an Antigravity-tagged run
+// state does NOT leak into Claude's statusline (the real pollution bug).
+func TestClaudeStatuslineIgnoresAntigravityState(t *testing.T) {
+	bin := buildXit(t)
+	tmpHome := t.TempDir()
+	tmpProject := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(tmpProject, "state"), 0755)
+	ts := time.Now().Format(time.RFC3339)
+	state := `{"status":"completed","adapter":"antigravity","finished_at":"` + ts + `","completed_at":"` + ts + `","saved_bytes":293640,"command":"go test"}`
+	_ = os.WriteFile(filepath.Join(tmpProject, "state", "current-run.json"), []byte(state), 0644)
+
+	line := claudeStatuslineLine(t, bin, tmpHome, tmpProject)
+	for _, bad := range []string{"73.4", "Antigravity", "本轮省", "本次省", "10.28"} {
+		if strings.Contains(line, bad) {
+			t.Errorf("Claude must not show Antigravity data %q, got: %s", bad, line)
+		}
+	}
+	if line != "吸T神功 · Claude · 守护你的T · 准备就绪" {
+		t.Errorf("expected Claude merged idle line, got: %s", line)
+	}
+}
+
+// TestClaudeStatuslineIgnoresLegacyState verifies a legacy run state with NO
+// adapter field is ignored (Claude shows idle/ready, not stale saved tokens).
+func TestClaudeStatuslineIgnoresLegacyState(t *testing.T) {
+	bin := buildXit(t)
+	tmpHome := t.TempDir()
+	tmpProject := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(tmpProject, "state"), 0755)
+	ts := time.Now().Format(time.RFC3339)
+	state := `{"status":"completed","finished_at":"` + ts + `","completed_at":"` + ts + `","saved_bytes":293640,"command":"go test"}`
+	_ = os.WriteFile(filepath.Join(tmpProject, "state", "current-run.json"), []byte(state), 0644)
+
+	line := claudeStatuslineLine(t, bin, tmpHome, tmpProject)
+	if strings.Contains(line, "本轮省") || strings.Contains(line, "本次省") || strings.Contains(line, "73.4") {
+		t.Errorf("Claude must ignore legacy (no-adapter) saved tokens, got: %s", line)
+	}
+	if line != "吸T神功 · Claude · 守护你的T · 准备就绪" {
+		t.Errorf("expected Claude merged idle line, got: %s", line)
+	}
+}
+
+// TestClaudeStatuslineNoHitRate verifies the Claude statusline never shows a hit
+// rate (the unreliable 命中率0% the user reported).
+func TestClaudeStatuslineNoHitRate(t *testing.T) {
+	bin := buildXit(t)
+	tmpHome := t.TempDir()
+	tmpProject := t.TempDir()
+	line := claudeStatuslineLine(t, bin, tmpHome, tmpProject)
+	for _, bad := range []string{"命中率", "命中加成", "hit"} {
+		if strings.Contains(line, bad) {
+			t.Errorf("Claude statusline must not contain %q, got: %s", bad, line)
+		}
+	}
+}
+
+// claudeLine runs the Claude statusline, stripping any ambient
+// CLAUDE_CODE_SESSION_ID (so session/idle-call state is fully controlled by the
+// test). extra appends env (e.g. "XIT_TEST_SESSION_KEY=s1").
+func claudeLine(t *testing.T, bin, home, project string, extra ...string) string {
+	t.Helper()
+	env := stripEnv(os.Environ(), "CLAUDE_CODE_SESSION_ID")
+	env = append(env, "HOME="+home, "XIT_HOME="+project, "XIT_NONINTERACTIVE=1")
+	env = append(env, extra...)
+	cmd := exec.Command(bin, "claude", "statusline", "--json")
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("claude statusline failed: %v\n%s", err, out)
+	}
+	var data map[string]interface{}
+	if err := json.Unmarshal(out, &data); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, out)
+	}
+	line, _ := data["line"].(string)
+	return line
+}
+
+// TestClaudeStatuslineIdleMergedLine verifies the idle line is a single
+// poll-safe merge of 守护你的T and 准备就绪 — NOT a first/later session split and
+// NOT time-based rotation. Real Claude Code does not reliably re-poll the
+// statusline while sitting idle (confirmed by the user: it can stay on one
+// rendering indefinitely), so any approach relying on a second poll is
+// invisible in practice; the single visible call must always be correct.
+func TestClaudeStatuslineIdleMergedLine(t *testing.T) {
+	bin := buildXit(t)
+	home := t.TempDir()
+	project := t.TempDir()
+
+	want := "吸T神功 · Claude · 守护你的T · 准备就绪"
+	// Repeated calls (same or different "session") all return the identical
+	// merged line — no dependency on call count or session identity.
+	for i, key := range []string{"s1", "s1", "s1", "s2", ""} {
+		var l string
+		if key == "" {
+			l = claudeLine(t, bin, home, project)
+		} else {
+			l = claudeLine(t, bin, home, project, "XIT_TEST_SESSION_KEY="+key)
+		}
+		if l != want {
+			t.Errorf("call %d expected merged idle line %q, got: %s", i, want, l)
+		}
+	}
+}
+
+// TestClaudeStatuslineSettling verifies an EXPLICIT settling state (written by
+// `xit auto`, not age-based guessing) shows "正在收功中" and no saved tokens.
+func TestClaudeStatuslineSettling(t *testing.T) {
+	bin := buildXit(t)
+	home := t.TempDir()
+	project := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(project, "state"), 0755)
+	ts := time.Now().Format(time.RFC3339)
+	state := `{"status":"settling","adapter":"claude","started_at":"` + ts + `","heartbeat_at":"` + ts + `","saved_bytes":41167,"command":"go test"}`
+	_ = os.WriteFile(filepath.Join(project, "state", "current-run.json"), []byte(state), 0644)
+
+	l := claudeLine(t, bin, home, project)
+	if !strings.Contains(l, "吸T完成 · Claude · 正在收功中") {
+		t.Errorf("expected '吸T完成 · Claude · 正在收功中' for settling state, got: %s", l)
+	}
+	if strings.Contains(l, "本轮省") || strings.Contains(l, "本次省") {
+		t.Errorf("settling must not show saved tokens, got: %s", l)
+	}
+}
+
+// TestClaudeStatuslineStaleSettlingFallback verifies a stale settling state
+// (heartbeat older than the freshness window) does NOT stick on 正在收功中.
+func TestClaudeStatuslineStaleSettlingFallback(t *testing.T) {
+	bin := buildXit(t)
+	home := t.TempDir()
+	project := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(project, "state"), 0755)
+	old := time.Now().Add(-30 * time.Second).Format(time.RFC3339)
+	state := `{"status":"settling","adapter":"claude","started_at":"` + old + `","heartbeat_at":"` + old + `","saved_bytes":41167,"command":"go test"}`
+	_ = os.WriteFile(filepath.Join(project, "state", "current-run.json"), []byte(state), 0644)
+
+	l := claudeLine(t, bin, home, project)
+	if strings.Contains(l, "正在收功中") {
+		t.Errorf("stale settling must NOT keep showing 正在收功中, got: %s", l)
+	}
+}
+
+// TestClaudeStatuslineCompletedSingleLine verifies the completed state is a
+// single poll-safe line merging 本轮省 (no 约) and the real 本轮共吸 N次 (no
+// rotation — repeated calls return the identical line).
+func TestClaudeStatuslineCompletedSingleLine(t *testing.T) {
+	bin := buildXit(t)
+	home := t.TempDir()
+	project := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(project, "state"), 0755)
+	ts := time.Now().Format(time.RFC3339)
+	state := `{"status":"completed","adapter":"claude","finished_at":"` + ts + `","completed_at":"` + ts + `","saved_bytes":41167,"command":"go test"}`
+	_ = os.WriteFile(filepath.Join(project, "state", "current-run.json"), []byte(state), 0644)
+	_ = os.WriteFile(filepath.Join(project, "state", "claude-run-count.json"),
+		[]byte(`{"session_key":"s1","count":2,"updated_at":"`+ts+`"}`), 0644)
+
+	want := "吸T完成 · Claude · 本轮省 10.29k Token · 本轮共吸 2次"
+	for i := 0; i < 2; i++ {
+		l := claudeLine(t, bin, home, project, "XIT_TEST_SESSION_KEY=s1")
+		if !strings.Contains(l, want) {
+			t.Errorf("call %d expected single line %q, got: %s", i, want, l)
+		}
+		if strings.Contains(l, "本次省") || strings.Contains(l, "命中率") || strings.Contains(l, "约") {
+			t.Errorf("call %d must not contain 本次省/命中率/约, got: %s", i, l)
+		}
+	}
+}
+
+// TestClaudeNoFakeCount verifies that without a real session the completed line
+// shows 本轮省 only — never a fake "本轮共吸".
+func TestClaudeNoFakeCount(t *testing.T) {
+	bin := buildXit(t)
+	home := t.TempDir()
+	project := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(project, "state"), 0755)
+	ts := time.Now().Format(time.RFC3339)
+	state := `{"status":"completed","adapter":"claude","finished_at":"` + ts + `","completed_at":"` + ts + `","saved_bytes":41167,"command":"go test"}`
+	_ = os.WriteFile(filepath.Join(project, "state", "current-run.json"), []byte(state), 0644)
+	// A counter exists, but there is NO session (CLAUDE_CODE_SESSION_ID stripped,
+	// no XIT_TEST_SESSION_KEY) -> must NOT show 本轮共吸.
+	_ = os.WriteFile(filepath.Join(project, "state", "claude-run-count.json"),
+		[]byte(`{"session_key":"s1","count":5,"updated_at":"`+ts+`"}`), 0644)
+
+	l := claudeLine(t, bin, home, project)
+	if !strings.Contains(l, "吸T完成 · Claude · 本轮省 10.29k Token") {
+		t.Errorf("expected 本轮省 line, got: %s", l)
+	}
+	if strings.Contains(l, "本轮共吸") {
+		t.Errorf("must NOT show 本轮共吸 without a real session, got: %s", l)
+	}
+}
+
+// TestClaudeCompletedOldGoesIdle verifies a completed run older than the fresh
+// window (>30s) returns to the merged idle line — NO 等待下轮发功 (waiting state
+// removed; Claude restarts the cycle on next input, like Agy).
+func TestClaudeCompletedOldGoesIdle(t *testing.T) {
+	bin := buildXit(t)
+	home := t.TempDir()
+	project := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(project, "state"), 0755)
+	past := time.Now().Add(-90 * time.Second).Format(time.RFC3339) // > 30s fresh window
+	state := `{"status":"completed","adapter":"claude","finished_at":"` + past + `","completed_at":"` + past + `","saved_bytes":41167,"command":"go test"}`
+	_ = os.WriteFile(filepath.Join(project, "state", "current-run.json"), []byte(state), 0644)
+
+	if l := claudeLine(t, bin, home, project); l != "吸T神功 · Claude · 守护你的T · 准备就绪" {
+		t.Errorf("old completed expected merged idle line, got: %s", l)
+	}
+	if l := claudeLine(t, bin, home, project); strings.Contains(l, "等待下轮发功") {
+		t.Errorf("must NOT show 等待下轮发功 (waiting removed), got: %s", l)
+	}
+}
+
+// TestClaudeRunCountFromAuto verifies `xit auto` detected as Claude (via
+// XIT_TEST_CLAUDECODE) tags adapter=claude and increments the real run counter,
+// which the statusline merges as 本轮共吸 N次. Settle delay forced to 0 for speed.
+func TestClaudeRunCountFromAuto(t *testing.T) {
+	bin := buildXit(t)
+	tmpPath := t.TempDir()
+	home := t.TempDir()
+	tool := filepath.Join(tmpPath, "noisycmd")
+	os.WriteFile(tool, []byte("#!/bin/sh\ni=0\nwhile [ $i -lt 300 ]; do echo \"line $i hello xit compress aaaa bbbb\"; i=$((i+1)); done"), 0755)
+
+	runAuto := func() {
+		cmd := exec.Command(bin, "auto", "noisycmd") // NO XIT_ADAPTER
+		cmd.Env = append(noXitAdapterEnv(), "PATH="+tmpPath, "XIT_HOME="+home, "XIT_NONINTERACTIVE=1",
+			"XIT_TEST_CLAUDECODE=1", "XIT_TEST_SESSION_KEY=sess-A", "XIT_CLAUDE_SETTLE_MS=0")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("auto failed: %v\n%s", err, out)
+		}
+	}
+	runAuto()
+	runAuto()
+
+	// State tagged adapter=claude.
+	data, err := os.ReadFile(filepath.Join(home, "state", "current-run.json"))
+	if err != nil || !strings.Contains(string(data), `"adapter":"claude"`) {
+		t.Fatalf("expected adapter=claude in state, got: %s (err %v)", data, err)
+	}
+	// Counter = 2; statusline merges 本轮共吸 2次 (real session via XIT_TEST_SESSION_KEY).
+	l := claudeLine(t, bin, home, home, "XIT_TEST_SESSION_KEY=sess-A")
+	if !strings.Contains(l, "本轮共吸 2次") {
+		t.Errorf("expected 本轮共吸 2次 after two claude runs, got: %s", l)
+	}
+}
+
+// TestClaudeAutoWritesSettlingBeforeCompleted verifies the Claude auto flow first
+// lingers in "正在收功中" (explicit settling, mirrors Agy) and only then shows the
+// final "本轮省 X.XXk Token" — so a single host sample can catch the settle state.
+func TestClaudeAutoWritesSettlingBeforeCompleted(t *testing.T) {
+	bin := buildXit(t)
+	tmpPath := t.TempDir()
+	tmpHome := t.TempDir()
+	tool := filepath.Join(tmpPath, "noisycmd")
+	os.WriteFile(tool, []byte("#!/bin/sh\ni=0\nwhile [ $i -lt 300 ]; do echo \"line $i hello xit compress aaaa bbbb\"; i=$((i+1)); done"), 0755)
+
+	auto := exec.Command(bin, "auto", "noisycmd")
+	auto.Env = append(noXitAdapterEnv(), "PATH="+tmpPath, "XIT_HOME="+tmpHome, "XIT_NONINTERACTIVE=1",
+		"XIT_ADAPTER=claude", "XIT_TEST_SESSION_KEY=sess-B", "XIT_CLAUDE_SETTLE_MS=1500")
+	if err := auto.Start(); err != nil {
+		t.Fatalf("start auto: %v", err)
+	}
+
+	sawSettling := false
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(claudeLine(t, bin, tmpHome, tmpHome, "XIT_TEST_SESSION_KEY=sess-B"), "正在收功中") {
+			sawSettling = true
+			break
+		}
+		time.Sleep(80 * time.Millisecond)
+	}
+	if err := auto.Wait(); err != nil {
+		t.Fatalf("auto wait: %v", err)
+	}
+	if !sawSettling {
+		t.Errorf("expected to observe '正在收功中' during the Claude settle buffer")
+	}
+
+	final := claudeLine(t, bin, tmpHome, tmpHome, "XIT_TEST_SESSION_KEY=sess-B")
+	if !strings.Contains(final, "本轮省") || !strings.Contains(final, "Token") {
+		t.Errorf("expected final '本轮省 X.XXk Token', got: %s", final)
+	}
+	if strings.Contains(final, "正在收功中") {
+		t.Errorf("final line must not be settling, got: %s", final)
+	}
+	if strings.Contains(final, "约") {
+		t.Errorf("final line must not contain 约, got: %s", final)
+	}
+}
+
+// TestClaudeAutoSettleDelayIsAdapterScoped verifies the Claude settle sleep
+// applies ONLY to effectiveAdapter()=="claude": a default-adapter run ignores
+// the (large) settle env and never writes a settling state.
+func TestClaudeAutoSettleDelayIsAdapterScoped(t *testing.T) {
+	bin := buildXit(t)
+	tmpPath := t.TempDir()
+	tmpHome := t.TempDir()
+	tool := filepath.Join(tmpPath, "noisycmd")
+	os.WriteFile(tool, []byte("#!/bin/sh\ni=0\nwhile [ $i -lt 300 ]; do echo \"line $i hello xit compress aaaa bbbb\"; i=$((i+1)); done"), 0755)
+
+	start := time.Now()
+	cmd := exec.Command(bin, "auto", "noisycmd") // NO XIT_ADAPTER, no CLAUDECODE
+	cmd.Env = append(noXitAdapterEnv(), "PATH="+tmpPath, "XIT_HOME="+tmpHome, "XIT_NONINTERACTIVE=1",
+		"XIT_CLAUDE_SETTLE_MS=4000")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("auto failed: %v\n%s", err, out)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("default-adapter auto must not apply the 4s claude settle; took %v", elapsed)
+	}
+	data, err := os.ReadFile(filepath.Join(tmpHome, "state", "current-run.json"))
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	if strings.Contains(string(data), `"status":"settling"`) {
+		t.Errorf("default-adapter auto must not write a settling state, got: %s", data)
+	}
+}
+
+// codexAssertNoFooterOrMachineFields asserts the Codex per-tool-call output
+// (xit auto stdout) NEVER contains the XiT footer (it must only appear once,
+// at the end of the turn's final answer, via the Stop hook — see
+// internal/codexhook), no machine bookkeeping fields, and no meaningless
+// numeric bullets (the literal "- 1" / "- 2185" bug from the prior round).
+func codexAssertNoFooterOrMachineFields(t *testing.T, s string) {
+	t.Helper()
+	for _, bad := range []string{
+		"command:", "exit_code:", "status:", "reduction:", "saved_tokens:",
+		"raw_log:", "key facts", "key_facts", ".xit/runs",
+		"原始输出", "吸后摘要", "压缩率", "吸T完成",
+		"吸T神功 · Codex", "本次省", "本轮共吸",
+		"PostToolUse hook context", "hook context:", "本轮执行过 XiT",
+	} {
+		if strings.Contains(s, bad) {
+			t.Errorf("codex per-tool-call output must NOT contain %q (footer belongs only in the turn's final answer), got:\n%s", bad, s)
+		}
+	}
+	for _, line := range strings.Split(s, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		bullet := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(trimmed, "-"), "•"))
+		if bullet != trimmed && bullet != "" {
+			if _, err := strconv.Atoi(bullet); err == nil {
+				t.Errorf("codex output must not contain a bare numeric bullet %q, got:\n%s", trimmed, s)
+			}
+		}
+	}
+}
+
+// TestCodexAutoNeverShowsFooterRegardlessOfTokenSize verifies that NO XiT
+// footer/branding ever appears in `xit auto` stdout under Codex, for both a
+// large (>=1000 tokens) and small (<1000 tokens) compressed result — the
+// footer now belongs exclusively to the Stop-hook-driven final answer.
+func TestCodexAutoNeverShowsFooterRegardlessOfTokenSize(t *testing.T) {
+	bin := buildXit(t)
+	for _, n := range []int{50, 3000} {
+		tmpPath := t.TempDir()
+		tmpHome := t.TempDir()
+		tool := filepath.Join(tmpPath, "noisycmd")
+		os.WriteFile(tool, []byte(fmt.Sprintf("#!/bin/sh\ni=0\nwhile [ $i -lt %d ]; do echo \"line $i hello xit compress aaaa bbbb cccc dddd\"; i=$((i+1)); done", n)), 0755)
+
+		cmd := exec.Command(bin, "auto", "noisycmd")
+		cmd.Env = append(noXitAdapterEnv(), "PATH="+tmpPath, "XIT_HOME="+tmpHome, "XIT_NONINTERACTIVE=1", "XIT_ADAPTER=codex")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("auto noisycmd (codex, n=%d) failed: %v\n%s", n, err, out)
+		}
+		codexAssertNoFooterOrMachineFields(t, string(out))
+	}
+}
+
+// TestCodexAutoNoLowQualityBullets reproduces the exact reported bug: generic
+// fallback (low-confidence) output must NOT render bare numeric KeyFacts
+// ("- 1" / "- 2185") — and with no real diagnostic content, the tool output
+// must be the minimal acknowledgement, nothing else (no footer either).
+func TestCodexAutoNoLowQualityBullets(t *testing.T) {
+	bin := buildXit(t)
+	tmpPath := t.TempDir()
+	tmpHome := t.TempDir()
+	tool := filepath.Join(tmpPath, "noisycmd")
+	// Generic/unrecognized command -> safeFallback (Confidence="low") whose
+	// KeyFacts are bare stdout_lines/stderr_lines counts.
+	os.WriteFile(tool, []byte("#!/bin/sh\ni=0\nwhile [ $i -lt 2185 ]; do echo \"line $i\"; i=$((i+1)); done"), 0755)
+
+	cmd := exec.Command(bin, "auto", "noisycmd")
+	cmd.Env = append(noXitAdapterEnv(), "PATH="+tmpPath, "XIT_HOME="+tmpHome, "XIT_NONINTERACTIVE=1", "XIT_ADAPTER=codex")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("auto noisycmd (codex) failed: %v\n%s", err, out)
+	}
+	s := string(out)
+	codexAssertNoFooterOrMachineFields(t, s)
+	if strings.TrimSpace(s) != "命令执行成功，无需展开重复输出。" {
+		t.Errorf("low-confidence fallback with no diagnostics must yield only the minimal acknowledgement, got:\n%s", s)
+	}
+}
+
+func TestCodexAutoWithInjectedTurnIdentityNoPerToolFooter(t *testing.T) {
+	bin := buildXit(t)
+	tmpPath := t.TempDir()
+	tmpHome := t.TempDir()
+	tool := filepath.Join(tmpPath, "noisycmd")
+	os.WriteFile(tool, []byte("#!/bin/sh\ni=0\nwhile [ $i -lt 300 ]; do echo \"line $i hello xit compress aaaa bbbb cccc dddd\"; i=$((i+1)); done"), 0755)
+
+	cmd := exec.Command(bin, "auto", "noisycmd")
+	cmd.Env = append(noXitAdapterEnv(), "PATH="+tmpPath, "XIT_HOME="+tmpHome, "XIT_NONINTERACTIVE=1",
+		"XIT_ADAPTER=codex", "XIT_CODEX_SESSION_ID=session-test-1", "XIT_CODEX_TURN_ID=turn-test-1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("auto noisycmd (codex) failed: %v\n%s", err, out)
+	}
+	s := string(out)
+	codexAssertNoFooterOrMachineFields(t, s)
+	if strings.TrimSpace(s) != "命令执行成功，无需展开重复输出。" {
+		t.Fatalf("expected minimal Codex per-tool output, got:\n%s", s)
+	}
+}
+
+// TestCodexAutoPreservesRealDiagnostics verifies that a real, high-confidence
+// filter result (a failing go test, with real file:line content) is preserved
+// verbatim, with NO footer/branding appended anywhere in the tool output.
+func TestCodexAutoPreservesRealDiagnostics(t *testing.T) {
+	bin := buildXit(t)
+	tmpHome := t.TempDir()
+	modDir := t.TempDir()
+	os.WriteFile(filepath.Join(modDir, "go.mod"), []byte("module codextestmod\ngo 1.21\n"), 0644)
+	os.WriteFile(filepath.Join(modDir, "main_test.go"), []byte(`package main
+import "testing"
+func TestFails(t *testing.T) {
+	t.Errorf("expected 3, got 2 -- long enough message to push raw output past the 400 byte forced-compress threshold for a failing go test run so the codex summary path actually engages for this verification case right now today -- adding considerably more padding text here to be safe across environments and caches so this reliably exceeds the four hundred byte minimum threshold required to force compression on a failing test run every single time without fail")
+}
+
+func TestCodexAutoLowConfidenceFailurePreservesFileLineDiagnostic(t *testing.T) {
+	bin := buildXit(t)
+	tmpHome := t.TempDir()
+
+	cmd := exec.Command(bin, "auto", "bash", "-lc", "printf '%s\\n' 'setup noise before failure'; printf '%s\\n' 'internal/foo_test.go:42: expected 3, got 2'; i=0; while [ $i -lt 40 ]; do echo \"noise $i padding padding padding padding\"; i=$((i+1)); done; exit 1")
+	cmd.Env = append(noXitAdapterEnv(), "XIT_HOME="+tmpHome, "XIT_NONINTERACTIVE=1", "XIT_ADAPTER=codex")
+	out, _ := cmd.CombinedOutput() // exit 1 is expected
+	s := string(out)
+	codexAssertNoFooterOrMachineFields(t, s)
+	if !strings.Contains(s, "internal/foo_test.go:42: expected 3, got 2") {
+		t.Fatalf("expected real file:line diagnostic preserved, got:\n%s", s)
+	}
+	if strings.TrimSpace(s) == "命令以退出码 1 结束，输出已压缩。" {
+		t.Fatalf("generic failure text must not replace concrete diagnostics")
+	}
+}
+`), 0644)
+
+	cmd := exec.Command(bin, "auto", "go", "test", "-v", "./...")
+	cmd.Dir = modDir
+	cmd.Env = append(noXitAdapterEnv(), "XIT_HOME="+tmpHome, "XIT_NONINTERACTIVE=1", "XIT_ADAPTER=codex")
+	out, _ := cmd.CombinedOutput() // go test exits non-zero; that's expected
+	s := string(out)
+	codexAssertNoFooterOrMachineFields(t, s)
+	if !strings.Contains(s, "main_test.go:") {
+		t.Errorf("expected real diagnostic file:line preserved, got:\n%s", s)
+	}
+}
+
+// TestCodexAutoDetectedFromAncestry verifies Codex is detected from the process
+// ancestor chain (no XIT_ADAPTER, no env signal exists for Codex — audited:
+// unlike Claude's CLAUDECODE, there is no equivalent Codex env var), matching
+// the real ancestor path the user reported: "~/.local/node/current/bin/codex".
+// The tool output still has no footer; only the state's adapter field proves
+// detection worked.
+func TestCodexAutoDetectedFromAncestry(t *testing.T) {
+	bin := buildXit(t)
+	tmpPath := t.TempDir()
+	tmpHome := t.TempDir()
+	tool := filepath.Join(tmpPath, "noisycmd")
+	os.WriteFile(tool, []byte("#!/bin/sh\ni=0\nwhile [ $i -lt 300 ]; do echo \"line $i hello xit compress aaaa bbbb\"; i=$((i+1)); done"), 0755)
+
+	cmd := exec.Command(bin, "auto", "noisycmd") // NO XIT_ADAPTER
+	cmd.Env = append(noXitAdapterEnv(), "PATH="+tmpPath, "XIT_HOME="+tmpHome, "XIT_NONINTERACTIVE=1",
+		"XIT_TEST_ANCESTORS=/Users/x/.local/node/current/bin/codex,bash")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("auto failed: %v\n%s", err, out)
+	}
+	codexAssertNoFooterOrMachineFields(t, string(out))
+	data, err := os.ReadFile(filepath.Join(tmpHome, "state", "current-run.json"))
+	if err != nil || !strings.Contains(string(data), `"adapter":"codex"`) {
+		t.Fatalf("expected adapter=codex in state (ancestry-detected), got: %s (err %v)", data, err)
+	}
+}
+
+// TestCodexAutoIsolatedFromOtherAdapterState verifies a pre-existing
+// Antigravity/Claude run-state file in the same XIT_HOME does not leak into
+// Codex's tool output.
+func TestCodexAutoIsolatedFromOtherAdapterState(t *testing.T) {
+	bin := buildXit(t)
+	tmpPath := t.TempDir()
+	tmpHome := t.TempDir()
+	tool := filepath.Join(tmpPath, "noisycmd")
+	os.WriteFile(tool, []byte("#!/bin/sh\ni=0\nwhile [ $i -lt 300 ]; do echo \"line $i hello xit compress aaaa bbbb\"; i=$((i+1)); done"), 0755)
+
+	_ = os.MkdirAll(filepath.Join(tmpHome, "state"), 0755)
+	ts := time.Now().Format(time.RFC3339)
+	stale := `{"status":"completed","adapter":"antigravity","finished_at":"` + ts + `","completed_at":"` + ts + `","saved_bytes":293640,"command":"go test"}`
+	_ = os.WriteFile(filepath.Join(tmpHome, "state", "current-run.json"), []byte(stale), 0644)
+
+	cmd := exec.Command(bin, "auto", "noisycmd")
+	cmd.Env = append(noXitAdapterEnv(), "PATH="+tmpPath, "XIT_HOME="+tmpHome, "XIT_NONINTERACTIVE=1", "XIT_ADAPTER=codex")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("auto noisycmd (codex) failed: %v\n%s", err, out)
+	}
+	s := string(out)
+	for _, bad := range []string{"Antigravity", "本轮省", "73.4", "293640"} {
+		if strings.Contains(s, bad) {
+			t.Errorf("codex output must not show Antigravity data %q, got:\n%s", bad, s)
+		}
+	}
+}
+
+// TestCodexAutoAccumulatesIntoTurnState verifies an end-to-end `xit auto`
+// invocation under Codex (effectiveAdapter()=="codex" + real
+// XIT_CODEX_SESSION_ID/XIT_CODEX_TURN_ID env, exactly as PreToolUse injects
+// them) accumulates run_count/saved_tokens_total in codex-turns/<session>/<turn>.json — and
+// that two calls within the SAME turn ADD UP rather than overwrite.
+func TestCodexTurnAccumulatesTwoRuns(t *testing.T) {
+	bin := buildXit(t)
+	tmpPath := t.TempDir()
+	tmpHome := t.TempDir()
+	tool := filepath.Join(tmpPath, "noisycmd")
+	os.WriteFile(tool, []byte("#!/bin/sh\ni=0\nwhile [ $i -lt 300 ]; do echo \"line $i hello xit compress aaaa bbbb\"; i=$((i+1)); done"), 0755)
+
+	runOnce := func() {
+		cmd := exec.Command(bin, "auto", "noisycmd")
+		cmd.Env = append(noXitAdapterEnv(), "PATH="+tmpPath, "XIT_HOME="+tmpHome, "XIT_NONINTERACTIVE=1",
+			"XIT_ADAPTER=codex", "XIT_CODEX_SESSION_ID=s1", "XIT_CODEX_TURN_ID=t1")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("auto failed: %v\n%s", err, out)
+		}
+		codexAssertNoFooterOrMachineFields(t, string(out))
+	}
+	runOnce()
+	runOnce()
+
+	matches, err := filepath.Glob(filepath.Join(tmpHome, "state", "codex-turns", "*", "*.json"))
+	if err != nil || len(matches) != 1 {
+		t.Fatalf("expected one codex turn state file, matches=%v err=%v", matches, err)
+	}
+	data, err := os.ReadFile(matches[0])
+	if err != nil {
+		t.Fatalf("expected codex turn state file to be readable: %v", err)
+	}
+	var st struct {
+		SessionID        string `json:"session_id"`
+		TurnID           string `json:"turn_id"`
+		RunCount         int    `json:"run_count"`
+		SavedTokensTotal int    `json:"saved_tokens_total"`
+	}
+	if err := json.Unmarshal(data, &st); err != nil {
+		t.Fatalf("invalid turn state JSON: %v\n%s", err, data)
+	}
+	if st.SessionID != "s1" || st.TurnID != "t1" {
+		t.Errorf("expected session=s1 turn=t1, got: %+v", st)
+	}
+	if st.RunCount != 2 {
+		t.Errorf("expected run_count=2 after two xit auto calls in the same turn, got %d", st.RunCount)
+	}
+	if st.SavedTokensTotal <= 0 {
+		t.Errorf("expected saved_tokens_total > 0, got %d", st.SavedTokensTotal)
+	}
+}
+
+// TestVSCodeBridgeRunCountMatchesCodexFooterTurnState verifies the VS Code
+// Dashboard's "本轮共吸" card uses the exact same per-turn counter as the
+// Codex CLI footer's "本轮共吸 N次" — not a different count (e.g. today's
+// total run count). The PreToolUse hook side is simulated by calling
+// StartIfCodexVSCode directly (same call this test process would make if it
+// were the hook subprocess) and injecting the resulting run id via
+// XIT_VSCODE_BRIDGE_RUN_ID, exactly as internal/codexhook/rewrite.go does.
+func TestVSCodeBridgeRunCountMatchesCodexFooterTurnState(t *testing.T) {
+	bin := buildXit(t)
+	tmpPath := t.TempDir()
+	tmpHome := t.TempDir()
+	tool := filepath.Join(tmpPath, "noisycmd")
+	os.WriteFile(tool, []byte("#!/bin/sh\ni=0\nwhile [ $i -lt 300 ]; do echo \"line $i hello xit compress aaaa bbbb\"; i=$((i+1)); done"), 0755)
+
+	t.Setenv("VSCODE_PID", "4242")
+	runID := vscodebridge.NewRunID()
+	if _, ok := vscodebridge.StartIfCodexVSCode(tmpHome, tmpPath, "noisycmd", "s1", runID, time.Now()); !ok {
+		t.Fatal("expected vscode bridge run.started to be recorded")
+	}
+
+	cmd := exec.Command(bin, "auto", "noisycmd")
+	cmd.Dir = tmpPath
+	cmd.Env = append(noXitAdapterEnv(), "PATH="+tmpPath, "XIT_HOME="+tmpHome, "XIT_NONINTERACTIVE=1",
+		"XIT_ADAPTER=codex", "XIT_CODEX_SESSION_ID=s1", "XIT_CODEX_TURN_ID=t1",
+		"XIT_VSCODE_BRIDGE_RUN_ID="+runID)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("auto failed: %v\n%s", err, out)
+	}
+	codexAssertNoFooterOrMachineFields(t, string(out))
+
+	data, err := os.ReadFile(filepath.Join(tmpHome, "events", "vscode-ai-bridge.jsonl"))
+	if err != nil {
+		t.Fatalf("expected bridge events file: %v", err)
+	}
+	var bridgeRunCount *int
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var e struct {
+			Event    string `json:"event"`
+			RunCount *int   `json:"run_count"`
+		}
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			t.Fatalf("invalid bridge event JSON: %v\n%s", err, line)
+		}
+		if e.Event == "run.finished" {
+			bridgeRunCount = e.RunCount
+		}
+	}
+	if bridgeRunCount == nil {
+		t.Fatalf("expected a run.finished event carrying run_count, events:\n%s", data)
+	}
+
+	matches, err := filepath.Glob(filepath.Join(tmpHome, "state", "codex-turns", "*", "*.json"))
+	if err != nil || len(matches) != 1 {
+		t.Fatalf("expected one codex turn state file (what the Stop hook footer reads), matches=%v err=%v", matches, err)
+	}
+	turnData, err := os.ReadFile(matches[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var turnState struct {
+		RunCount int `json:"run_count"`
+	}
+	if err := json.Unmarshal(turnData, &turnState); err != nil {
+		t.Fatalf("invalid turn state JSON: %v\n%s", err, turnData)
+	}
+
+	if *bridgeRunCount != turnState.RunCount {
+		t.Fatalf("bridge event run_count=%d does not match the Codex footer's turn RunCount=%d", *bridgeRunCount, turnState.RunCount)
+	}
+	if turnState.RunCount != 1 {
+		t.Fatalf("expected RunCount=1 after a single xit auto call, got %d", turnState.RunCount)
+	}
+}
+
+// TestCodexFullChainPostToolUseAndStopSeeRealTurnState is a real-CLI-binary
+// regression test for a confirmed bug: PostToolUse and Stop returned `{}`
+// (turn "not found") even though `xit auto` had genuinely run twice and
+// accumulated real savings for the exact same session_id/turn_id. Root cause:
+// resolveCodexHome() preferred the hook payload's "cwd" field over an
+// explicitly-set XIT_HOME env var, so the four lifecycle hooks (which DO
+// receive a JSON payload with "cwd") resolved to a different .xit directory
+// than `xit auto` itself (which has no payload at all and only ever consults
+// XIT_HOME/process cwd via xitHome()). This test deliberately sets XIT_HOME
+// AND includes a "cwd" field pointing at a DIFFERENT directory in every hook
+// JSON payload — exactly the divergent-input combination that exposed the
+// bug — and drives every step through the real compiled binary with real
+// stdin JSON (not direct Go function calls), so a future regression in JSON
+// tags, state-path computation, or env-prefixed command detection would also
+// be caught here.
+func TestCodexFullChainPostToolUseAndStopSeeRealTurnState(t *testing.T) {
+	bin := buildXit(t)
+	tmpHome := t.TempDir()
+	otherCwd := t.TempDir() // deliberately NOT tmpHome — the divergent signal
+	tmpPath := t.TempDir()
+	tool := filepath.Join(tmpPath, "noisycmd")
+	os.WriteFile(tool, []byte("#!/bin/sh\ni=0\nwhile [ $i -lt 300 ]; do echo \"line $i hello xit compress aaaa bbbb\"; i=$((i+1)); done"), 0755)
+
+	runHook := func(sub, payload string) string {
+		cmd := exec.Command(bin, "codex-hook", sub)
+		cmd.Stdin = strings.NewReader(payload)
+		cmd.Env = append(noXitAdapterEnv(), "XIT_HOME="+tmpHome, "XIT_NONINTERACTIVE=1")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("codex-hook %s failed: %v\n%s", sub, err, out)
+		}
+		return string(out)
+	}
+
+	runHook("user-prompt-submit", `{"session_id":"session-test-1","turn_id":"turn-test-1","prompt":"test","hook_event_name":"UserPromptSubmit","cwd":"`+otherCwd+`"}`)
+
+	runAuto := func() {
+		cmd := exec.Command(bin, "auto", "noisycmd")
+		cmd.Env = append(noXitAdapterEnv(), "PATH="+tmpPath, "XIT_HOME="+tmpHome, "XIT_NONINTERACTIVE=1",
+			"XIT_ADAPTER=codex", "XIT_CODEX_SESSION_ID=session-test-1", "XIT_CODEX_TURN_ID=turn-test-1")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("auto failed: %v\n%s", err, out)
+		}
+	}
+	runAuto()
+	runAuto()
+
+	postOut := runHook("post-tool-use", `{"session_id":"session-test-1","turn_id":"turn-test-1","hook_event_name":"PostToolUse","cwd":"`+otherCwd+`","tool_name":"Bash","tool_use_id":"tool-test-2","tool_input":{"command":"XIT_ADAPTER=codex XIT_CODEX_SESSION_ID='session-test-1' XIT_CODEX_TURN_ID='turn-test-1' xit auto bash -lc 'echo test'"},"tool_response":{"success":true}}`)
+	if postOut != "" {
+		t.Fatalf("PostToolUse must be empty stdout to avoid visible hook context, got: %q", postOut)
+	}
+
+	stopPayload1 := `{"session_id":"session-test-1","turn_id":"turn-test-1","hook_event_name":"Stop","cwd":"` + otherCwd + `","stop_hook_active":false,"last_assistant_message":"第一轮测试完成。"}`
+	stopOut1 := runHook("stop", stopPayload1)
+	var stopResp1 map[string]interface{}
+	if err := json.Unmarshal([]byte(stopOut1), &stopResp1); err != nil {
+		t.Fatalf("Stop #1 stdout is not valid JSON: %v\n%s", err, stopOut1)
+	}
+	if stopResp1["decision"] != "block" {
+		t.Fatalf("expected Stop #1 decision=block (footer missing, real run_count>0), got: %s", stopOut1)
+	}
+	reason, _ := stopResp1["reason"].(string)
+	if !strings.Contains(reason, "本轮共吸 2次") {
+		t.Errorf("expected Stop #1 reason to contain '本轮共吸 2次', got: %q", reason)
+	}
+
+	stopPayload2 := `{"session_id":"session-test-1","turn_id":"turn-test-1","hook_event_name":"Stop","cwd":"` + otherCwd + `","stop_hook_active":true,"last_assistant_message":"第一轮测试完成。"}`
+	stopOut2 := runHook("stop", stopPayload2)
+	if strings.TrimSpace(stopOut2) != "{}" {
+		t.Fatalf("expected Stop #2 (stop_hook_active=true) to allow with {} (loop prevention), got: %q", stopOut2)
+	}
+}
+
+// TestEffectiveAdapterCodex covers Codex-specific effectiveAdapter() cases:
+// explicit env, ancestor basename match, and rejection of substring/false
+// matches (node, codex-flow, a path merely containing "codex").
+func TestEffectiveAdapterCodex(t *testing.T) {
+	for _, k := range []string{"XIT_ADAPTER", "XIT_TEST_ANCESTORS", "XIT_TEST_CLAUDECODE"} {
+		orig, had := os.LookupEnv(k)
+		key := k
+		t.Cleanup(func() {
+			if had {
+				os.Setenv(key, orig)
+			} else {
+				os.Unsetenv(key)
+			}
+		})
+	}
+
+	cases := []struct {
+		name, adapter, ancestors, want string
+	}{
+		{"explicit codex", "codex", "bash", "codex"},
+		{"ancestor codex basename", "", "/Users/x/.local/node/current/bin/codex,bash", "codex"},
+		{"antigravity ancestry wins over codex ancestor", "", "agy,codex", "antigravity"},
+		{"plain node must not match codex", "", "node,bash", ""},
+		{"codex-flow must not substring-match", "", "codex-flow,bash", ""},
+		{"dir containing codex must not match", "", "/Users/codex-fan/bin/myapp,bash", ""},
+	}
+	for _, c := range cases {
+		if c.adapter == "" {
+			os.Unsetenv("XIT_ADAPTER")
+		} else {
+			os.Setenv("XIT_ADAPTER", c.adapter)
+		}
+		os.Setenv("XIT_TEST_ANCESTORS", c.ancestors)
+		os.Setenv("XIT_TEST_CLAUDECODE", "0")
+		if got := effectiveAdapter(); got != c.want {
+			t.Errorf("%s: effectiveAdapter()=%q want %q", c.name, got, c.want)
+		}
 	}
 }
 
@@ -3111,11 +4551,12 @@ func TestGainJSONMalformedLine(t *testing.T) {
 	}
 }
 
-// TestAutoOpencodeOutputsFourLines verifies that when XIT_ADAPTER=opencode is set,
-// xit auto emits the four-line Chinese brand output instead of the English summary.
-func TestAutoOpencodeOutputsFourLines(t *testing.T) {
+// TestAutoOpencodeToolOutputTwoLineFooter verifies that OpenCode tool cards
+// show only the fixed two-line XiT footer for pure repeated success output.
+func TestAutoOpencodeToolOutputTwoLineFooter(t *testing.T) {
 	bin := buildXit(t)
 	tmpPath := t.TempDir()
+	tmpHome := t.TempDir()
 	// Fake git that produces high-noise output (>100 lines triggers compression).
 	gitPath := filepath.Join(tmpPath, "git")
 	os.WriteFile(gitPath, []byte("#!/bin/sh\nfor i in $(seq 1 200); do echo \"+ line $i changed\"; done"), 0755)
@@ -3124,44 +4565,223 @@ func TestAutoOpencodeOutputsFourLines(t *testing.T) {
 	cmd.Env = append(os.Environ(),
 		"PATH="+tmpPath,
 		"XIT_ORIGINAL_GIT="+gitPath,
-		"XIT_HOME=",
+		"XIT_HOME="+tmpHome,
 		"XIT_NONINTERACTIVE=1",
 		"XIT_ADAPTER=opencode",
+		"XIT_OPENCODE_TURN_KEY=turn-git-"+strings.ReplaceAll(t.Name(), "/", "-"),
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("auto git diff (opencode) failed: %v\n%s", err, out)
 	}
 	outStr := string(out)
-	if !strings.Contains(outStr, "吸T神功 · 守护你的T") {
-		t.Errorf("expected 吸T神功 · 守护你的T, got:\n%s", outStr)
+	if !strings.Contains(outStr, "吸T神功 · OpenCode · 守护你的T") ||
+		!strings.Contains(outStr, "本次省 ") ||
+		!strings.Contains(outStr, "本轮共吸 1次") {
+		t.Errorf("expected OpenCode two-line footer, got:\n%s", outStr)
 	}
-	if !strings.Contains(outStr, "吸T神功 · 本次已发功") {
-		t.Errorf("expected 吸T神功 · 本次已发功, got:\n%s", outStr)
+	if strings.Contains(outStr, "命令执行成功，无需展开重复输出。") {
+		t.Errorf("pure success must not include generic success line, got:\n%s", outStr)
 	}
-	if !strings.Contains(outStr, "本次省") {
-		t.Errorf("expected 本次省 token line, got:\n%s", outStr)
+	for _, bad := range []string{"吸T完成", "raw_log:", "command:", "exit_code:", "saved_tokens:", ".xit/runs"} {
+		if strings.Contains(outStr, bad) {
+			t.Errorf("OpenCode tool output must not contain %q, got:\n%s", bad, outStr)
+		}
 	}
-	if !strings.Contains(outStr, "吸T神功 · 等待下轮发功") {
-		t.Errorf("expected 吸T神功 · 等待下轮发功, got:\n%s", outStr)
+}
+
+func TestAutoOpencodeTurnCountSameUserMessageAndReset(t *testing.T) {
+	bin := buildXit(t)
+	tmpPath := t.TempDir()
+	tmpHome := t.TempDir()
+	toolPath := filepath.Join(tmpPath, "noisycmd")
+	os.WriteFile(toolPath, []byte("#!/bin/sh\ni=0\nwhile [ $i -lt 240 ]; do echo \"line $i hello xit compress aaaa bbbb cccc dddd\"; i=$((i+1)); done"), 0755)
+
+	run := func(turnKey string) string {
+		cmd := exec.Command(bin, "auto", "noisycmd")
+		cmd.Env = append(noXitAdapterEnv(),
+			"PATH="+tmpPath,
+			"XIT_HOME="+tmpHome,
+			"XIT_NONINTERACTIVE=1",
+			"XIT_ADAPTER=opencode",
+			"XIT_OPENCODE_TURN_KEY="+turnKey,
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("auto noisycmd (opencode) failed: %v\n%s", err, out)
+		}
+		return string(out)
 	}
-	// Must NOT contain the English summary header or old per-session count.
-	if strings.Contains(outStr, "吸T完成") {
-		t.Errorf("should not contain 吸T完成 in opencode mode, got:\n%s", outStr)
+
+	for i := 1; i <= 3; i++ {
+		want := fmt.Sprintf("本轮共吸 %d次", i)
+		if got := run("turn-1"); !strings.Contains(got, "吸T神功 · OpenCode · 守护你的T") || !strings.Contains(got, want) {
+			t.Fatalf("same turn call %d: expected %q footer, got:\n%s", i, want, got)
+		}
 	}
-	if strings.Contains(outStr, "本轮共吸") {
-		t.Errorf("should not contain 本轮共吸 (cross-turn count removed), got:\n%s", outStr)
+	if st := opencodehook.ReadTurnStateByKey(tmpHome, "turn-1"); st == nil || st.RunCount != 3 {
+		t.Fatalf("same turn state count=%+v want run_count=3", st)
+	}
+	if got := run("turn-2"); !strings.Contains(got, "本轮共吸 1次") || strings.Contains(got, "本轮共吸 4次") {
+		t.Fatalf("new turn must reset footer count to 1, got:\n%s", got)
+	}
+	if st := opencodehook.ReadTurnStateByKey(tmpHome, "turn-2"); st == nil || st.RunCount != 1 {
+		t.Fatalf("new turn state count=%+v want run_count=1", st)
+	}
+}
+
+func TestAutoOpencodeNoTurnSignalOmitsCount(t *testing.T) {
+	out := buildOpenCodeToolOutput(nil, 4000, 0, false, nil)
+	for _, bad := range []string{"本轮共吸"} {
+		if strings.Contains(out, bad) {
+			t.Fatalf("OpenCode tool output must not contain %q, got:\n%s", bad, out)
+		}
+	}
+	if !strings.Contains(out, "吸T神功 · OpenCode · 守护你的T") || !strings.Contains(out, "本次省 约 1.00k Token") {
+		t.Fatalf("fallback output missing OpenCode no-count footer, got:\n%s", out)
+	}
+}
+
+func TestOpenCodeFinalFooterTokenFormattingEdges(t *testing.T) {
+	cases := []struct {
+		tokens int
+		want   string
+	}{
+		{999, "本次省 999 Token"},
+		{1000, "本次省 约 1.00k Token"},
+		{9500, "本次省 约 9.50k Token"},
+		{10200, "本次省 约 10.20k Token"},
+		{10800, "本次省 约 10.80k Token"},
+	}
+	for _, c := range cases {
+		got := "本次省 " + formatTokenHuman(c.tokens)
+		if !strings.Contains(got, c.want) {
+			t.Errorf("tokens=%d expected %q, got:\n%s", c.tokens, c.want, got)
+		}
+	}
+}
+
+func TestAutoOpencodeTokenTruthThreeSizes(t *testing.T) {
+	bin := buildXit(t)
+	tmpPath := t.TempDir()
+	tmpHome := t.TempDir()
+	sizes := []int{120, 360, 900}
+	seenSavedTokens := map[int]bool{}
+
+	for _, n := range sizes {
+		toolName := fmt.Sprintf("noise%d", n)
+		toolPath := filepath.Join(tmpPath, toolName)
+		os.WriteFile(toolPath, []byte(fmt.Sprintf("#!/bin/sh\ni=0\nwhile [ $i -lt %d ]; do echo \"line $i hello xit compress aaaa bbbb cccc dddd eeee ffff\"; i=$((i+1)); done", n)), 0755)
+
+		cmd := exec.Command(bin, "auto", toolName)
+		cmd.Env = append(noXitAdapterEnv(),
+			"PATH="+tmpPath,
+			"XIT_HOME="+tmpHome,
+			"XIT_NONINTERACTIVE=1",
+			"XIT_ADAPTER=opencode",
+			"XIT_OPENCODE_TURN_KEY=turn-"+toolName,
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("auto %s (opencode) failed: %v\n%s", toolName, err, out)
+		}
+		var st struct {
+			RawBytes     int `json:"raw_bytes"`
+			SummaryBytes int `json:"summary_bytes"`
+			SavedBytes   int `json:"saved_bytes"`
+			SavedTokens  int `json:"saved_tokens"`
+		}
+		data, err := os.ReadFile(filepath.Join(tmpHome, "state", "current-run.json"))
+		if err != nil {
+			t.Fatalf("read state: %v", err)
+		}
+		if err := json.Unmarshal(data, &st); err != nil {
+			t.Fatalf("invalid state JSON: %v\n%s", err, data)
+		}
+		wantSaved := st.RawBytes - st.SummaryBytes
+		if wantSaved < 0 {
+			wantSaved = 0
+		}
+		if st.SavedBytes != wantSaved {
+			t.Fatalf("%s saved_bytes=%d want raw-summary=%d (raw=%d summary=%d)", toolName, st.SavedBytes, wantSaved, st.RawBytes, st.SummaryBytes)
+		}
+		if st.SavedTokens != st.SavedBytes/4 {
+			t.Fatalf("%s saved_tokens=%d want saved_bytes/4=%d", toolName, st.SavedTokens, st.SavedBytes/4)
+		}
+		if !strings.Contains(string(out), formatTokenHuman(st.SavedTokens)) || !strings.Contains(string(out), "本次省") || !strings.Contains(string(out), "本轮共吸 1次") {
+			t.Fatalf("%s output must include OpenCode current-run footer stats, got:\n%s", toolName, out)
+		}
+		turnState := opencodehook.ReadTurnStateByKey(tmpHome, "turn-"+toolName)
+		if turnState == nil || turnState.SavedTokensTotal != st.SavedTokens || turnState.RunCount != 1 {
+			t.Fatalf("%s turn state = %+v want saved=%d run_count=1", toolName, turnState, st.SavedTokens)
+		}
+		seenSavedTokens[st.SavedTokens] = true
+	}
+	if len(seenSavedTokens) != len(sizes) {
+		t.Fatalf("expected distinct saved token counts for sizes %v, got %v", sizes, seenSavedTokens)
+	}
+}
+
+func TestAutoOpencodeFailureKeepsDiagnosticAndTwoLineFooter(t *testing.T) {
+	bin := buildXit(t)
+	tmpPath := t.TempDir()
+	tmpHome := t.TempDir()
+	bashPath, err := exec.LookPath("bash")
+	if err != nil {
+		t.Fatalf("bash not found: %v", err)
+	}
+	first := exec.Command(bin, "auto", "bash", "-lc", `for i in {1..1800}; do echo "noise-$i aaaa bbbb cccc"; done`)
+	first.Env = append(noXitAdapterEnv(),
+		"PATH="+tmpPath,
+		"XIT_ORIGINAL_BASH="+bashPath,
+		"XIT_HOME="+tmpHome,
+		"XIT_NONINTERACTIVE=1",
+		"XIT_ADAPTER=opencode",
+		"XIT_OPENCODE_TURN_KEY=turn-failure",
+	)
+	if out, err := first.CombinedOutput(); err != nil {
+		t.Fatalf("first opencode run failed: %v\n%s", err, out)
+	}
+
+	cmd := exec.Command(bin, "auto", "bash", "-lc", `for i in {1..1800}; do echo "noise-$i aaaa bbbb cccc"; done; echo "internal/opencode_test.go:42: expected 3, got 2" >&2; exit 1`)
+	cmd.Env = append(noXitAdapterEnv(),
+		"PATH="+tmpPath,
+		"XIT_ORIGINAL_BASH="+bashPath,
+		"XIT_HOME="+tmpHome,
+		"XIT_NONINTERACTIVE=1",
+		"XIT_ADAPTER=opencode",
+		"XIT_OPENCODE_TURN_KEY=turn-failure",
+	)
+	out, _ := cmd.CombinedOutput() // exit 1 is expected
+	s := string(out)
+	for _, want := range []string{
+		"internal/opencode_test.go:42: expected 3, got 2",
+		"吸T神功 · OpenCode · 守护你的T",
+		"本次省 约 ",
+		"本轮共吸 2次",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("expected %q in output, got:\n%s", want, s)
+		}
+	}
+	for _, bad := range []string{"raw_log:", "吸后摘要", "本次节省", "压缩率", "command:", "exit_code:", "status:", "saved_tokens:", ".xit/runs"} {
+		if strings.Contains(s, bad) {
+			t.Fatalf("OpenCode output must hide %q, got:\n%s", bad, s)
+		}
+	}
+	if st := opencodehook.ReadTurnStateByKey(tmpHome, "turn-failure"); st == nil || st.RunCount != 2 || st.SavedTokensTotal <= 0 {
+		t.Fatalf("failure should still accumulate OpenCode turn state, got %+v", st)
 	}
 }
 
 // TestAutoOpencodeEnvNotLeakedToChild verifies that XIT_ADAPTER and
-// XIT_OPENCODE_REROUTE_COUNT are stripped from the child process environment.
+// OpenCode hook env vars are stripped from the child process environment.
 func TestAutoOpencodeEnvNotLeakedToChild(t *testing.T) {
 	bin := buildXit(t)
 	tmpPath := t.TempDir()
 	// Fake "env" binary that prints XIT_ADAPTER from its own environment.
 	envScript := filepath.Join(tmpPath, "env")
-	os.WriteFile(envScript, []byte("#!/bin/sh\nprintenv XIT_ADAPTER; printenv XIT_OPENCODE_REROUTE_COUNT; exit 0"), 0755)
+	os.WriteFile(envScript, []byte("#!/bin/sh\nprintenv XIT_ADAPTER; printenv XIT_OPENCODE_REROUTE_COUNT; printenv XIT_OPENCODE_TURN_KEY; printenv XIT_OPENCODE_SESSION_ID; printenv XIT_OPENCODE_USER_MESSAGE_ID; exit 0"), 0755)
 
 	cmd := exec.Command(bin, "auto", "env")
 	cmd.Env = append(os.Environ(),
@@ -3171,6 +4791,9 @@ func TestAutoOpencodeEnvNotLeakedToChild(t *testing.T) {
 		"XIT_NONINTERACTIVE=1",
 		"XIT_ADAPTER=opencode",
 		"XIT_OPENCODE_REROUTE_COUNT=3",
+		"XIT_OPENCODE_TURN_KEY=turn-leak",
+		"XIT_OPENCODE_SESSION_ID=session-leak",
+		"XIT_OPENCODE_USER_MESSAGE_ID=message-leak",
 	)
 	out, err := cmd.CombinedOutput()
 	// env exits 0, xit auto may exit 0 too (passthrough for small output).
@@ -3182,5 +4805,11 @@ func TestAutoOpencodeEnvNotLeakedToChild(t *testing.T) {
 	}
 	if strings.Contains(outStr, "XIT_OPENCODE_REROUTE_COUNT") {
 		t.Errorf("XIT_OPENCODE_REROUTE_COUNT leaked into child process env, got:\n%s", outStr)
+	}
+	if strings.Contains(outStr, "turn-leak") {
+		t.Errorf("OpenCode turn key leaked into child process env, got:\n%s", outStr)
+	}
+	if strings.Contains(outStr, "session-leak") || strings.Contains(outStr, "message-leak") {
+		t.Errorf("OpenCode turn env leaked into child process env, got:\n%s", outStr)
 	}
 }

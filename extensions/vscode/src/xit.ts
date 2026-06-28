@@ -13,6 +13,7 @@ import type {
   CurrentRunState,
   TurnState,
 } from "./types";
+import { isHighOutputCommand as isHighOutputCommandCore } from "./logic";
 
 const OUTPUT_CHANNEL = vscode.window.createOutputChannel("XiT Status");
 
@@ -656,70 +657,7 @@ export function resolveAvailableBinary(): string | undefined {
 }
 
 export function isHighOutputCommand(cmd: string): boolean {
-  const trimmed = cmd.trim().toLowerCase();
-  if (!trimmed) {
-    return false;
-  }
-
-  // Explicit passthrough flags
-  if (/\b(--json|--porcelain|-q|--quiet)\b/.test(trimmed)) {
-    return false;
-  }
-
-  // Explicit passthrough commands (short output)
-  const passthroughPatterns = [
-    /^git\s+status(\s|$)/,
-    /^git\s+branch(\s|$)/,
-    /^git\s+log\s+--oneline/,
-    /^git\s+show\s+--stat/,
-    /^pwd(\s|$)/,
-    /^whoami(\s|$)/,
-    /^go\s+version(\s|$)/,
-    /^node\s+--version(\s|$)/,
-    /^npm\s+--version(\s|$)/,
-    /^ls(\s|$)/,
-    /^cat\s+\S+$/,
-  ];
-  for (const p of passthroughPatterns) {
-    if (p.test(trimmed)) {
-      return false;
-    }
-  }
-
-  // High-output commands
-  const highOutputPatterns = [
-    /^go\s+test/,
-    /^npm\s+test/,
-    /^pnpm\s+test/,
-    /^yarn\s+test/,
-    /^pytest/,
-    /^cargo\s+test/,
-    /^git\s+diff/,
-    /^git\s+log\s+--stat/,
-    /^git\s+log\s+-p/,
-    /^(grep|rg|find|tree)\s/,
-    /^docker\s+logs/,
-    /^kubectl\s+logs/,
-    /^tsc(\s|$)/,
-    /^eslint/,
-    /^webpack/,
-    /^vite\s+build/,
-    /^npm\s+run\s+build/,
-    /^npm\s+run\s+lint/,
-    /^pnpm\s+run\s+build/,
-    /^yarn\s+run\s+build/,
-    /^docker\s+build/,
-    /^docker\s+compose\s+up/,
-    /^make(\s|$)/,
-    /^cmake\s+--build/,
-  ];
-  for (const p of highOutputPatterns) {
-    if (p.test(trimmed)) {
-      return true;
-    }
-  }
-
-  return false;
+  return isHighOutputCommandCore(cmd);
 }
 
 export function readLatestRun(workspacePath = resolveActiveXitWorkspace()): LatestRun | undefined {

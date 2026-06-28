@@ -16,7 +16,7 @@ func TestRunTurnHookCommandUserPromptSubmit(t *testing.T) {
 	oldWd, _ := os.Getwd()
 	os.Chdir(tmp)
 	defer os.Chdir(oldWd)
-	
+
 	home := filepath.Join(tmp, ".xit")
 
 	payload := `{"hookEventName":"UserPromptSubmit","cwd":"/tmp/test","session_id":"sess-123","prompt":"hello world"}`
@@ -63,7 +63,7 @@ func TestRunTurnHookCommandStop(t *testing.T) {
 	oldWd, _ := os.Getwd()
 	os.Chdir(tmp)
 	defer os.Chdir(oldWd)
-	
+
 	home := filepath.Join(tmp, ".xit")
 
 	// First write a thinking state.
@@ -113,7 +113,7 @@ func TestRunTurnHookCommandFailOpenMalformedJSON(t *testing.T) {
 	oldWd, _ := os.Getwd()
 	os.Chdir(tmp)
 	defer os.Chdir(oldWd)
-	
+
 	home := filepath.Join(tmp, ".xit")
 
 	payload := `this is not json`
@@ -152,7 +152,7 @@ func TestRunTurnHookCommandSessionStartEnd(t *testing.T) {
 			oldWd, _ := os.Getwd()
 			os.Chdir(tmp)
 			defer os.Chdir(oldWd)
-			
+
 			home := filepath.Join(tmp, ".xit")
 
 			payload := `{"hookEventName":"` + event + `","cwd":"/tmp/test"}`
@@ -191,7 +191,7 @@ func TestRunTurnHookCommandExplicitArgOverridesEmptyJSON(t *testing.T) {
 	oldWd, _ := os.Getwd()
 	os.Chdir(tmp)
 	defer os.Chdir(oldWd)
-	
+
 	home := filepath.Join(tmp, ".xit")
 
 	// JSON has empty event, but argv provides explicit event.
@@ -228,7 +228,7 @@ func TestRunTurnHookCommandProjectStateFirst(t *testing.T) {
 	oldWd, _ := os.Getwd()
 	os.Chdir(tmp)
 	defer os.Chdir(oldWd)
-	
+
 	home := filepath.Join(tmp, ".xit")
 
 	payload := `{"event":"UserPromptSubmit","cwd":"/tmp/test"}`
@@ -259,7 +259,7 @@ func TestRunTurnHookCommandFallbackToUserHome(t *testing.T) {
 	oldWd, _ := os.Getwd()
 	os.Chdir(tmp)
 	defer os.Chdir(oldWd)
-	
+
 	home := filepath.Join(tmp, "user-xit")
 	_ = os.MkdirAll(filepath.Join(home, "state"), 0755)
 
@@ -357,9 +357,9 @@ func TestFormatSavedTokens(t *testing.T) {
 		{0, ""},
 		{1, ""},
 		{900, "省225 Token"},
-		{32000, "省8k Token"},
-		{36035, "省9k Token"},
-		{65000, "省16k Token"},
+		{32000, "省约 8.00k Token"},
+		{36035, "省约 9.01k Token"},
+		{65000, "省约 16.25k Token"},
 	}
 	for _, c := range cases {
 		got := FormatSavedTokens(c.bytes)
@@ -374,12 +374,12 @@ func TestComputeToolbarTextAutoCompletedShowsTokens(t *testing.T) {
 	home := filepath.Join(tmp, ".xit")
 	now := time.Now().UTC()
 
-	// Auto completed with 36035 bytes -> 9008 tokens -> 省9k Token
+	// Auto completed with 36035 bytes -> 9008 tokens -> 省约 9.01k Token
 	turn := TurnState{Status: "thinking", Event: "UserPromptSubmit", StartedAt: now.Add(-5 * time.Minute).Format(time.RFC3339)}
 	auto := AutoState{Status: "completed", FinishedAt: now.Add(-5 * time.Second).Format(time.RFC3339), SavedBytes: 36035}
 	text := ComputeToolbarText(home, turn, auto)
-	if text != "吸T完成 · 本次省9k Token" {
-		t.Errorf("auto completed: expected 吸T完成 · 本次省9k Token, got %s", text)
+	if text != "吸T完成 · 本次省约 9.01k Token" {
+		t.Errorf("auto completed: expected 吸T完成 · 本次省约 9.01k Token, got %s", text)
 	}
 
 	// Auto completed with 900 bytes -> 225 tokens -> 省225 Token
@@ -397,7 +397,7 @@ func TestComputeToolbarTextTurnResultShowsTokens(t *testing.T) {
 	_ = os.MkdirAll(stateDir, 0755)
 	now := time.Now().UTC()
 
-	// Write a history record with 65000 bytes saved -> 16250 tokens -> 16k Token
+	// Write a history record with 65000 bytes saved -> 16250 tokens -> 省约 16.25k Token
 	// within the turn time range
 	rec := fmt.Sprintf(`{"timestamp":"%s","raw_bytes":70000,"summary_bytes":5000,"action":"compress"}`+"\n", now.Add(-30*time.Minute).Format(time.RFC3339))
 	_ = os.WriteFile(filepath.Join(home, "history.jsonl"), []byte(rec), 0644)
@@ -406,8 +406,8 @@ func TestComputeToolbarTextTurnResultShowsTokens(t *testing.T) {
 	turn := TurnState{Status: "turn_completed", StartedAt: now.Add(-1 * time.Hour).Format(time.RFC3339), FinishedAt: now.Add(-5 * time.Second).Format(time.RFC3339)}
 	auto := AutoState{}
 	text := ComputeToolbarText(home, turn, auto)
-	if text != "本次吸T1次 · 省16k Token" {
-		t.Errorf("turn result: expected 本次吸T1次 · 省16k Token, got %s", text)
+	if text != "本次吸T1次 · 省约 16.25k Token" {
+		t.Errorf("turn result: expected 本次吸T1次 · 省约 16.25k Token, got %s", text)
 	}
 }
 

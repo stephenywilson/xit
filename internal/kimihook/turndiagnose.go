@@ -10,20 +10,20 @@ import (
 
 // TurnDiagnoseResult holds the turn diagnose output.
 type TurnDiagnoseResult struct {
-	ProjectState  TurnStateCheck   `json:"project_state"`
-	UserState     TurnStateCheck   `json:"user_state"`
-	EventsLog     EventsLogCheck   `json:"events_log"`
-	HookConfig    HookConfigCheck  `json:"hook_config"`
-	Scripts       ScriptsCheck     `json:"scripts"`
-	Diagnosis     []string         `json:"diagnosis"`
+	ProjectState TurnStateCheck  `json:"project_state"`
+	UserState    TurnStateCheck  `json:"user_state"`
+	EventsLog    EventsLogCheck  `json:"events_log"`
+	HookConfig   HookConfigCheck `json:"hook_config"`
+	Scripts      ScriptsCheck    `json:"scripts"`
+	Diagnosis    []string        `json:"diagnosis"`
 }
 
 type TurnStateCheck struct {
-	Path   string      `json:"path"`
-	Exists bool        `json:"exists"`
-	Status string      `json:"status"`
-	Event  string      `json:"event"`
-	Age    string      `json:"age"`
+	Path   string `json:"path"`
+	Exists bool   `json:"exists"`
+	Status string `json:"status"`
+	Event  string `json:"event"`
+	Age    string `json:"age"`
 }
 
 type EventsLogCheck struct {

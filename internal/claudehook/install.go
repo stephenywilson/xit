@@ -160,13 +160,13 @@ func DisableReroute(home string) error {
 }
 
 type StatsResult struct {
-	Events       int
-	Observed     int
-	Rerouted     int
-	Passthrough  int
-	Errors       int
-	TopCommands  []CommandCount
-	HasEvents    bool
+	Events      int
+	Observed    int
+	Rerouted    int
+	Passthrough int
+	Errors      int
+	TopCommands []CommandCount
+	HasEvents   bool
 }
 
 type CommandCount struct {

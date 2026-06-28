@@ -160,6 +160,31 @@ observe 模式：只记录，不阻断。`fail_open: true` 保证任何异常都
 
 statusLine 写入 `.claude/settings.local.json`（project-local），不修改全局 `~/.claude/settings.json`。
 
+## VS Code Bridge：turn.started / turn.finished（已实现，未默认安装）
+
+`xit claude-hook userpromptsubmit` 和 `xit claude-hook stop` 已实现：在
+`VSCODE_PID` 存在（即运行在 VS Code 进程树内）时分别写入 VS Code Bridge 的
+`turn.started` / `turn.finished` 事件，驱动 Dashboard / 状态栏从"正在守护"
+（AI thinking）过渡到"将收工中结果转为最终结果"。
+
+**未写入 `.claude/settings.json` 默认安装**：VS Code Claude Code 面板是否
+真实、稳定触发 `UserPromptSubmit` / `Stop` 这两个 hook 事件尚未验证。
+`install.go` 的 `AddXiTHook`/`Install` 目前只安装 `PreToolUse`，在确认面板
+行为之前不会静默往用户的 `.claude/settings.json` 里多塞这两个 hook。
+
+如果要手动试用（自行评估风险），在 `.claude/settings.json` 的 `hooks` 里
+追加：
+
+```json
+"UserPromptSubmit": [{"hooks": [{"type": "command", "command": "xit claude-hook userpromptsubmit"}]}],
+"Stop": [{"hooks": [{"type": "command", "command": "xit claude-hook stop"}]}]
+```
+
+如果这两个 hook 实际不触发，VS Code Bridge 会自动走保守 fallback timer
+（见 `extensions/vscode/src/extension.ts` 的
+`BRIDGE_NO_TURN_SIGNAL_FALLBACK_MS`，约 3–5 秒）——不影响 `run.started` /
+`run.finished`（这两个由 `PreToolUse` 驱动，已确认能在 VS Code 面板里触发）。
+
 ## 当前边界
 
 Claude Code 适配进度：
@@ -168,6 +193,8 @@ Claude Code 适配进度：
 2. ✅ observe hook 在后台记录命中率
 3. ✅ `xit hook hitrate claude` 验证路由命中率（100%）
 4. ✅ 官方 statusLine 原型（`xit claude statusline`）
-5. 下一步：live 验证 statusLine 显示，再考虑 user scope 文档化
+5. ✅ VS Code Bridge run.started/run.finished（PreToolUse 驱动，已确认在面板里触发）
+6. ⚠️ VS Code Bridge turn.started/turn.finished（已实现，未默认安装，面板真实触发情况未验证）
+7. 下一步：live 验证 statusLine 显示，再考虑 user scope 文档化
 
-不做：强制拦截、TUI takeover、全局 hook 注入。
+不做：强制拦截、TUI takeover、全局 hook 注入（UserPromptSubmit/Stop 需用户手动启用，见上）。

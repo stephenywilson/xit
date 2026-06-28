@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -34,10 +35,11 @@ import (
 	"github.com/stephenywilson/xit/internal/runner"
 	"github.com/stephenywilson/xit/internal/session"
 	"github.com/stephenywilson/xit/internal/shim"
+	"github.com/stephenywilson/xit/internal/vscodebridge"
 	"os/exec"
 )
 
-const version = "0.2.46"
+const version = "0.2.47"
 
 func main() {
 	mode, rest := parseArgs(os.Args[1:])
@@ -997,6 +999,58 @@ func cmdInit(args []string) error {
 		method = "wrapper"
 	}
 
+	if target == "codex" && method == "official_hook" {
+		if scope == "" {
+			scope = "project"
+		}
+		if scope != "project" {
+			return fmt.Errorf("codex hooks only support project scope")
+		}
+		projectPath, _ := os.Getwd()
+		codexPath := config.DetectPath("codex")
+		if codexPath == "" {
+			return fmt.Errorf("codex not found in PATH")
+		}
+		if dryRun {
+			fmt.Println("XiT Install Plan: Codex official_hook")
+			fmt.Printf("- scope: project\n")
+			fmt.Printf("- hooks: %s\n", filepath.Join(projectPath, ".codex", "hooks.json"))
+			fmt.Println("- install UserPromptSubmit, PreToolUse(Bash), PostToolUse(Bash), Stop")
+			fmt.Println("- tool cards remain free of XiT footer; final assistant answer gets one footer")
+			return nil
+		}
+		if !yes {
+			return fmt.Errorf("install requires --yes to confirm. Run: xit init codex --method official_hook --yes")
+		}
+		res, err := codexhook.Install(projectPath, home, false)
+		if err != nil {
+			return err
+		}
+		t := cfg.Targets["codex"]
+		t.Enabled = true
+		t.Path = codexPath
+		t.Integration = "official_hook"
+		cfg.Targets["codex"] = t
+		if err := config.Save(home, cfg); err != nil {
+			return err
+		}
+		if res.AlreadyInstalled {
+			fmt.Println("XiT initialized for Codex (hooks already installed).")
+		} else {
+			fmt.Println("XiT initialized for Codex (official_hook).")
+		}
+		fmt.Printf("\ncodex path:   %s\n", codexPath)
+		fmt.Printf("integration:  official_hook\n")
+		fmt.Printf("config:       %s\n", config.Path(home))
+		fmt.Printf("hooks:        %s\n", res.HooksPath)
+		for _, ev := range res.Events {
+			fmt.Printf("  %-17s %s\n", ev.Event+":", ev.ScriptPath)
+		}
+		fmt.Println()
+		fmt.Println("IMPORTANT: open Codex in this project, run /hooks, then trust UserPromptSubmit, PreToolUse, PostToolUse, and Stop.")
+		return nil
+	}
+
 	plan := a.PlanInstall(home, cfg, method)
 	plan.Scope = scope
 
@@ -1078,18 +1132,160 @@ func writeAutoStateFiles(home string, state map[string]interface{}) {
 	}
 }
 
-// buildOpenCodeSummary returns the four-line Chinese brand output shown
-// inside OpenCode's tool output panel when xit auto runs via the OpenCode
-// hook (XIT_ADAPTER=opencode). It replaces the generic English summary.
-// Note: per-turn count is intentionally omitted — OpenCode hook payload has
-// no turn/message ID, so cross-turn counting would be misleading.
-func buildOpenCodeSummary(savedBytes int) string {
+// buildOpenCodeToolOutput renders OpenCode tool cards. OpenCode cannot
+// reliably mutate the final assistant answer in 1.16.2, so XiT feedback is
+// shown here as a compact two-line footer while still hiding machine fields.
+func buildOpenCodeToolOutput(summary *output.Summary, savedBytes int, runCount int, hasTurn bool, diagnostics []string) string {
 	var b strings.Builder
-	b.WriteString("吸T神功 · 守护你的T\n")
-	b.WriteString("吸T神功 · 本次已发功\n")
-	b.WriteString(fmt.Sprintf("本次省 %s Token\n", formatTokenCount(savedBytes/4)))
-	b.WriteString("吸T神功 · 等待下轮发功\n")
+	for _, line := range diagnostics {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	if b.Len() == 0 && summary != nil && summary.ExitCode == 0 && summary.Confidence != "low" {
+		for _, line := range summary.BodyLines {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
+	}
+	if b.Len() > 0 {
+		b.WriteString("\n")
+	}
+	b.WriteString("吸T神功 · OpenCode · 守护你的T\n")
+	b.WriteString("本次省 ")
+	b.WriteString(formatTokenHuman(savedBytes / 4))
+	if hasTurn {
+		b.WriteString(fmt.Sprintf(" · 本轮共吸 %d次", runCount))
+	}
+	b.WriteString("\n")
 	return b.String()
+}
+
+// buildNaturalLanguageSummary is the natural-language tool output shown inside
+// Antigravity and Claude (effectiveAdapter()=="antigravity"|"claude"). The bottom
+// statusline already reports XiT state + token savings, so the tool result area
+// must NOT repeat machine bookkeeping (command/exit_code/status/reduction/
+// saved_tokens/raw_log/key_facts or any .xit/runs path) — just a short, readable
+// result.
+func buildNaturalLanguageSummary(summary *output.Summary) string {
+	if summary != nil && summary.ExitCode != 0 {
+		return fmt.Sprintf("命令以退出码 %d 结束。输出已由 XiT 压缩处理。\n", summary.ExitCode)
+	}
+	return "执行成功。输出已由 XiT 压缩处理。\n"
+}
+
+// buildCodexToolOutput is the Codex per-tool-call output renderer
+// (effectiveAdapter()=="codex"). Architecture: the XiT footer must appear ONCE
+// at the end of the turn's final assistant answer (driven by the
+// UserPromptSubmit/PreToolUse/PostToolUse/Stop hook lifecycle in
+// internal/codexhook), NEVER inside an individual tool card. So this function
+// renders ONLY the real, useful result — no XiT branding, no token counts, no
+// footer of any kind:
+//   - real diagnostic content (errors/test failures/file:line) from a
+//     high-confidence filter is preserved verbatim;
+//   - low-confidence/fallback bookkeeping (bare numeric KeyFacts, e.g.
+//     stdout_lines/stderr_lines that render as meaningless "- 1" / "- 2185"
+//     bullets) is dropped entirely — Confidence=="low" is exactly the generic
+//     safeFallback path that produces that bug;
+//   - if there is nothing useful to show, a minimal acknowledgement is
+//     printed instead of an empty tool result.
+func buildCodexToolOutput(summary *output.Summary) string {
+	var b strings.Builder
+	if summary != nil && summary.Confidence != "low" {
+		for _, line := range summary.BodyLines {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
+	}
+	if b.Len() == 0 && summary != nil && summary.ExitCode != 0 {
+		for _, line := range codexDiagnosticLines(summary.BodyLines) {
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
+	}
+	if b.Len() == 0 {
+		if summary != nil && summary.ExitCode != 0 {
+			return fmt.Sprintf("命令以退出码 %d 结束，输出已压缩。\n", summary.ExitCode)
+		}
+		return "命令执行成功，无需展开重复输出。\n"
+	}
+	return b.String()
+}
+
+var codexFileLineDiagnosticRe = regexp.MustCompile(`(?:^|\s)(?:[A-Za-z0-9_./-]+\.(?:go|ts|tsx|js|jsx|py|rs|java|kt|swift|c|cc|cpp|h|hpp|rb|php|cs|m|mm|scala|clj|ex|exs|erl|hrl|lua|sh|bash|zsh|fish|sql|yaml|yml|json|toml|md):\d+(?::\d+)?:\s*\S.*)$`)
+
+func codexDiagnosticLines(lines []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, line := range lines {
+		trim := strings.TrimSpace(line)
+		if trim == "" {
+			continue
+		}
+		m := codexFileLineDiagnosticRe.FindString(trim)
+		if m == "" {
+			continue
+		}
+		diag := strings.TrimSpace(m)
+		if !seen[diag] {
+			out = append(out, diag)
+			seen[diag] = true
+		}
+		if len(out) >= 10 {
+			break
+		}
+	}
+	return out
+}
+
+func openCodeDiagnosticLines(summaryLines []string, stdout, stderr string) []string {
+	var candidates []string
+	candidates = append(candidates, strings.Split(stderr, "\n")...)
+	candidates = append(candidates, strings.Split(stdout, "\n")...)
+	candidates = append(candidates, summaryLines...)
+
+	var out []string
+	seen := map[string]bool{}
+	for _, line := range candidates {
+		trim := strings.TrimSpace(line)
+		if trim == "" {
+			continue
+		}
+		diag := ""
+		if m := codexFileLineDiagnosticRe.FindString(trim); m != "" {
+			diag = strings.TrimSpace(m)
+		} else {
+			lower := strings.ToLower(trim)
+			switch {
+			case strings.HasPrefix(trim, "FAIL "):
+				diag = trim
+			case strings.HasPrefix(trim, "Error:"), strings.HasPrefix(lower, "error:"):
+				diag = trim
+			case strings.Contains(lower, "expected ") && strings.Contains(lower, " got "):
+				diag = trim
+			}
+		}
+		if diag == "" || seen[diag] {
+			continue
+		}
+		out = append(out, diag)
+		seen[diag] = true
+		if len(out) >= 10 {
+			break
+		}
+	}
+	return out
 }
 
 func buildAutoRenderedSummary(summary *output.Summary, rawBytes int, summaryBytes int, savedBytes int) string {
@@ -1097,9 +1293,9 @@ func buildAutoRenderedSummary(summary *output.Summary, rawBytes int, summaryByte
 	b.WriteString("吸T完成\n\n")
 	b.WriteString(fmt.Sprintf("command: %s\n", summary.Command))
 	b.WriteString(fmt.Sprintf("exit_code: %d\n", summary.ExitCode))
-	b.WriteString(fmt.Sprintf("原始输出: %s\n", formatTokenCount(rawBytes/4)))
-	b.WriteString(fmt.Sprintf("吸后摘要: %s\n", formatTokenCount(summaryBytes/4)))
-	b.WriteString(fmt.Sprintf("本次节省: %s\n", formatTokenCount(savedBytes/4)))
+	b.WriteString(fmt.Sprintf("原始输出: %s\n", formatTokenHuman(rawBytes/4)))
+	b.WriteString(fmt.Sprintf("吸后摘要: %s\n", formatTokenHuman(summaryBytes/4)))
+	b.WriteString(fmt.Sprintf("本次节省: %s\n", formatTokenHuman(savedBytes/4)))
 	// 压缩率 must use the same real source as 本次节省 (savedBytes vs rawBytes),
 	// NOT summary.EstimatedReduction (a filter semantic/heuristic estimate that can
 	// read 0% even when real savings are large). rawBytes<=0 -> 0% (no panic).
@@ -1135,6 +1331,310 @@ func buildAutoRenderedSummary(summary *output.Summary, rawBytes int, summaryByte
 	return b.String()
 }
 
+// ancestorIsAntigravity reports whether a process command/path denotes the
+// Antigravity CLI. Matches any path containing "antigravity" (e.g.
+// antigravity-cli, or a gemini binary under an antigravity path) and the exact
+// basename "agy". Deliberately strict so e.g. "legacy" never matches.
+func ancestorIsAntigravity(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	if n == "" {
+		return false
+	}
+	if strings.Contains(n, "antigravity") {
+		return true
+	}
+	base := filepath.Base(n)
+	if i := strings.IndexAny(base, " \t"); i >= 0 {
+		base = base[:i]
+	}
+	base = strings.TrimSuffix(base, ".exe")
+	return base == "agy"
+}
+
+// ancestorIsClaude reports whether a process command/path denotes the Claude
+// Code CLI. Matches ONLY the exact basename "claude" or "claude-code" (a real
+// Claude Code parent process, e.g. ".../native-binary/claude") — never a
+// substring match, so a directory/username merely containing "claude" (e.g.
+// "my-claude-project", "legacy-claude-helper") can never false-positive.
+func ancestorIsClaude(name string) bool {
+	n := strings.TrimSpace(name)
+	if n == "" {
+		return false
+	}
+	base := filepath.Base(n)
+	if i := strings.IndexAny(base, " \t"); i >= 0 {
+		base = base[:i]
+	}
+	base = strings.TrimSuffix(base, ".exe")
+	base = strings.ToLower(base)
+	return base == "claude" || base == "claude-code"
+}
+
+// ancestorIsCodex reports whether a process command/path denotes the Codex CLI
+// (the @openai/codex npm package, e.g. "~/.local/node/current/bin/codex").
+// Matches ONLY the exact basename "codex" — never a substring match, so a
+// directory/username merely containing "codex" can never false-positive.
+func ancestorIsCodex(name string) bool {
+	n := strings.TrimSpace(name)
+	if n == "" {
+		return false
+	}
+	base := filepath.Base(n)
+	if i := strings.IndexAny(base, " \t"); i >= 0 {
+		base = base[:i]
+	}
+	base = strings.TrimSuffix(base, ".exe")
+	return strings.ToLower(base) == "codex"
+}
+
+// realProcessAncestry walks the parent process chain (parent first), up to
+// maxDepth, via a single `ps` call. macOS/Linux only; returns nil on any error.
+// ancestorProc is a parent-process entry (PID + command/path).
+type ancestorProc struct {
+	PID  int
+	Comm string
+}
+
+func realProcessAncestry(maxDepth int) []ancestorProc {
+	out, err := exec.Command("ps", "-axo", "pid=,ppid=,comm=").Output()
+	if err != nil {
+		return nil
+	}
+	type pp struct {
+		ppid int
+		comm string
+	}
+	m := make(map[int]pp)
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 3 {
+			continue
+		}
+		pid, e1 := strconv.Atoi(f[0])
+		ppid, e2 := strconv.Atoi(f[1])
+		if e1 != nil || e2 != nil {
+			continue
+		}
+		m[pid] = pp{ppid: ppid, comm: strings.Join(f[2:], " ")}
+	}
+	var chain []ancestorProc
+	pid := os.Getppid()
+	for i := 0; i < maxDepth && pid > 1; i++ {
+		e, ok := m[pid]
+		if !ok {
+			break
+		}
+		chain = append(chain, ancestorProc{PID: pid, Comm: e.comm})
+		if e.ppid <= 1 || e.ppid == pid {
+			break
+		}
+		pid = e.ppid
+	}
+	return chain
+}
+
+// processAncestry returns the ancestor process chain (parent first). Test hook:
+// XIT_TEST_ANCESTORS (comma-separated comm names; PIDs are synthesized) overrides
+// the lookup. Under XIT_NONINTERACTIVE=1 (tests/CI) the real probe is skipped for
+// hermetic results unless the test hook is set explicitly.
+func processAncestry() []ancestorProc {
+	if v, ok := os.LookupEnv("XIT_TEST_ANCESTORS"); ok {
+		if strings.TrimSpace(v) == "" {
+			return nil
+		}
+		var chain []ancestorProc
+		for i, name := range strings.Split(v, ",") {
+			chain = append(chain, ancestorProc{PID: -(i + 1), Comm: name})
+		}
+		return chain
+	}
+	if os.Getenv("XIT_NONINTERACTIVE") == "1" {
+		return nil
+	}
+	return realProcessAncestry(8)
+}
+
+// effectiveAdapter resolves the active adapter for `xit auto` rendering:
+//  1. explicit XIT_ADAPTER wins (opencode/antigravity/claude/codex/…);
+//  2. otherwise detect Antigravity from the process ancestor chain (real Agy
+//     runs `xit auto` WITHOUT XIT_ADAPTER);
+//  3. otherwise detect Claude Code: CLAUDECODE=1 / CLAUDE_CODE_SESSION_ID env
+//     (fast path), OR the process ancestor chain (real Claude Code's Bash tool
+//     may spawn a child shell that does not inherit CLAUDECODE — the ancestor
+//     check catches that case: the direct parent is the `claude` binary itself);
+//  4. otherwise detect Codex from the process ancestor chain (audited: Codex has
+//     no equivalent env signal — no CODEX_* env var is set, and its PreToolUse
+//     hook payload carries no session/adapter info either — so ancestor basename
+//     "codex" is the only available signal, e.g. "~/.local/node/current/bin/codex");
+//  5. otherwise "" (generic/default behavior).
+func effectiveAdapter() string {
+	if v := os.Getenv("XIT_ADAPTER"); v != "" {
+		return v
+	}
+	ancestry := processAncestry()
+	for _, p := range ancestry {
+		if ancestorIsAntigravity(p.Comm) {
+			return "antigravity"
+		}
+	}
+	if claudeCodeDetected() {
+		return "claude"
+	}
+	for _, p := range ancestry {
+		if ancestorIsClaude(p.Comm) {
+			return "claude"
+		}
+	}
+	for _, p := range ancestry {
+		if ancestorIsCodex(p.Comm) {
+			return "codex"
+		}
+	}
+	return ""
+}
+
+// claudeCodeDetected reports whether we're running inside Claude Code, via the
+// CLAUDECODE=1 env it sets, or a real CLAUDE_CODE_SESSION_ID (also a strong
+// standalone signal — useful if CLAUDECODE itself doesn't propagate to a
+// spawned subprocess). Test hook XIT_TEST_CLAUDECODE overrides; under
+// XIT_NONINTERACTIVE=1 (tests/CI) real env detection is skipped for hermetic
+// results.
+func claudeCodeDetected() bool {
+	if v, ok := os.LookupEnv("XIT_TEST_CLAUDECODE"); ok {
+		return v == "1"
+	}
+	if os.Getenv("XIT_NONINTERACTIVE") == "1" {
+		return false
+	}
+	if os.Getenv("CLAUDECODE") == "1" {
+		return true
+	}
+	return os.Getenv("CLAUDE_CODE_SESSION_ID") != ""
+}
+
+// claudeSessionKey returns a stable per-Claude-Code-session key for the run
+// counter (CLAUDE_CODE_SESSION_ID); test hook XIT_TEST_SESSION_KEY; else "default".
+func claudeSessionKey() string {
+	if v := os.Getenv("XIT_TEST_SESSION_KEY"); v != "" {
+		return v
+	}
+	if v := os.Getenv("CLAUDE_CODE_SESSION_ID"); v != "" {
+		return v
+	}
+	return "default"
+}
+
+// claudeRunCountState persists the real per-session count of Claude `xit auto`
+// compressions, used for the truthful "本轮共吸 N次" line.
+type claudeRunCountState struct {
+	SessionKey string `json:"session_key"`
+	Count      int    `json:"count"`
+	UpdatedAt  string `json:"updated_at"`
+}
+
+func claudeRunCountPath(home string) string {
+	return filepath.Join(home, "state", "claude-run-count.json")
+}
+
+// incrementClaudeRunCount bumps the per-session Claude run counter (resets on a
+// new session id or after 1h of inactivity) and returns the new count.
+// Fail-open.
+func incrementClaudeRunCount(home string) int {
+	key := claudeSessionKey()
+	path := claudeRunCountPath(home)
+	now := time.Now()
+	var st claudeRunCountState
+	if data, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(data, &st)
+	}
+	fresh := st.SessionKey == key
+	if fresh {
+		if t, e := time.Parse(time.RFC3339, st.UpdatedAt); e != nil || now.Sub(t) > time.Hour {
+			fresh = false
+		}
+	}
+	if fresh {
+		st.Count++
+	} else {
+		st = claudeRunCountState{SessionKey: key, Count: 1}
+	}
+	st.UpdatedAt = now.Format(time.RFC3339)
+	if data, err := json.Marshal(st); err == nil {
+		_ = os.MkdirAll(filepath.Dir(path), 0755)
+		_ = os.WriteFile(path, data, 0644)
+	}
+	return st.Count
+}
+
+// readClaudeRunCount returns the current session's run count (0 if none/stale).
+func readClaudeRunCount(home string) int {
+	data, err := os.ReadFile(claudeRunCountPath(home))
+	if err != nil {
+		return 0
+	}
+	var st claudeRunCountState
+	if json.Unmarshal(data, &st) != nil {
+		return 0
+	}
+	if t, e := time.Parse(time.RFC3339, st.UpdatedAt); e != nil || time.Since(t) > time.Hour {
+		return 0
+	}
+	return st.Count
+}
+
+// antigravitySessionKey identifies a single Agy session so the idle statusline can
+// distinguish the first call (准备就绪) from later calls (守护你的T). Prefers the
+// Antigravity ancestor PID (stable across statusline pulls); test hook:
+// XIT_TEST_SESSION_KEY.
+func antigravitySessionKey() string {
+	if v := os.Getenv("XIT_TEST_SESSION_KEY"); v != "" {
+		return v
+	}
+	for _, p := range processAncestry() {
+		if ancestorIsAntigravity(p.Comm) {
+			return "agy-" + strconv.Itoa(p.PID)
+		}
+	}
+	return "ppid-" + strconv.Itoa(os.Getppid())
+}
+
+// antigravityIdleIsFirstCall records and reports whether this is the first idle
+// statusline call of the current Agy session. State lives in
+// <home>/state/antigravity-statusline.json; stale sessions (>10m) reset so a new
+// Agy launch starts again at 准备就绪. Fail-open (errors => treat as first).
+func antigravityIdleIsFirstCall(home string) bool {
+	key := antigravitySessionKey()
+	path := filepath.Join(home, "state", "antigravity-statusline.json")
+	type idleState struct {
+		SessionKey string `json:"session_key"`
+		IdleCalls  int    `json:"idle_calls"`
+		UpdatedAt  string `json:"updated_at"`
+	}
+	now := time.Now()
+	var st idleState
+	fresh := false
+	if data, err := os.ReadFile(path); err == nil {
+		if json.Unmarshal(data, &st) == nil && st.SessionKey == key {
+			if t, e := time.Parse(time.RFC3339, st.UpdatedAt); e == nil && now.Sub(t) >= 0 && now.Sub(t) < 10*time.Minute {
+				fresh = true
+			}
+		}
+	}
+	first := false
+	if fresh && st.IdleCalls >= 1 {
+		st.IdleCalls++
+	} else {
+		st = idleState{SessionKey: key, IdleCalls: 1}
+		first = true
+	}
+	st.UpdatedAt = now.Format(time.RFC3339)
+	if data, err := json.Marshal(st); err == nil {
+		_ = os.MkdirAll(filepath.Dir(path), 0755)
+		_ = os.WriteFile(path, data, 0644)
+	}
+	return first
+}
+
 func cmdAuto(args []string) error {
 	if len(args) < 1 {
 		return fmt.Errorf("usage: xit auto <tool> [args...]")
@@ -1142,14 +1642,63 @@ func cmdAuto(args []string) error {
 	tool := args[0]
 	toolArgs := args[1:]
 
-	// Capture and clear OpenCode env vars before the child process runs so
-	// they don't leak into sub-commands. xcAdapter is used for rendering only.
-	xcAdapter := os.Getenv("XIT_ADAPTER")
+	// Resolve the effective adapter BEFORE clearing env (explicit XIT_ADAPTER
+	// wins; otherwise detect Antigravity from the process ancestry). Then clear
+	// OpenCode env vars so they don't leak into sub-commands.
+	xcAdapter := effectiveAdapter()
+	opencodeTurnKey := os.Getenv("XIT_OPENCODE_TURN_KEY")
+	opencodeSessionID := os.Getenv("XIT_OPENCODE_SESSION_ID")
+	opencodeUserMessageID := os.Getenv("XIT_OPENCODE_USER_MESSAGE_ID")
+	if opencodeTurnKey == "" && opencodeSessionID != "" && opencodeUserMessageID != "" {
+		opencodeTurnKey = opencodehook.MakeTurnKey(opencodeSessionID, opencodeUserMessageID)
+	}
+	// XIT_VSCODE_BRIDGE_RUN_ID is the opaque id the Codex PreToolUse hook
+	// injected into the rewritten command (see internal/codexhook/rewrite.go)
+	// — the only thing that reliably correlates this `xit auto` subprocess
+	// back to the pending bridge context the hook wrote, since VSCODE_PID and
+	// the exact command string are not guaranteed to match between the hook
+	// process and this one.
+	bridgeRunID := os.Getenv("XIT_VSCODE_BRIDGE_RUN_ID")
 	os.Unsetenv("XIT_ADAPTER")
 	os.Unsetenv("XIT_OPENCODE_REROUTE_COUNT")
+	os.Unsetenv("XIT_OPENCODE_TURN_KEY")
+	os.Unsetenv("XIT_OPENCODE_SESSION_ID")
+	os.Unsetenv("XIT_OPENCODE_USER_MESSAGE_ID")
+	os.Unsetenv("XIT_VSCODE_BRIDGE_RUN_ID")
 
 	// State file setup (fail-open).
 	home := xitHome()
+	workspaceCwd, _ := os.Getwd()
+	// finishBridge's summaryBytes/runCount default to 0 for early-exit call
+	// sites that run before a real summary/turn-count exists yet — which
+	// matches what the Codex CLI footer would show for those same cases
+	// (its own turn counter is also untouched at that point).
+	finishBridge := func(exitCode, savedBytes, summaryBytes, runCount int) {
+		if savedBytes < 0 {
+			savedBytes = 0
+		}
+		result := vscodebridge.FinishResult{
+			ExitCode:     exitCode,
+			SavedTokens:  savedBytes / 4,
+			SavedBytes:   savedBytes,
+			SummaryBytes: summaryBytes,
+			RunCount:     runCount,
+		}
+		_ = vscodebridge.FinishIfPending(home, workspaceCwd, bridgeRunID, result, time.Now())
+		// Claude Code has no bridgeRunID (its PreToolUse hook protocol can't
+		// inject one via env, unlike Codex's command-rewrite channel) — the
+		// pending lookup is workspace-keyed instead; a no-op for every other
+		// adapter and for ordinary Claude CLI usage outside VS Code.
+		if xcAdapter == "claude" {
+			_ = vscodebridge.FinishClaudeIfPending(home, workspaceCwd, result, time.Now())
+		}
+	}
+	// writeState tags every run-state write with the effective adapter so each
+	// adapter's statusline can read only its OWN runs (no cross-adapter pollution).
+	writeState := func(state map[string]interface{}) {
+		state["adapter"] = xcAdapter
+		writeAutoStateFiles(home, state)
+	}
 	cmdStr := strings.Join(append([]string{tool}, toolArgs...), " ")
 	startTime := time.Now().UTC()
 	startedAt := startTime.Format(time.RFC3339)
@@ -1157,7 +1706,7 @@ func cmdAuto(args []string) error {
 	// Find original binary path, avoiding recursion.
 	origPath := autoshim.ResolveOriginal(tool)
 	if origPath == "" {
-		writeAutoStateFiles(home, map[string]interface{}{
+		writeState(map[string]interface{}{
 			"schema_version": 1,
 			"status":         "failed",
 			"command":        cmdStr,
@@ -1169,6 +1718,7 @@ func cmdAuto(args []string) error {
 			"saved_bytes":    0,
 			"raw_log":        "",
 		})
+		finishBridge(-1, 0, 0, 0)
 		return fmt.Errorf("cannot find original %s path", tool)
 	}
 
@@ -1186,7 +1736,7 @@ func cmdAuto(args []string) error {
 		"pid":            os.Getpid(),
 		"raw_log":        rawLogPath,
 	}
-	writeAutoStateFiles(home, baseRunningState)
+	writeState(baseRunningState)
 
 	stopHeartbeat := make(chan struct{})
 	var heartbeatWG sync.WaitGroup
@@ -1207,7 +1757,7 @@ func cmdAuto(args []string) error {
 					"pid":            os.Getpid(),
 					"raw_log":        rawLogPath,
 				}
-				writeAutoStateFiles(home, runningState)
+				writeState(runningState)
 			case <-stopHeartbeat:
 				return
 			}
@@ -1222,7 +1772,7 @@ func cmdAuto(args []string) error {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "xit: auto run error:", err)
 		now := time.Now().UTC().Format(time.RFC3339)
-		writeAutoStateFiles(home, map[string]interface{}{
+		writeState(map[string]interface{}{
 			"schema_version": 1,
 			"status":         "failed",
 			"command":        cmdStr,
@@ -1234,6 +1784,7 @@ func cmdAuto(args []string) error {
 			"saved_bytes":    0,
 			"raw_log":        rawLogPath,
 		})
+		finishBridge(-1, 0, 0, 0)
 		return err
 	}
 
@@ -1246,7 +1797,7 @@ func cmdAuto(args []string) error {
 		os.Stdout.Write(res.Stdout)
 		os.Stderr.Write(res.Stderr)
 		now := time.Now().UTC().Format(time.RFC3339)
-		writeAutoStateFiles(home, map[string]interface{}{
+		writeState(map[string]interface{}{
 			"schema_version":       1,
 			"status":               "completed",
 			"command":              cmdStr,
@@ -1263,6 +1814,7 @@ func cmdAuto(args []string) error {
 			"estimated_reduction":  0,
 			"raw_log":              rawLogPath,
 		})
+		finishBridge(res.ExitCode, 0, rawBytes, 0)
 		return nil
 	}
 
@@ -1277,7 +1829,7 @@ func cmdAuto(args []string) error {
 		os.Stdout.Write(res.Stdout)
 		os.Stderr.Write(res.Stderr)
 		now := time.Now().UTC().Format(time.RFC3339)
-		writeAutoStateFiles(home, map[string]interface{}{
+		writeState(map[string]interface{}{
 			"schema_version":       1,
 			"status":               "completed",
 			"command":              cmdStr,
@@ -1294,6 +1846,7 @@ func cmdAuto(args []string) error {
 			"estimated_reduction":  0,
 			"raw_log":              res.RawLogPath,
 		})
+		finishBridge(res.ExitCode, 0, rawBytes, 0)
 		return nil
 	}
 
@@ -1312,12 +1865,101 @@ func cmdAuto(args []string) error {
 		savedBytes = 0
 	}
 
-	// Render summary: OpenCode adapter shows minimal Chinese brand output;
-	// other adapters use the full auto-rendered summary.
-	if xcAdapter == "opencode" {
-		fmt.Print(buildOpenCodeSummary(savedBytes))
-	} else {
+	// Explicit settle buffer for hosts that pull the statusline at tool boundaries
+	// rather than continuously (Antigravity, Claude): write an explicit "settling"
+	// state, then block briefly so a single host sample lands on "正在收功中"
+	// before the final saved-token line is written below. Each adapter uses its
+	// own delay; other adapters (OpenCode/Kimi/Codex/plain CLI) never settle here.
+	if xcAdapter == "antigravity" || xcAdapter == "claude" {
+		settleNow := time.Now().UTC().Format(time.RFC3339)
+		writeState(map[string]interface{}{
+			"schema_version": 1,
+			"status":         "settling",
+			"command":        cmdStr,
+			"started_at":     startedAt,
+			"heartbeat_at":   settleNow,
+			"raw_bytes":      rawBytes,
+			"summary_bytes":  summaryBytes,
+			"saved_bytes":    savedBytes,
+			"saved_tokens":   savedBytes / 4,
+			"raw_log":        res.RawLogPath,
+		})
+		if xcAdapter == "antigravity" {
+			time.Sleep(antigravitySettleDelay())
+		} else {
+			time.Sleep(claudeSettleDelay())
+		}
+	}
+
+	opencodeRunCount := 0
+	opencodeHasTurn := false
+	var opencodeDiagnostics []string
+	if xcAdapter == "opencode" && opencodeTurnKey != "" {
+		if st, err := opencodehook.IncrementTurnState(home, opencodeTurnKey, savedBytes/4); err == nil && st != nil {
+			opencodeRunCount = st.RunCount
+			opencodeHasTurn = true
+		}
+	}
+	if xcAdapter == "opencode" && summary != nil && summary.ExitCode != 0 {
+		opencodeDiagnostics = openCodeDiagnosticLines(summary.BodyLines, string(res.Stdout), string(res.Stderr))
+		if len(opencodeDiagnostics) == 0 {
+			opencodeDiagnostics = []string{fmt.Sprintf("命令以退出码 %d 结束，输出已压缩。", summary.ExitCode)}
+		}
+	}
+
+	// Render summary: OpenCode shows useful tool-card output plus a compact
+	// two-line XiT footer; final assistant-answer mutation is not reliable in
+	// OpenCode 1.16.2.
+	// Antigravity and Claude show a short natural-language result (no machine fields /
+	// raw_log, since the bottom statusline already reports savings); Codex
+	// shows ONLY the real compressed result (no XiT branding at all here — the
+	// two-line footer is appended once to the turn's FINAL answer by the
+	// UserPromptSubmit/PreToolUse/PostToolUse/Stop hook lifecycle in
+	// internal/codexhook, never to an individual tool card); other adapters
+	// use the full auto-rendered summary.
+	switch xcAdapter {
+	case "opencode":
+		fmt.Print(buildOpenCodeToolOutput(summary, savedBytes, opencodeRunCount, opencodeHasTurn, opencodeDiagnostics))
+	case "antigravity", "claude":
+		fmt.Print(buildNaturalLanguageSummary(summary))
+	case "codex":
+		fmt.Print(buildCodexToolOutput(summary))
+	default:
 		fmt.Print(rendered)
+	}
+
+	// Codex: accumulate this run into the current turn (session_id+turn_id
+	// injected by the PreToolUse hook — see internal/codexhook). This ONLY
+	// records counters for the Stop hook to report later; it never prints
+	// anything to this tool call's stdout.
+	codexRunCount := 0
+	if xcAdapter == "codex" {
+		sessionID := os.Getenv("XIT_CODEX_SESSION_ID")
+		turnID := os.Getenv("XIT_CODEX_TURN_ID")
+		if sessionID != "" {
+			// st.RunCount is the exact same per-turn counter the Stop hook
+			// later reports as the footer's "本轮共吸 N次" — passed through
+			// to the VS Code bridge event below so the Dashboard's
+			// "本轮共吸" card always matches the Codex footer.
+			if st, _ := codexhook.IncrementTurnState(home, sessionID, turnID, savedBytes/4); st != nil {
+				codexRunCount = st.RunCount
+			}
+		}
+	}
+
+	// Claude: bump the per-session run counter (truthful "本轮共吸 N次") BEFORE
+	// finishBridge below, so the VS Code bridge event's run_count is the
+	// exact same counter the Claude statusline already reports — never a
+	// different (e.g. today's total) count. Reading without incrementing
+	// when there's nothing to save keeps a real failed/no-op run from
+	// resetting an existing session's count to 0.
+	claudeRunCount := 0
+	if xcAdapter == "claude" {
+		if savedBytes > 0 {
+			claudeRunCount = incrementClaudeRunCount(home)
+		} else {
+			claudeRunCount = readClaudeRunCount(home)
+		}
 	}
 
 	// Write history.
@@ -1326,7 +1968,7 @@ func cmdAuto(args []string) error {
 		_ = disp.WriteHistoryWithSummaryBytes(sessionDir, actualArgs, res, summary, summaryBytes)
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	writeAutoStateFiles(home, map[string]interface{}{
+	writeState(map[string]interface{}{
 		"schema_version":       1,
 		"status":               "completed",
 		"command":              cmdStr,
@@ -1339,10 +1981,15 @@ func cmdAuto(args []string) error {
 		"summary_bytes":        summaryBytes,
 		"saved_bytes":          savedBytes,
 		"saved_tokens":         savedBytes / 4,
-		"saved_tokens_display": formatTokenCount(savedBytes / 4),
+		"saved_tokens_display": formatTokenHuman(savedBytes / 4),
 		"estimated_reduction":  summary.EstimatedReduction,
 		"raw_log":              res.RawLogPath,
 	})
+	runCount := codexRunCount
+	if xcAdapter == "claude" {
+		runCount = claudeRunCount
+	}
+	finishBridge(res.ExitCode, savedBytes, summaryBytes, runCount)
 
 	return nil
 }
@@ -2887,7 +3534,6 @@ func computeClaudeStatuslineText() (string, map[string]interface{}) {
 	}
 	userXiT := filepath.Join(homeDir, ".xit")
 	projectHome := xitHome()
-	window := 10 * time.Minute
 	now := time.Now()
 
 	// 1. Check autostate for running or recently completed xit auto.
@@ -2899,76 +3545,49 @@ func computeClaudeStatuslineText() (string, map[string]interface{}) {
 		hookInstalled = st.Installed
 	}
 
-	var line string
-	source := "history"
+	// Adapter-scoped: only Claude's OWN runs (adapter=="claude") may drive
+	// running/settling/completed. Runs from another adapter (e.g. Antigravity) or
+	// legacy records with no adapter field are ignored, so Agy savings never
+	// pollute Claude. No history aggregation, no 命中率.
+	claudeOwns := autoState != nil && autoState.Adapter == "claude"
 
+	// Agy-style one-shot lifecycle: explicit settling state (not age-based
+	// guessing), single-line completed (no rotation), no waiting state — Claude
+	// restarts the cycle on the next input, exactly like Agy.
+	var line string
+	source := "idle"
 	switch {
-	case autostate.IsRunningFresh(autoState, now):
+	case claudeOwns && autostate.IsRunningFresh(autoState, now):
+		// 正在执行 xit auto
 		line = "吸T神功 · Claude · 正在吸T中"
 		source = "autostate_running"
-	case autostate.IsCompletedFresh(autoState, now) && autoState != nil && autoState.SavedBytes > 0:
-		line = fmt.Sprintf("吸T神功 · Claude · 本次省%s Token", formatTokenCount(int(autoState.SavedBytes/4)))
+	case claudeOwns && settlingStateFresh(autoState, now):
+		// 命令完成后短暂收尾 (explicit settling state written by `xit auto`,
+		// mirrors Agy's blocking-sleep settle buffer).
+		line = "吸T完成 · Claude · 正在收功中"
+		source = "autostate_settling"
+	case claudeOwns && autostate.IsCompletedFresh(autoState, now) && autoState.SavedBytes > 0:
+		// 完成: poll-safe SINGLE line (no rotation) — 本轮省 X.XXk Token (no 约),
+		// plus the real "本轮共吸 N次" only with a real CLAUDE_CODE_SESSION_ID
+		// (never a fake count).
+		line = fmt.Sprintf("吸T完成 · Claude · 本轮省 %s", formatTokenAntigravity(int(autoState.SavedBytes/4)))
+		if hasClaudeSession() {
+			if n := readClaudeRunCount(projectHome); n > 0 {
+				line += fmt.Sprintf(" · 本轮共吸 %d次", n)
+			}
+		}
 		source = "autostate_completed"
 	default:
-		// Recent hitrate (10 min window).
-		report, _ := hitrate.ComputeReportForAdapter("claude", userXiT, projectHome, window)
-		hasRecentEvents := report != nil && report.ShellCommandsSeen > 0
-		hitRatePct := 0.0
-		verdictPass := false
-		if report != nil && (report.ShouldCompress.Total+report.ShouldPassthrough.Total) > 0 {
-			total := report.ShouldCompress.Total + report.ShouldPassthrough.Total
-			correct := report.ShouldCompress.CorrectlyWrapped + report.ShouldPassthrough.CorrectlyPassthrough
-			hitRatePct = float64(correct) / float64(total) * 100
-			verdictPass = report.Verdict == "pass"
-		}
-
-		// Recent token savings from xit auto history (10 min).
-		savedTokens := 0
-		if m, err := history.ComputeSessionMetrics(projectHome, window); err == nil && m != nil {
-			if m.CurrentSession.SavedBytes > 0 {
-				savedTokens = m.CurrentSession.SavedBytes / 4
-			}
-		}
-		if savedTokens == 0 {
-			if m, err := history.ComputeSessionMetrics(userXiT, window); err == nil && m != nil {
-				if m.CurrentSession.SavedBytes > 0 {
-					savedTokens = m.CurrentSession.SavedBytes / 4
-				}
-			}
-		}
-
-		// Build one-line text by priority.
-		switch {
-		case hasRecentEvents && verdictPass && savedTokens > 0:
-			line = fmt.Sprintf("吸T神功 · 本次省%s · 命中率%.0f%%", formatTokenCount(savedTokens), hitRatePct)
-		case hasRecentEvents && verdictPass:
-			line = fmt.Sprintf("吸T神功 · Claude · 命中率%.0f%%", hitRatePct)
-		case savedTokens > 0 && hasRecentEvents:
-			line = fmt.Sprintf("吸T神功 · 本次省%s · 命中率%.0f%%", formatTokenCount(savedTokens), hitRatePct)
-		case savedTokens > 0:
-			line = fmt.Sprintf("吸T神功 · 本次省%s Token", formatTokenCount(savedTokens))
-		case hookInstalled:
-			line = statusLineReady
-		default:
-			line = statusLineFallback
-		}
-
-		verdictStr := ""
-		if report != nil {
-			verdictStr = report.Verdict
-		}
-		data := map[string]interface{}{
-			"line":                line,
-			"color":               "gold",
-			"hit_rate":            hitRatePct,
-			"saved_tokens_recent": savedTokens,
-			"hook_installed":      hookInstalled,
-			"has_recent_events":   hasRecentEvents,
-			"verdict":             verdictStr,
-			"source":              source,
-			"autostate_path":      autoPath,
-		}
-		return line, data
+		// 空闲 / AI thinking / 刚收到消息 / 完成窗口后: poll-safe SINGLE merged line.
+		// Claude Code does not reliably re-poll the statusline while sitting idle
+		// (confirmed: it can stay on one rendering indefinitely), so neither a
+		// first/later session split nor time-based rotation is visible in
+		// practice — both depend on a second poll that may never happen. Merge
+		// 准备就绪/守护你的T into one line so the single visible call is correct
+		// either way. (No 等待下轮发功 — Claude restarts the cycle on the next
+		// input, like Agy.)
+		line = "吸T神功 · Claude · 守护你的T · 准备就绪"
+		source = "idle"
 	}
 
 	data := map[string]interface{}{
@@ -2977,22 +3596,37 @@ func computeClaudeStatuslineText() (string, map[string]interface{}) {
 		"source":         source,
 		"hook_installed": hookInstalled,
 		"autostate_path": autoPath,
+		"adapter_owns":   claudeOwns,
+		"run_count":      readClaudeRunCount(projectHome),
 	}
 	return line, data
 }
 
-func formatTokenCount(n int) string {
+// formatTokenHuman is the single standard for user-visible token counts across
+// every XiT surface. >=1000 -> "约 10.29k Token" (two decimals, 约 prefix);
+// <1000 -> "293 Token". Never the lossy integer "10k" form.
+func formatTokenHuman(n int) string {
 	if n >= 1000 {
-		return fmt.Sprintf("%.0fk", float64(n)/1000)
+		return fmt.Sprintf("约 %.2fk Token", float64(n)/1000)
 	}
-	return fmt.Sprintf("%d", n)
+	return fmt.Sprintf("%d Token", n)
+}
+
+// formatTokenAntigravity is the Antigravity-only token format: two-decimal k,
+// WITHOUT the "约" prefix (per Agy's final spec). >=1000 -> "10.29k Token";
+// <1000 -> "293 Token".
+func formatTokenAntigravity(n int) string {
+	if n >= 1000 {
+		return fmt.Sprintf("%.2fk Token", float64(n)/1000)
+	}
+	return fmt.Sprintf("%d Token", n)
 }
 
 func formatSavedTokensDisplay(n int) string {
 	if n <= 0 {
 		return "0"
 	}
-	return "~" + formatTokenCount(n)
+	return formatTokenHuman(n)
 }
 
 // claudeLocalSettingsPath returns the project-local Claude settings path.
@@ -3290,6 +3924,59 @@ const (
 	antigravityStatusLineReady    = "吸T神功 · Antigravity · 准备就绪"
 )
 
+// antigravityDefaultSettleDelay is how long `xit auto` (Antigravity adapter only)
+// lingers in the explicit "settling" state after the child finishes, so a single
+// host statusline sample can land on "正在收功中" before the final result.
+const antigravityDefaultSettleDelay = 2000 * time.Millisecond
+
+// antigravitySettleDelay returns the settle buffer duration, overridable for tests
+// via XIT_ANTIGRAVITY_SETTLE_MS (milliseconds).
+func antigravitySettleDelay() time.Duration {
+	if v := os.Getenv("XIT_ANTIGRAVITY_SETTLE_MS"); v != "" {
+		if ms, err := strconv.Atoi(v); err == nil && ms >= 0 {
+			return time.Duration(ms) * time.Millisecond
+		}
+	}
+	return antigravityDefaultSettleDelay
+}
+
+// claudeDefaultSettleDelay is how long `xit auto` (Claude adapter only) lingers in
+// the explicit "settling" state after the child finishes, mirroring Agy: a real
+// blocking sleep (NOT age-based guessing) so a single host statusline sample can
+// land on "正在收功中" before the final saved-token line is written.
+const claudeDefaultSettleDelay = 2000 * time.Millisecond
+
+// claudeSettleDelay returns the settle buffer duration, overridable for tests via
+// XIT_CLAUDE_SETTLE_MS (milliseconds; 0 disables the buffer).
+func claudeSettleDelay() time.Duration {
+	if v := os.Getenv("XIT_CLAUDE_SETTLE_MS"); v != "" {
+		if ms, err := strconv.Atoi(v); err == nil && ms >= 0 {
+			return time.Duration(ms) * time.Millisecond
+		}
+	}
+	return claudeDefaultSettleDelay
+}
+
+// hasClaudeSession reports whether a real Claude Code session id is available, so
+// "本轮共吸 N次" is only shown with a real count (never a fake one).
+func hasClaudeSession() bool {
+	return os.Getenv("XIT_TEST_SESSION_KEY") != "" || os.Getenv("CLAUDE_CODE_SESSION_ID") != ""
+}
+
+// settlingStateFresh reports whether an explicit "settling" state is recent enough
+// to display (guards against a stale settling state left by a crash). Adapter-
+// agnostic; callers gate on the adapter.
+func settlingStateFresh(state *autostate.AutoState, now time.Time) bool {
+	if state == nil || state.Status != "settling" {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, state.HeartbeatAt)
+	if err != nil {
+		return false
+	}
+	return now.Sub(t) >= 0 && now.Sub(t) < 5*time.Second
+}
+
 func antigravitySettingsPath() string {
 	homeDir := os.Getenv("HOME")
 	if homeDir == "" {
@@ -3357,15 +4044,28 @@ func computeAntigravityStatuslineText() (string, map[string]interface{}) {
 	// 1. Check autostate for running or recently completed xit auto.
 	autoState, autoPath, _ := autostate.Read(projectHome, userXiT)
 
+	// Adapter-scoped: only Antigravity's OWN runs drive running/settling/completed.
+	// Runs from another adapter (or legacy records with no adapter field) are
+	// ignored so other adapters never pollute the Agy statusline.
+	agyOwns := autoState != nil && autoState.Adapter == "antigravity"
+
 	var line string
 	source := "history"
 
 	switch {
-	case autostate.IsRunningFresh(autoState, now):
+	case agyOwns && autostate.IsRunningFresh(autoState, now):
 		line = "吸T神功 · Antigravity · 正在吸T中"
 		source = "autostate_running"
-	case autostate.IsCompletedFresh(autoState, now) && autoState != nil && autoState.SavedBytes > 0:
-		line = fmt.Sprintf("吸T神功 · Antigravity · 本次省%s Token", formatTokenCount(int(autoState.SavedBytes/4)))
+	case agyOwns && settlingStateFresh(autoState, now):
+		// Explicit settle buffer written by `xit auto` right after the child exits
+		// (Antigravity adapter), so a single host sample lands on "正在收功中"
+		// before the final saved-token line.
+		line = "吸T完成 · Antigravity · 正在收功中"
+		source = "autostate_settling"
+	case agyOwns && autostate.IsCompletedFresh(autoState, now) && autoState.SavedBytes > 0:
+		// Final completed state: stable single line with real saved tokens, Antigravity
+		// format (两位小数 k, 无 "约", 用 "本轮省"). No rotation, no low-info line.
+		line = fmt.Sprintf("吸T完成 · Antigravity · 本轮省 %s", formatTokenAntigravity(int(autoState.SavedBytes/4)))
 		source = "autostate_completed"
 	default:
 		// Recent hitrate (10 min window). For Antigravity this is history-only.
@@ -3393,12 +4093,15 @@ func computeAntigravityStatuslineText() (string, map[string]interface{}) {
 			}
 		}
 
-		if savedTokens > 0 {
-			line = fmt.Sprintf("吸T神功 · Antigravity · 本次省%s Token", formatTokenCount(savedTokens))
-		} else if hasRecentEvents {
-			line = antigravityStatusLineReady
+		// Session-scoped idle (NO rotation, NO "等待下轮发功"): the first idle
+		// statusline call of an Agy session shows 准备就绪; subsequent calls (e.g.
+		// once the input box appears and Agy re-pulls) show 守护你的T.
+		if antigravityIdleIsFirstCall(projectHome) {
+			line = "吸T神功 · Antigravity · 准备就绪"
+			source = "idle_ready"
 		} else {
-			line = antigravityStatusLineFallback
+			line = "吸T神功 · Antigravity · 守护你的T"
+			source = "idle_guard"
 		}
 
 		verdictStr := ""
@@ -3682,13 +4385,19 @@ func cmdCodexHitrate(args []string) int {
 
 func cmdClaudeHook(args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: xit claude-hook pretooluse-bash")
+		return fmt.Errorf("usage: xit claude-hook pretooluse-bash|userpromptsubmit|stop")
 	}
 	sub := args[0]
 	switch sub {
 	case "pretooluse-bash":
 		home := userXiTHome()
 		return claudehook.RunHookCommand(home)
+	case "userpromptsubmit":
+		home := userXiTHome()
+		return claudehook.HandleUserPromptSubmit(home)
+	case "stop":
+		home := userXiTHome()
+		return claudehook.HandleStop(home)
 	default:
 		return fmt.Errorf("unknown claude-hook command: %s", sub)
 	}
@@ -3713,13 +4422,28 @@ func cmdKimiHook(args []string) error {
 
 func cmdCodexHook(args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: xit codex-hook pretooluse-bash")
+		return fmt.Errorf("usage: xit codex-hook <pretooluse-bash|user-prompt-submit|pre-tool-use|post-tool-use|stop>")
 	}
 	sub := args[0]
 	switch sub {
 	case "pretooluse-bash":
+		// Legacy observe-only hook (kept for backward compat with installs
+		// from before the full turn-lifecycle was added).
 		home := userXiTHome()
 		return codexhook.RunHookCommand(home)
+	case "user-prompt-submit":
+		// Project-scoped home (xitHome(), cwd/.xit by default) — MUST match the
+		// home `xit auto` itself uses (cmdAuto also resolves via xitHome()) so
+		// the turn-state file the hooks write/read is the SAME file `xit auto`
+		// accumulates into. Both are subprocesses Codex launches from the same
+		// project cwd, so this aligns naturally without relying on env passing.
+		return codexhook.HandleUserPromptSubmit(xitHome())
+	case "pre-tool-use":
+		return codexhook.HandlePreToolUse(xitHome())
+	case "post-tool-use":
+		return codexhook.HandlePostToolUse(xitHome())
+	case "stop":
+		return codexhook.HandleStop(xitHome())
 	default:
 		return fmt.Errorf("unknown codex-hook command: %s", sub)
 	}
@@ -4132,20 +4856,22 @@ func cmdHook(args []string) error {
 			fmt.Println()
 			fmt.Printf("scope:      project\n")
 			fmt.Printf("hooks:      %s\n", status.HooksPath)
-			if status.Installed {
-				fmt.Printf("installed:  yes\n")
-				fmt.Printf("hook:       PreToolUse/Bash\n")
-				fmt.Printf("script:     %s\n", status.ScriptPath)
-			} else {
-				fmt.Printf("installed:  no\n")
+			fmt.Printf("installed:  %s\n", boolToYesNo(status.Installed))
+			fmt.Println("events:")
+			for _, ev := range status.Events {
+				fmt.Printf("  %-17s %s  matcher=%q  script=%s\n", ev.Event+":", boolToYesNo(ev.Installed), ev.Matcher, ev.ScriptPath)
 			}
 			fmt.Printf("mode:       %s\n", status.Mode)
-			fmt.Printf("reroute:    disabled\n")
-			fmt.Printf("rewrite:    disabled\n")
+			fmt.Printf("reroute:    %s\n", boolToYesNo(status.Reroute))
+			fmt.Printf("rewrite:    %s\n", boolToYesNo(status.Reroute))
 			fmt.Printf("fail_open:  yes\n")
 			if status.HasEvents {
-				fmt.Printf("events:     %s\n", filepath.Join(home, "codex-hooks", "events.jsonl"))
+				fmt.Printf("event_log:  %s\n", filepath.Join(home, "codex-hooks", "events.jsonl"))
 			}
+			fmt.Println()
+			fmt.Println("Note: Codex has no XiT-controllable dynamic statusline (official tui.status_line")
+			fmt.Println("      only supports fixed predefined items). The XiT footer is appended ONCE to")
+			fmt.Println("      the turn's final assistant answer via the Stop hook — never per tool card.")
 			return nil
 		case "install":
 			if !hasYesFlag(restArgs) {
@@ -4156,21 +4882,25 @@ func cmdHook(args []string) error {
 				return err
 			}
 			if res.AlreadyInstalled {
-				fmt.Println("XiT Codex hook already installed.")
+				fmt.Println("XiT Codex hooks already installed.")
 			} else {
-				fmt.Println("XiT Codex hook installed.")
+				fmt.Println("XiT Codex hooks installed (full turn lifecycle).")
 			}
 			fmt.Printf("hooks:   %s\n", res.HooksPath)
-			fmt.Printf("script:  %s\n", res.ScriptPath)
+			for _, ev := range res.Events {
+				fmt.Printf("  %-17s %s\n", ev.Event+":", ev.ScriptPath)
+			}
 			fmt.Println()
-			fmt.Println("Next steps:")
-			fmt.Println("  1. Launch Codex with hooks enabled:")
-			fmt.Println("     codex --enable hooks")
-			fmt.Println("  2. On first launch, approve/trust the hook if Codex prompts.")
-			fmt.Println("  3. Verify: xit hook stats codex")
+			fmt.Println("IMPORTANT — Codex will require re-review/trust of hooks:")
+			fmt.Println("  1. Open Codex in this project.")
+			fmt.Println("  2. Run /hooks inside Codex.")
+			fmt.Println("  3. Review and TRUST the new/changed UserPromptSubmit, PreToolUse,")
+			fmt.Println("     PostToolUse, and Stop hooks listed there.")
+			fmt.Println()
+			fmt.Println("Then verify: xit hook stats codex")
 			fmt.Println()
 			fmt.Println("Note: Codex does not support command-backed bottom statusLine.")
-			fmt.Println("      This hook provides observe/hitrate only (no reroute).")
+			fmt.Println("      The XiT footer appears once, at the end of each turn's final answer.")
 			return nil
 		case "uninstall":
 			if !hasYesFlag(restArgs) {

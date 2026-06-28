@@ -63,7 +63,7 @@ xit --version
 Expected:
 
 ```text
-xit version 0.2.46
+xit version 0.2.47
 ```
 
 ## VS Code Extension

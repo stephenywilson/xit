@@ -11,6 +11,7 @@ import (
 type AutoState struct {
 	SchemaVersion      int     `json:"schema_version"`
 	Status             string  `json:"status"`
+	Adapter            string  `json:"adapter"`
 	Command            string  `json:"command"`
 	SavedBytes         int64   `json:"saved_bytes"`
 	RawBytes           int64   `json:"raw_bytes"`

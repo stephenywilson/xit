@@ -7,12 +7,14 @@ import {
   openXiTTerminal,
   promptRunCommand,
   promptRunWithAutoCompression,
+  type VsCodeCommandRunRequest,
 } from "./runner";
 import type {
   AdapterEvent,
   CurrentRunState,
   LatestRun,
   LiveStatusView,
+  VscodeAiBridgeEvent,
   XiTStatus,
 } from "./types";
 import {
@@ -23,7 +25,6 @@ import {
   readCurrentRunState,
   readLatestRawLogMeta,
   readLatestRun,
-  readRecentEvents,
   resolveActiveXitWorkspace,
   resolveWorkspaceCwd,
   showOutput,
@@ -31,27 +32,35 @@ import {
 } from "./xit";
 import {
   buildAgentTurnView,
-  buildLiveStatusView,
   buildVerifyRoutingReport,
   buildDiagnoseReport,
   getAdapterHookConnectivity,
   getTokenMetricsForRun,
-  formatSavedTokensForRun,
   installWorkspaceAiRules,
-  readAllWorkspaceRuns,
 } from "./workflow";
+import {
+  type ActiveVsCodeRun,
+  bridgeEventIsFresh,
+  bridgeEventToLiveStatus,
+  bridgeWorkspaceHash,
+  classifyBridgeEvent,
+  formatSavedTokens,
+  parseVscodeAiBridgeEvent,
+  promoteSettlingToFinal,
+  runRecordMatchesActiveTask,
+} from "./logic";
 
 let statusBarItem: vscode.StatusBarItem | undefined;
 let refreshTimer: NodeJS.Timeout | undefined;
 let liveState:
   | "idle"
-  | "guarding"
-  | "turn_active"
+  | "turn-active"
   | "running"
   | "settling"
   | "success"
   | "waiting"
   | "missed"
+  | "failed"
   | "no-binary" = "idle";
 let liveStateTimer: NodeJS.Timeout | undefined;
 let waitingStateTimer: NodeJS.Timeout | undefined;
@@ -61,21 +70,56 @@ let currentRunStateSignature: string | undefined;
 let runningVisibleUntil: number | undefined;
 let activeRunPoller: NodeJS.Timeout | undefined;
 const RUNNING_MIN_VISIBLE_MS = 2500;
-const TURN_ACTIVE_TIMEOUT_MS = 45000;
 const SETTLING_DURATION_MS = 4000;
 
 let successRunDisplay: string | undefined;
-let sessionRunCountAtSuccess = 0;
-let turnActiveTimer: NodeJS.Timeout | undefined;
-
+// Byte/reduction detail for the current VS Code session's local (non-bridge)
+// run — carried on the live status override so Dashboard's "本次发功" never
+// needs to fall back to .xit/history.jsonl for these numbers.
+let lastLocalRunMetrics: { savedTokensDisplay?: string; reductionPct?: number; summaryBytes?: number } | undefined;
 let liveStateWorkspace: string | undefined;
-let turnActiveStartedAt: number | undefined;
 let activeRunPollerWorkspace: string | undefined;
-const TURN_ACTIVE_MAX_MS = 60000;
+let bridgeLiveStatus: LiveStatusView | undefined;
+let bridgeLiveStatusWorkspace: string | undefined;
+let activeBridgeRunId: string | undefined;
+let bridgeActivatedAtMs = Date.now();
 const RUNNING_MAX_MS = 120000;
 const HOOK_EVENT_FRESH_MS = 30000;
 const COMPLETED_RUN_FRESH_MS = 120000;
 const RUN_START_SKEW_MS = 15000;
+
+// ──────────────────────────────────────────────────────────────────
+// BRIDGE TURN/SETTLING STATE — run.finished is "data ready", not "the AI is
+// done talking". The Dashboard/status bar must show "收功中" (settling)
+// after run.finished and only promote to the true final "本次省"/"执行失败"
+// once a real turn.finished (Stop hook) event arrives — or, for an
+// adapter/session where no turn-level signal was ever observed, a fallback
+// timer. This is bridge-only: a LOCAL manual VS Code run (XiT: Run Command)
+// has no AI "turn" at all, so its existing settling->success timer (above)
+// is untouched.
+// ──────────────────────────────────────────────────────────────────
+let bridgeSettleTimer: NodeJS.Timeout | undefined;
+let bridgeHoldTimer: NodeJS.Timeout | undefined;
+// Real turn.finished/Stop always preempts this the instant it arrives —
+// this is only how long we wait when no Stop hook fires at all (e.g. Claude
+// today, where UserPromptSubmit/Stop are implemented but not installed by
+// default; see docs/claude.md). Kept in the 6–8s range: long enough that a
+// reasonably prompt Stop hook wins the race, short enough that the user
+// isn't stuck looking at "收功中" for a noticeably long time.
+const BRIDGE_SETTLE_FALLBACK_MS = 7000;
+// How long the final "本次省"/"执行失败" result stays on the status bar
+// before it reverts to "准备就绪". The Dashboard's "本轮发功" panel is NOT
+// tied to this timer (see lastFinalizedBridgeResult below) — it keeps
+// showing the final result well past this hold, until the next
+// turn.started/run.started or a VS Code reload.
+const BRIDGE_FINAL_RESULT_HOLD_MS = 20000;
+// The Dashboard's own copy of the most recent finalized bridge result,
+// decoupled from bridgeLiveStatus/liveState so it survives the status bar's
+// hold timer expiring. Only cleared by a NEW turn.started/run.started (a
+// genuinely new round starting) — never by the status bar reverting to
+// idle, and never by a plain timeout.
+let lastFinalizedBridgeResult: LiveStatusView | undefined;
+let lastFinalizedBridgeResultWorkspace: string | undefined;
 
 interface ActiveRunIdentity {
   workspace: string;
@@ -94,6 +138,7 @@ interface HookFileCursor {
 }
 
 let activeRunIdentity: ActiveRunIdentity | undefined;
+let activeVsCodeRun: ActiveVsCodeRun | undefined;
 
 function getRefreshIntervalMs(): number {
   const cfg = vscode.workspace.getConfiguration("xit");
@@ -116,152 +161,94 @@ function getWorkspacePath(): string | undefined {
   return folders && folders.length > 0 ? folders[0].uri.fsPath : undefined;
 }
 
-function pickRotatingText(options: string[], intervalMs = 5000): string {
-  if (!options.length) { return ""; }
-  const idx = Math.floor(Date.now() / intervalMs) % options.length;
-  return options[idx];
-}
-
 function ensureTildePrefix(display: string): string {
-  if (!display || display === "0 Token" || display === "—") { return display; }
-  return display.startsWith("~") ? display : `~${display}`;
-}
-
-function getSessionRunCount(workspacePath = resolveActiveXitWorkspace()): number {
-  const startOfToday = new Date().setHours(0, 0, 0, 0);
-  const count = readAllWorkspaceRuns(workspacePath).filter((r) => {
-    const ms = r.timestamp ? Date.parse(r.timestamp) : 0;
-    return ms >= startOfToday;
-  }).length;
-  return count;
-}
-
-function getStatusBarTextFromLiveStatus(view: LiveStatusView): string {
-  switch (view.kind) {
-    case "xit_running":
-      return "吸T神功 · 正在吸T中";
-    case "agent_routed_pending_state":
-    case "agent_observing":
-      return "吸T神功 · 守护你的T";
-    case "agent_not_routed":
-      return "吸T神功 · 无需发功";
-    case "xit_completed": {
-      const savedDisplay = ensureTildePrefix(view.savedTokensDisplay || "");
-      const opt1 = savedDisplay ? `吸T完成 · 本次省${savedDisplay}` : "吸T完成";
-      const count = getSessionRunCount();
-      const texts = count > 0 ? [opt1, `吸T神功 · 本轮共吸 ${count}次`] : [opt1];
-      return pickRotatingText(texts);
-    }
-    case "missing":
-      return "吸T神功 · 未接入";
-    case "idle":
-    default:
-      return pickRotatingText(["吸T神功 · 准备就绪", "吸T神功 · 守护你的T"]);
-  }
-}
-
-function getLiveStatusLabel(view: LiveStatusView): string {
-  const labelMap: Partial<Record<string, string>> = {
-    xit_running: "正在吸T中",
-    agent_routed_pending_state: "守护你的T",
-    agent_observing: "守护你的T",
-    agent_not_routed: "无需发功",
-    xit_completed: "吸T完成",
-    missing: "未接入",
-    idle: "守护你的T",
-  };
-  return labelMap[view.kind] ?? "守护你的T";
-}
-
-function markActiveRun(
-  detectedAt = Date.now(),
-  workspace = resolveActiveXitWorkspace(),
-  state = readCurrentRunState(workspace),
-): void {
-  const canonicalWorkspace = path.resolve(workspace);
-  const stateStartedAt = state?.status === "running"
-    ? parseIsoTimeMs(state.started_at)
-    : undefined;
-  activeRunIdentity = {
-    workspace: canonicalWorkspace,
-    detectedAt,
-    startedAt: stateStartedAt,
-    command: state?.status === "running" ? state.command : undefined,
-    rawLog:
-      state?.status === "running" && state.raw_log
-        ? path.resolve(state.raw_log)
-        : undefined,
-  };
-  liveStateWorkspace = canonicalWorkspace;
+  // The "约" prefix from formatTokenCount already marks an approximate value, so
+  // no extra "~" is added. Kept as a stable shim for existing call sites.
+  return display;
 }
 
 function clearActiveRun(): void {
   activeRunIdentity = undefined;
+  activeVsCodeRun = undefined;
   activeRunPollerWorkspace = undefined;
 }
 
-function resetTurnActiveTimer(): void {
-  if (turnActiveTimer) {
-    clearTimeout(turnActiveTimer);
-  }
-  turnActiveTimer = setTimeout(() => {
-    turnActiveTimer = undefined;
-    if (liveState === "turn_active") {
-      setLiveState("missed", 8000);
-    }
-  }, TURN_ACTIVE_TIMEOUT_MS);
-}
+function beginVsCodeRun(request: VsCodeCommandRunRequest): void {
+  const workspace = path.resolve(resolveActiveXitWorkspace());
+  // New run starting — drop any previous session result so Dashboard
+  // doesn't keep showing it once "running" takes over.
+  lastLocalRunMetrics = undefined;
+  activeVsCodeRun = {
+    startedAt: Date.now(),
+    originalCommand: request.originalCommand,
+    normalizedCommand: request.finalCommand,
+    terminalName: request.terminalName,
+    mode: request.mode,
+    state: request.mode === "auto" ? "running" : "finishing",
+    workspacePath: workspace,
+  };
 
-function enterTurnActive(workspace = resolveActiveXitWorkspace()): void {
-  // Don't downgrade from xit-active or post-run phases
-  if (liveState === "running" || liveState === "settling" || liveState === "success") {
-    resetTurnActiveTimer();
+  if (request.mode === "passthrough") {
+    clearActiveRun();
+    activeVsCodeRun = {
+      startedAt: Date.now(),
+      originalCommand: request.originalCommand,
+      normalizedCommand: request.finalCommand,
+      terminalName: request.terminalName,
+      mode: "passthrough",
+      state: "finishing",
+      workspacePath: workspace,
+    };
+    lastLocalRunMetrics = { savedTokensDisplay: "0 Token", reductionPct: 0 };
+    setLiveState("missed", 8000, workspace);
     return;
   }
-  if (liveState !== "turn_active") {
-    // Cancel any pending state timers before overriding
-    if (liveStateTimer) {
-      clearTimeout(liveStateTimer);
-      liveStateTimer = undefined;
-    }
-    if (waitingStateTimer) {
-      clearTimeout(waitingStateTimer);
-      waitingStateTimer = undefined;
-    }
-    liveState = "turn_active";
-    liveStateWorkspace = path.resolve(workspace);
-    turnActiveStartedAt = Date.now();
-    void updateStatusBarLive();
-  }
-  resetTurnActiveTimer();
+
+  activeRunIdentity = {
+    workspace,
+    detectedAt: activeVsCodeRun.startedAt,
+    command: request.originalCommand,
+  };
+  liveStateWorkspace = workspace;
+  setLiveState("running", 0, workspace);
+  startActiveRunPoller(workspace);
 }
 
 function enterSuccessPhase(hasSavings: boolean, latestRun?: LatestRun, workspace?: string): void {
   if (liveState === "settling" || liveState === "success") {
     return;
   }
+  if (latestRun && latestRun.exit_code !== 0) {
+    lastLocalRunMetrics = {
+      savedTokensDisplay: "0 Token",
+      reductionPct: 0,
+      summaryBytes: latestRun.summary_bytes,
+    };
+    setLiveState("failed", 8000, workspace);
+    return;
+  }
   if (!hasSavings) {
+    lastLocalRunMetrics = {
+      savedTokensDisplay: "0 Token",
+      reductionPct: 0,
+      summaryBytes: latestRun?.summary_bytes,
+    };
     setLiveState("missed", 8000, workspace);
     return;
   }
 
   const metrics = getTokenMetricsForRun(latestRun);
-  const rawDisplay = metrics?.savedDisplay ||
-    (latestRun?.saved_tokens_display
-      ? (latestRun.saved_tokens_display.includes("Token")
-        ? latestRun.saved_tokens_display
-        : `${latestRun.saved_tokens_display} Token`)
-      : undefined);
+  lastLocalRunMetrics = {
+    savedTokensDisplay: metrics?.savedDisplay,
+    reductionPct: metrics?.reductionPct,
+    summaryBytes: latestRun?.summary_bytes,
+  };
+  const rawDisplay = metrics?.savedDisplay;
   successRunDisplay = rawDisplay ? ensureTildePrefix(rawDisplay) : undefined;
-  sessionRunCountAtSuccess = getSessionRunCount(workspace);
 
   if (activeRunPoller) {
     clearInterval(activeRunPoller);
     activeRunPoller = undefined;
-  }
-  if (turnActiveTimer) {
-    clearTimeout(turnActiveTimer);
-    turnActiveTimer = undefined;
   }
   if (liveStateTimer) {
     clearTimeout(liveStateTimer);
@@ -332,40 +319,216 @@ function buildLiveStatusOverride(activeWorkspace?: string): LiveStatusView | und
   ) {
     return undefined;
   }
+  if (
+    bridgeLiveStatus &&
+    activeWorkspace &&
+    bridgeLiveStatusWorkspace &&
+    path.resolve(bridgeLiveStatusWorkspace) === path.resolve(activeWorkspace)
+  ) {
+    return bridgeLiveStatus;
+  }
+  // The status bar's hold timer may have already reverted liveState to
+  // "idle" (back to "准备就绪"), but the Dashboard's "本轮发功" panel keeps
+  // showing the last finalized result until a new round actually starts —
+  // see clearLastFinalizedBridgeResult's call sites.
+  if (
+    lastFinalizedBridgeResult &&
+    activeWorkspace &&
+    lastFinalizedBridgeResultWorkspace &&
+    path.resolve(lastFinalizedBridgeResultWorkspace) === path.resolve(activeWorkspace)
+  ) {
+    return lastFinalizedBridgeResult;
+  }
   switch (liveState) {
     case "running":
       return {
         kind: "xit_running",
-        label: "正在吸T中",
+        label: "正在吸T",
         reason: "xit auto running",
-        source: "liveState",
-      };
-    case "turn_active":
-      return {
-        kind: "agent_observing",
-        label: "守护你的T",
-        reason: "turn active",
         source: "liveState",
       };
     case "settling":
     case "success":
       return {
         kind: "xit_completed",
-        label: "吸T完成",
+        label: "本次省",
         savedTokensDisplay: successRunDisplay,
+        reductionPct: lastLocalRunMetrics?.reductionPct,
+        summaryBytes: lastLocalRunMetrics?.summaryBytes,
+        exitCode: 0,
         reason: liveState === "settling" ? "post-run settling" : "success hold",
         source: "liveState",
       };
     case "missed":
       return {
         kind: "agent_not_routed",
-        label: "无需发功",
-        reason: "turn ended, no xit triggered",
+        label: "本次无需发功",
+        savedTokensDisplay: lastLocalRunMetrics?.savedTokensDisplay,
+        reductionPct: lastLocalRunMetrics?.reductionPct,
+        summaryBytes: lastLocalRunMetrics?.summaryBytes,
+        reason: "current VS Code command did not need compression",
+        source: "liveState",
+      };
+    case "failed":
+      return {
+        kind: "agent_not_routed",
+        label: "执行失败",
+        savedTokensDisplay: lastLocalRunMetrics?.savedTokensDisplay,
+        reductionPct: lastLocalRunMetrics?.reductionPct,
+        summaryBytes: lastLocalRunMetrics?.summaryBytes,
+        exitCode: 1,
+        reason: "current VS Code command failed",
         source: "liveState",
       };
     default:
       return undefined;
   }
+}
+
+function clearBridgeTimers(): void {
+  if (bridgeSettleTimer) {
+    clearTimeout(bridgeSettleTimer);
+    bridgeSettleTimer = undefined;
+  }
+  if (bridgeHoldTimer) {
+    clearTimeout(bridgeHoldTimer);
+    bridgeHoldTimer = undefined;
+  }
+  // Defensive: liveState/liveStateTimer/waitingStateTimer are shared with
+  // the LOCAL (non-bridge, manual VS Code run) state machine. If a local
+  // run's settling/waiting timer is still pending when a bridge event
+  // arrives, it must never fire later and stomp over the bridge's state.
+  if (liveStateTimer) {
+    clearTimeout(liveStateTimer);
+    liveStateTimer = undefined;
+  }
+  if (waitingStateTimer) {
+    clearTimeout(waitingStateTimer);
+    waitingStateTimer = undefined;
+  }
+}
+
+function clearBridgeLiveStatus(): void {
+  clearBridgeTimers();
+  bridgeLiveStatus = undefined;
+  bridgeLiveStatusWorkspace = undefined;
+  activeBridgeRunId = undefined;
+}
+
+// A genuinely new round is starting (new turn, or a new tool run for an
+// adapter with no turn-tracking) — the Dashboard's persisted final result
+// from the PREVIOUS round is now stale and must be dropped.
+function clearLastFinalizedBridgeResult(): void {
+  lastFinalizedBridgeResult = undefined;
+  lastFinalizedBridgeResultWorkspace = undefined;
+}
+
+// turn.started: the AI is thinking about a NEW prompt. Always overrides
+// immediately (clearing any still-visible result from a previous turn —
+// once a new turn has begun, the old turn's result is stale).
+function setBridgeTurnActive(event: VscodeAiBridgeEvent, workspacePath: string): void {
+  clearBridgeTimers();
+  activeBridgeRunId = undefined;
+  clearLastFinalizedBridgeResult();
+  bridgeLiveStatus = bridgeEventToLiveStatus(event);
+  bridgeLiveStatusWorkspace = workspacePath;
+  liveState = "turn-active";
+  liveStateWorkspace = workspacePath;
+  successRunDisplay = undefined;
+  void updateStatusBarLive();
+}
+
+function setBridgeRunning(event: VscodeAiBridgeEvent, workspacePath: string): void {
+  clearBridgeTimers();
+  activeBridgeRunId = event.run_id;
+  clearLastFinalizedBridgeResult();
+  bridgeLiveStatus = bridgeEventToLiveStatus(event);
+  bridgeLiveStatusWorkspace = workspacePath;
+  liveState = "running";
+  liveStateWorkspace = workspacePath;
+  successRunDisplay = undefined;
+  runningVisibleUntil = Date.now() + RUNNING_MIN_VISIBLE_MS;
+  void updateStatusBarLive();
+}
+
+// run.finished: the tool call is done and its data is ready, but this is
+// NOT "the turn is over" — the AI hasn't produced its final answer yet.
+// Show "神功正在收工" immediately (status bar) / "收功中" (Dashboard),
+// holding the real result data WITHOUT rendering it, and arm a fallback in
+// case no real turn.finished ever arrives.
+function setBridgeSettling(event: VscodeAiBridgeEvent, workspacePath: string): void {
+  if (activeBridgeRunId && activeBridgeRunId !== event.run_id) {
+    return;
+  }
+  clearBridgeTimers();
+  activeBridgeRunId = event.run_id;
+  bridgeLiveStatus = bridgeEventToLiveStatus(event);
+  bridgeLiveStatusWorkspace = workspacePath;
+  successRunDisplay = event.exit_code === 0
+    ? formatSavedTokens(event.saved_tokens, event.saved_bytes)
+    : undefined;
+  liveState = "settling";
+  liveStateWorkspace = workspacePath;
+  runningVisibleUntil = undefined;
+  void updateStatusBarLive();
+
+  bridgeSettleTimer = setTimeout(() => {
+    bridgeSettleTimer = undefined;
+    finalizeBridgeTurn(workspacePath);
+  }, BRIDGE_SETTLE_FALLBACK_MS);
+}
+
+// Promotes a held "收功中" (xit_settling) result to its true final display
+// ("本次省"/"执行失败"). The status bar holds this for BRIDGE_FINAL_RESULT_
+// HOLD_MS before reverting to "准备就绪" — but the Dashboard's copy
+// (lastFinalizedBridgeResult) is saved separately and is NOT cleared by that
+// timer; it stays until the next turn.started/run.started or a reload.
+// Called by either a real turn.finished event or the fallback timer armed
+// in setBridgeSettling — both paths converge here so the visible behavior
+// is identical either way.
+function finalizeBridgeTurn(workspacePath: string): void {
+  if (bridgeSettleTimer) {
+    clearTimeout(bridgeSettleTimer);
+    bridgeSettleTimer = undefined;
+  }
+  if (
+    !bridgeLiveStatus ||
+    !bridgeLiveStatusWorkspace ||
+    path.resolve(bridgeLiveStatusWorkspace) !== path.resolve(workspacePath)
+  ) {
+    return;
+  }
+  if (bridgeLiveStatus.kind === "xit_turn_active") {
+    // The turn ended without ever running a tool — nothing to show.
+    clearBridgeLiveStatus();
+    liveState = "idle";
+    liveStateWorkspace = undefined;
+    void updateStatusBar();
+    return;
+  }
+  if (bridgeLiveStatus.kind !== "xit_settling") {
+    return;
+  }
+  bridgeLiveStatus = promoteSettlingToFinal(bridgeLiveStatus);
+  lastFinalizedBridgeResult = bridgeLiveStatus;
+  lastFinalizedBridgeResultWorkspace = workspacePath;
+  liveState = bridgeLiveStatus.exitCode === 0 ? "success" : "failed";
+  liveStateWorkspace = workspacePath;
+  void updateStatusBarLive();
+  bridgeHoldTimer = setTimeout(() => {
+    bridgeHoldTimer = undefined;
+    clearBridgeLiveStatus();
+    liveState = "idle";
+    liveStateWorkspace = undefined;
+    void updateStatusBar();
+  }, BRIDGE_FINAL_RESULT_HOLD_MS);
+}
+
+// turn.finished: the AI's final answer for this turn is done (Codex Stop
+// hook confirmed the footer, or gave up after loop-prevention fail-open —
+// either way the turn is genuinely over from XiT's perspective).
+function setBridgeTurnFinished(_event: VscodeAiBridgeEvent, workspacePath: string): void {
+  finalizeBridgeTurn(workspacePath);
 }
 
 function parseIsoTimeMs(iso: string | undefined): number | undefined {
@@ -419,6 +582,13 @@ export function runStateMatchesIdentity(
     return false;
   }
   if (
+    activeVsCodeRun &&
+    !runRecordMatchesActiveTask(state, activeVsCodeRun, now, COMPLETED_RUN_FRESH_MS)
+  ) {
+    return false;
+  }
+  if (
+    !activeVsCodeRun &&
     identity.command &&
     state.command &&
     state.command !== identity.command
@@ -465,6 +635,13 @@ function historyRunMatchesActiveIdentity(
     return false;
   }
   if (
+    activeVsCodeRun &&
+    !runRecordMatchesActiveTask(run, activeVsCodeRun, Date.now(), COMPLETED_RUN_FRESH_MS)
+  ) {
+    return false;
+  }
+  if (
+    !activeVsCodeRun &&
     activeRunIdentity.command &&
     run.command &&
     run.command !== activeRunIdentity.command
@@ -509,20 +686,12 @@ function setLiveState(state: typeof liveState, durationMs = 0, workspace?: strin
   }
 
   // Stop polling once we've left running state via success/missed/settling
-  if (state === "success" || state === "settling" || state === "missed" || state === "idle" || state === "waiting") {
+  if (state === "success" || state === "settling" || state === "missed" || state === "failed" || state === "idle" || state === "waiting") {
     if (activeRunPoller) {
       clearInterval(activeRunPoller);
       activeRunPoller = undefined;
     }
   }
-  // Clear turn-active timer when entering a higher-priority or terminal state
-  if (state === "running" || state === "settling" || state === "success" || state === "missed" || state === "idle" || state === "waiting") {
-    if (turnActiveTimer) {
-      clearTimeout(turnActiveTimer);
-      turnActiveTimer = undefined;
-    }
-  }
-
   if (liveStateTimer) {
     clearTimeout(liveStateTimer);
     liveStateTimer = undefined;
@@ -534,7 +703,7 @@ function setLiveState(state: typeof liveState, durationMs = 0, workspace?: strin
   void updateStatusBarLive();
   if (durationMs > 0) {
     liveStateTimer = setTimeout(() => {
-      if (state === "success" || state === "missed") {
+      if (state === "success" || state === "missed" || state === "failed") {
         clearActiveRun();
         liveState = "waiting";
         if (workspace) {
@@ -577,6 +746,9 @@ function startActiveRunPoller(workspacePath = resolveActiveXitWorkspace()): void
     if (ticks > MAX_TICKS) {
       clearInterval(activeRunPoller);
       activeRunPoller = undefined;
+      appendOutput(
+        `VS Code run did not match a fresh XiT state/history record: ${activeVsCodeRun?.originalCommand || "unknown command"}`,
+      );
       clearActiveRun();
       setLiveState("idle");
       return;
@@ -616,6 +788,9 @@ function startActiveRunPoller(workspacePath = resolveActiveXitWorkspace()): void
     } else if (state.status === "completed" || state.status === "failed") {
       clearInterval(activeRunPoller);
       activeRunPoller = undefined;
+      appendOutput(
+        `Ignored XiT state that did not match the active VS Code run: ${state.command || "unknown command"}`,
+      );
       clearActiveRun();
       setLiveState("idle");
     } else if (state.status === "running" && isFreshRunningState(workspacePath)) {
@@ -710,7 +885,6 @@ function getCompletedRunFromStateOrHistory(
     raw_bytes: state.raw_bytes ?? latestRun?.raw_bytes ?? 0,
     summary_bytes: state.summary_bytes ?? latestRun?.summary_bytes ?? 0,
     saved_tokens: state.saved_tokens,
-    saved_tokens_display: state.saved_tokens_display,
     estimated_reduction:
       state.estimated_reduction ?? latestRun?.estimated_reduction ?? 0,
     duration_ms: latestRun?.duration_ms ?? 0,
@@ -769,13 +943,6 @@ async function updateStatusBar(): Promise<void> {
 
   // Stuck safety net: auto-clear stale live states
   if (
-    liveState === "turn_active" &&
-    turnActiveStartedAt &&
-    Date.now() - turnActiveStartedAt > TURN_ACTIVE_MAX_MS
-  ) {
-    setLiveState("idle");
-  }
-  if (
     liveState === "running" &&
     activeRunIdentity &&
     Date.now() - activeRunIdentity.detectedAt > RUNNING_MAX_MS
@@ -808,11 +975,11 @@ async function updateStatusBar(): Promise<void> {
 
   const useLiveState = liveStateBelongsToWorkspace(workspaceSnapshot);
 
-  if (useLiveState && (liveState === "turn_active" || liveState === "running")) {
+  if (useLiveState && liveState === "running") {
     // Safety net: file watchers may be registered against the wrong workspace path at
     // activation time (before any hook events arrive). On every periodic refresh, check
     // if the run actually completed and transition immediately if so.
-    if (liveState === "running") {
+    if (liveState === "running" && activeRunIdentity) {
       const currentState = readCurrentRunState(workspaceSnapshot);
       if (currentRunMatchesActiveIdentity(currentState, workspaceSnapshot)) {
         const latestRun = getCompletedRunFromStateOrHistory(workspaceSnapshot);
@@ -839,10 +1006,10 @@ async function updateStatusBar(): Promise<void> {
       }
     }
     statusBarItem.text = liveState === "running"
-      ? "吸T神功 · 正在吸T中"
-      : "吸T神功 · 守护你的T";
+      ? "吸T神功 · 正在吸T"
+      : "吸T神功 · 准备就绪";
     statusBarItem.tooltip = [
-      "当前状态：正在吸T中",
+      "当前状态：正在吸T",
       "本次节省：—",
       "─".repeat(20),
       "本地处理 · 不读取聊天内容 · 无遥测",
@@ -857,11 +1024,11 @@ async function updateStatusBar(): Promise<void> {
   }
 
   if (useLiveState && liveState === "settling") {
-    statusBarItem.text = "吸T完成 · 神功正在收工";
+    statusBarItem.text = "吸T神功 · 神功正在收工";
     const metrics = getTokenMetricsForRun(latestRun);
     const reductionLabel = metrics && metrics.reductionPct > 0 ? `${Math.round(metrics.reductionPct)}%` : "--";
     statusBarItem.tooltip = [
-      "当前状态：吸T完成",
+      "当前状态：神功正在收工",
       successRunDisplay ? `本次节省：${successRunDisplay}` : "本次节省：—",
       `降噪率：${reductionLabel}`,
       "─".repeat(20),
@@ -877,13 +1044,11 @@ async function updateStatusBar(): Promise<void> {
   }
 
   if (useLiveState && liveState === "success") {
-    const opt1 = successRunDisplay ? `吸T完成 · 本次省${successRunDisplay}` : "吸T完成";
-    const successTexts = sessionRunCountAtSuccess > 0 ? [opt1, `吸T完成 · 本轮共吸 ${sessionRunCountAtSuccess}次`] : [opt1];
-    statusBarItem.text = pickRotatingText(successTexts);
+    statusBarItem.text = successRunDisplay ? `吸T神功 · 本次省 ${successRunDisplay}` : "吸T神功 · 准备就绪";
     const metrics = getTokenMetricsForRun(latestRun);
     const reductionLabel = metrics && metrics.reductionPct > 0 ? `${Math.round(metrics.reductionPct)}%` : "--";
     statusBarItem.tooltip = [
-      "当前状态：吸T完成",
+      "当前状态：本次省",
       successRunDisplay ? `本次节省：${successRunDisplay}` : "本次节省：—",
       `降噪率：${reductionLabel}`,
       "─".repeat(20),
@@ -899,9 +1064,9 @@ async function updateStatusBar(): Promise<void> {
   }
 
   if (useLiveState && liveState === "missed") {
-    statusBarItem.text = "吸T神功 · 无需发功";
+    statusBarItem.text = "吸T神功 · 本次无需发功";
     statusBarItem.tooltip = [
-      "当前状态：无需发功",
+      "当前状态：本次无需发功",
       "本次节省：—",
       "─".repeat(20),
       "本地处理 · 不读取聊天内容 · 无遥测",
@@ -915,26 +1080,39 @@ async function updateStatusBar(): Promise<void> {
     return;
   }
 
+  if (useLiveState && liveState === "failed") {
+    statusBarItem.text = "吸T神功 · 执行失败";
+    statusBarItem.tooltip = [
+      "当前状态：执行失败",
+      "本次节省：—",
+      "详情请打开 Output Channel 或最新 Raw Log",
+      "─".repeat(20),
+      "本地处理 · 不读取聊天内容 · 无遥测",
+      "点击打开 XiT Dashboard",
+    ].join("\n");
+    updateDashboardIfOpen(
+      status,
+      buildLiveStatusOverride(workspaceSnapshot),
+      workspaceSnapshot,
+    );
+    return;
+  }
+
   if (useLiveState && liveState === "waiting") {
-    statusBarItem.text = pickRotatingText(["吸T神功 · 等待下轮发功", "吸T神功 · 守护你的T"]);
+    statusBarItem.text = "吸T神功 · 准备就绪";
     updateDashboardIfOpen(status, undefined, workspaceSnapshot);
     return;
   }
 
-  const liveStatus = buildLiveStatusView({ workspacePath: workspaceSnapshot });
-  statusBarItem.text = getStatusBarTextFromLiveStatus(liveStatus);
-
   const metrics = getTokenMetricsForRun(latestRun);
-  const savedDisplay = liveStatus.savedTokensDisplay || metrics?.savedDisplay;
   const reductionLabel = metrics && metrics.reductionPct > 0
     ? `${Math.round(metrics.reductionPct)}%`
     : "--";
+  statusBarItem.text = "吸T神功 · 准备就绪";
 
   statusBarItem.tooltip = [
-    `当前状态：${getLiveStatusLabel(liveStatus)}`,
-    savedDisplay && metrics && metrics.savedTokens > 0
-      ? `本次节省：${savedDisplay}`
-      : "本次节省：—",
+    "当前状态：准备就绪",
+    "本次节省：—",
     `降噪率：${reductionLabel}`,
     "─".repeat(20),
     "本地处理 · 不读取聊天内容 · 无遥测",
@@ -953,42 +1131,44 @@ async function updateStatusBarLive(): Promise<void> {
 
   const workspaceSnapshot = resolveActiveXitWorkspace();
   if (!liveStateBelongsToWorkspace(workspaceSnapshot)) {
-    statusBarItem.text = getStatusBarTextFromLiveStatus(
-      buildLiveStatusView({ workspacePath: workspaceSnapshot }),
-    );
+    statusBarItem.text = "吸T神功 · 准备就绪";
     return;
   }
   if (liveState === "no-binary") {
     statusBarItem.text = "吸T神功 · 未接入";
     return;
   }
-  if (liveState === "turn_active" || liveState === "running") {
+  if (liveState === "turn-active") {
+    statusBarItem.text = "吸T神功 · 正在守护";
+    return;
+  }
+  if (liveState === "running") {
     statusBarItem.text = liveState === "running"
-      ? "吸T神功 · 正在吸T中"
-      : "吸T神功 · 守护你的T";
+      ? "吸T神功 · 正在吸T"
+      : "吸T神功 · 准备就绪";
     return;
   }
   if (liveState === "settling") {
-    statusBarItem.text = "吸T完成 · 神功正在收工";
+    statusBarItem.text = "吸T神功 · 神功正在收工";
     return;
   }
   if (liveState === "success") {
-    const opt1 = successRunDisplay ? `吸T完成 · 本次省${successRunDisplay}` : "吸T完成";
-    const quickTexts = sessionRunCountAtSuccess > 0 ? [opt1, `吸T完成 · 本轮共吸 ${sessionRunCountAtSuccess}次`] : [opt1];
-    statusBarItem.text = pickRotatingText(quickTexts);
+    statusBarItem.text = successRunDisplay ? `吸T神功 · 本次省 ${successRunDisplay}` : "吸T神功 · 准备就绪";
     return;
   }
   if (liveState === "missed") {
-    statusBarItem.text = "吸T神功 · 无需发功";
+    statusBarItem.text = "吸T神功 · 本次无需发功";
+    return;
+  }
+  if (liveState === "failed") {
+    statusBarItem.text = "吸T神功 · 执行失败";
     return;
   }
   if (liveState === "waiting") {
-    statusBarItem.text = pickRotatingText(["吸T神功 · 等待下轮发功", "吸T神功 · 守护你的T"]);
+    statusBarItem.text = "吸T神功 · 准备就绪";
     return;
   }
-  statusBarItem.text = getStatusBarTextFromLiveStatus(
-    buildLiveStatusView({ workspacePath: workspaceSnapshot }),
-  );
+  statusBarItem.text = "吸T神功 · 准备就绪";
 }
 
 function startRefresh(): void {
@@ -1064,8 +1244,15 @@ function registerWorkspaceWatchers(context: vscode.ExtensionContext): void {
 
   const onRawLogChange = async (): Promise<void> => {
     const active = detectActiveRawLog(workspacePath);
-    if (active) {
-      markActiveRun(Date.now(), workspacePath);
+    if (
+      active &&
+      activeVsCodeRun?.mode === "auto" &&
+      activeVsCodeRun.workspacePath &&
+      path.resolve(activeVsCodeRun.workspacePath) === path.resolve(workspacePath)
+    ) {
+      if (activeRunIdentity) {
+        activeRunIdentity.rawLog = path.resolve(active);
+      }
       setLiveState("running", 0, workspacePath);
       startActiveRunPoller(workspacePath);
     }
@@ -1075,11 +1262,20 @@ function registerWorkspaceWatchers(context: vscode.ExtensionContext): void {
   const onStateChange = async (): Promise<void> => {
     const state = readCurrentRunState(workspacePath);
     const signature = getCurrentRunStateSignature(workspacePath);
-    if (state?.status === "running" && isFreshRunningState(workspacePath)) {
-      markActiveRun(Date.now(), workspacePath, state);
+    const hasActiveVsCodeRun = !!(
+      activeVsCodeRun?.mode === "auto" &&
+      activeVsCodeRun.workspacePath &&
+      path.resolve(activeVsCodeRun.workspacePath) === path.resolve(workspacePath)
+    );
+    if (hasActiveVsCodeRun && state?.status === "running" && isFreshRunningState(workspacePath)) {
+      if (activeRunIdentity) {
+        activeRunIdentity.startedAt = parseIsoTimeMs(state.started_at);
+        activeRunIdentity.rawLog = state.raw_log ? path.resolve(state.raw_log) : activeRunIdentity.rawLog;
+      }
       setLiveState("running", 0, workspacePath);
       startActiveRunPoller(workspacePath);
     } else if (
+      hasActiveVsCodeRun &&
       state &&
       (state.status === "completed" || state.status === "failed") &&
       currentRunMatchesActiveIdentity(state, workspacePath) &&
@@ -1117,6 +1313,99 @@ function registerWorkspaceWatchers(context: vscode.ExtensionContext): void {
     legacyStateWatcher,
     rawLogWatcher,
   );
+}
+
+// Truncates a hex hash to its first 8 characters for diagnostics — never log
+// full workspace paths, PIDs, or thread IDs in the Output Channel.
+function shortHash(value: string | undefined): string {
+  return value ? value.slice(0, 8) : "none";
+}
+
+function logBridgeDiagnostic(message: string): void {
+  appendOutput(`[XiT Bridge] ${message}`);
+}
+
+function registerVscodeAiBridgeWatcher(context: vscode.ExtensionContext): void {
+  const workspacePath = resolveActiveXitWorkspace();
+  const bridgeFile = path.join(workspacePath, ".xit", "events", "vscode-ai-bridge.jsonl");
+  const cursor = initializeHookCursor(bridgeFile);
+  // Base the watcher on the workspace root (always exists), not on
+  // .xit/events (which may not exist yet on a fresh workspace — a watcher
+  // rooted at a non-existent directory may never attach and silently miss
+  // the file's later creation).
+  const watcher = vscode.workspace.createFileSystemWatcher(
+    new vscode.RelativePattern(workspacePath, ".xit/events/vscode-ai-bridge.jsonl"),
+  );
+
+  const handleBridgeChange = async (): Promise<void> => {
+    const appended = readAppendedHookEvents(bridgeFile, cursor) as unknown[];
+    let changed = false;
+    for (const raw of appended) {
+      const event = parseVscodeAiBridgeEvent(JSON.stringify(raw));
+      if (!event) {
+        continue;
+      }
+      const kind = event.event; // "turn.started" | "run.started" | "run.finished" | "turn.finished"
+      logBridgeDiagnostic(
+        `event received: ${kind} run=${shortHash(event.run_id)} ws=${shortHash(event.workspace_hash)} host=${shortHash(event.host_instance_hash)}`,
+      );
+      if (!bridgeEventIsFresh(event, bridgeActivatedAtMs)) {
+        logBridgeDiagnostic(`ignored: event predates this VS Code session (stale or pre-activation) run=${shortHash(event.run_id)}`);
+        continue;
+      }
+      const decision = classifyBridgeEvent(event, workspacePath);
+      if (!decision.accepted) {
+        logBridgeDiagnostic(
+          `ignored: ${decision.reason} event=${shortHash(event.workspace_hash)} current=${shortHash(bridgeWorkspaceHash(workspacePath))}`,
+        );
+        continue;
+      }
+      if (decision.soft) {
+        logBridgeDiagnostic(`soft accepted: host_instance_hash mismatch run=${shortHash(event.run_id)}`);
+      } else {
+        logBridgeDiagnostic(`accepted: ${kind} run=${shortHash(event.run_id)}`);
+      }
+      switch (event.event) {
+        case "turn.started":
+          setBridgeTurnActive(event, workspacePath);
+          logBridgeDiagnostic(`liveOverride updated: status=turn-active run=${shortHash(event.run_id)}`);
+          break;
+        case "run.started":
+          setBridgeRunning(event, workspacePath);
+          logBridgeDiagnostic(`liveOverride updated: status=running run=${shortHash(event.run_id)}`);
+          break;
+        case "run.finished": {
+          const savedTokens = typeof event.saved_tokens === "number" ? event.saved_tokens : undefined;
+          logBridgeDiagnostic(`accepted: finished saved_tokens=${savedTokens ?? "unknown"}`);
+          setBridgeSettling(event, workspacePath);
+          // run.finished is "data ready", NOT "the AI is done talking" — the
+          // status bar/Dashboard show "收功中" now and only promote to the
+          // final 本次省/执行失败 once turn.finished (or the fallback timer)
+          // confirms the turn is actually over.
+          logBridgeDiagnostic(
+            `liveOverride updated: status=settling saved=${formatSavedTokens(event.saved_tokens, event.saved_bytes) ?? "—"}`,
+          );
+          logBridgeDiagnostic("status bar: settling, waiting for turn.finished or fallback timer");
+          break;
+        }
+        case "turn.finished":
+          setBridgeTurnFinished(event, workspacePath);
+          logBridgeDiagnostic("liveOverride finalized: turn.finished promoted settling result, visible 8s");
+          break;
+      }
+      changed = true;
+    }
+    if (changed && statusBarItem) {
+      const status = await fetchStatus(workspacePath);
+      updateDashboardIfOpen(status, buildLiveStatusOverride(workspacePath), workspacePath);
+      logBridgeDiagnostic("dashboard refreshed");
+      await updateStatusBar();
+    }
+  };
+
+  watcher.onDidChange(() => { void handleBridgeChange(); }, null, context.subscriptions);
+  watcher.onDidCreate(() => { void handleBridgeChange(); }, null, context.subscriptions);
+  context.subscriptions.push(watcher);
 }
 
 function resolveXiTHome(): string {
@@ -1183,10 +1472,6 @@ export function eventBelongsToWorkspace(
 export function hookEventIsFresh(event: AdapterEvent, now = Date.now()): boolean {
   const eventMs = parseIsoTimeMs(event.time);
   return eventMs !== undefined && Math.abs(now - eventMs) <= HOOK_EVENT_FRESH_MS;
-}
-
-function commandRunsXitAuto(command: string | undefined): boolean {
-  return /(?:^|\s)(?:\.\/)?xit\s+auto\b/.test(command || "");
 }
 
 export function initializeHookCursor(hookFile: string): HookFileCursor {
@@ -1277,19 +1562,7 @@ function registerAdapterHookWatchers(context: vscode.ExtensionContext): void {
           hookEventIsFresh(event) &&
           eventBelongsToWorkspace(event, activeWorkspace),
       );
-      const hasWorkspaceEvent = workspaceEvents.length > 0;
-      const hasWorkspaceXitAuto = workspaceEvents.some((event) =>
-        commandRunsXitAuto(event.original_command)
-      );
-
-      if (hasWorkspaceEvent) {
-        enterTurnActive(activeWorkspace);
-        if (hasWorkspaceXitAuto) {
-          markActiveRun(Date.now(), activeWorkspace);
-          setLiveState("running", 0, activeWorkspace);
-          startActiveRunPoller(activeWorkspace);
-        }
-      }
+      void workspaceEvents;
       void updateStatusBar();
     }, 100));
   };
@@ -1332,19 +1605,6 @@ function registerTerminalListeners(context: vscode.ExtensionContext): void {
           return;
         }
         writeTerminalEvent({ commandLine, confidence, terminalName, cwd });
-        if (commandRunsXitAuto(commandLine)) {
-          const activeWorkspace = resolveActiveXitWorkspace();
-          const terminalEvent: AdapterEvent = {
-            cwd,
-            original_command: commandLine,
-            time: new Date().toISOString(),
-          };
-          if (eventBelongsToWorkspace(terminalEvent, activeWorkspace)) {
-            markActiveRun(Date.now(), activeWorkspace);
-            setLiveState("running", 0, activeWorkspace);
-            startActiveRunPoller(activeWorkspace);
-          }
-        }
         void updateStatusBar();
       },
     );
@@ -1492,6 +1752,7 @@ export function activate(context: vscode.ExtensionContext): void {
   currentRunStateSignature = getCurrentRunStateSignature(activationWorkspace);
   startRefresh();
   registerWorkspaceWatchers(context);
+  registerVscodeAiBridgeWatcher(context);
   registerAdapterHookWatchers(context);
   registerTerminalListeners(context);
 
@@ -1521,23 +1782,18 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
       const g = status.gain;
+      const savedDisplay = formatSavedTokens(g.saved_tokens, g.saved_bytes) || "—";
       vscode.window.showInformationMessage(
-        `Commands condensed: ${g.total_commands_condensed} | Saved tokens: ${g.saved_tokens_display} | Estimated reduction: ${(g.estimated_reduction * 100).toFixed(1)}% | Saved bytes: ${g.saved_bytes}`,
+        `Commands condensed: ${g.total_commands_condensed} | Saved tokens: ${savedDisplay} | Estimated reduction: ${(g.estimated_reduction * 100).toFixed(1)}%`,
       );
     }),
     vscode.commands.registerCommand("xit.openLatestRawLog", openLatestRawLog),
     vscode.commands.registerCommand("xit.showOutput", showOutput),
     vscode.commands.registerCommand("xit.runCommand", async () => {
-      const ws = resolveActiveXitWorkspace();
-      markActiveRun(Date.now(), ws);
-      setLiveState("running", 0, ws);
-      await promptRunCommand();
+      await promptRunCommand(beginVsCodeRun);
     }),
     vscode.commands.registerCommand("xit.runWithAutoCompression", async () => {
-      const ws = resolveActiveXitWorkspace();
-      markActiveRun(Date.now(), ws);
-      setLiveState("running", 0, ws);
-      await promptRunWithAutoCompression();
+      await promptRunWithAutoCompression(beginVsCodeRun);
     }),
     vscode.commands.registerCommand("xit.openXiTTerminal", () => {
       openXiTTerminal();

@@ -8,11 +8,21 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/stephenywilson/xit/internal/vscodebridge"
 )
 
+// HookEvent mirrors Claude Code's PreToolUse hook JSON payload. cwd and
+// session_id are read directly from the payload (matching how
+// internal/codexhook resolves its own per-project home from in.Cwd) — not
+// from os.Getwd()/an env var — so this hook resolves the SAME workspace
+// Claude Code is actually operating in, regardless of host process or
+// surface (CLI terminal vs. the VS Code Claude Code panel).
 type HookEvent struct {
 	ToolName  string          `json:"tool_name"`
 	ToolInput json.RawMessage `json:"tool_input"`
+	Cwd       string          `json:"cwd"`
+	SessionID string          `json:"session_id"`
 }
 
 type BashInput struct {
@@ -21,13 +31,69 @@ type BashInput struct {
 
 type DenyResponse struct {
 	HookSpecificOutput struct {
-		HookEventName              string `json:"hookEventName"`
-		PermissionDecision         string `json:"permissionDecision"`
-		PermissionDecisionReason   string `json:"permissionDecisionReason"`
+		HookEventName            string `json:"hookEventName"`
+		PermissionDecision       string `json:"permissionDecision"`
+		PermissionDecisionReason string `json:"permissionDecisionReason"`
 	} `json:"hookSpecificOutput"`
 }
 
-func RunHookCommand(home string) error {
+// resolveClaudeHome mirrors internal/codexhook's resolveCodexHome: an
+// explicit XIT_HOME always wins; otherwise prefer the hook payload's own
+// cwd (the project Claude Code is actually working in) over a fixed
+// "always ~/.xit" fallback. Before this fix, RunHookCommand always used the
+// caller-supplied fallback (~/.xit), so a project-local
+// .xit/claude-hooks/config.json (e.g. "mode": "reroute") was silently never
+// read — only the global ~/.xit one ever applied, regardless of which
+// project's settings.json installed the hook.
+func resolveClaudeHome(fallbackHome, payloadCwd string) string {
+	if v := os.Getenv("XIT_HOME"); v != "" {
+		return v
+	}
+	if payloadCwd == "" {
+		return fallbackHome
+	}
+	return filepath.Join(payloadCwd, ".xit")
+}
+
+// isAlreadyWrapped reports whether cmd already invokes `xit auto` (directly
+// or via "./xit auto"), so a command the AI wrote itself (per CLAUDE.md
+// rules) or already retried after a reroute recommendation is never
+// reroute-denied a second time.
+func isAlreadyWrapped(cmd string) bool {
+	c := strings.TrimSpace(cmd)
+	return strings.HasPrefix(c, "xit auto ") || strings.HasPrefix(c, "./xit auto ")
+}
+
+func RunHookCommand(fallbackHome string) error {
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
+	var input []byte
+	for scanner.Scan() {
+		input = append(input, scanner.Bytes()...)
+	}
+	if err := scanner.Err(); err != nil {
+		fmt.Println("{}")
+		return nil
+	}
+
+	var event HookEvent
+	_ = json.Unmarshal(input, &event) // fail-open: zero-value event below if malformed
+
+	// home resolution uses the payload's cwd verbatim (or fallbackHome if
+	// absent) — exactly mirroring internal/codexhook's resolveCodexHome,
+	// never guessing via os.Getwd(). The log's "cwd" field is best-effort
+	// diagnostics only, so it can still fall back to the hook process's own
+	// cwd when the payload omits one.
+	home := resolveClaudeHome(fallbackHome, event.Cwd)
+	logCwd := event.Cwd
+	if logCwd == "" {
+		logCwd, _ = os.Getwd()
+	}
+	sessionID := event.SessionID
+	if sessionID == "" {
+		sessionID = os.Getenv("XIT_SESSION_ID")
+	}
+
 	logDir := filepath.Join(home, "claude-hooks")
 	if err := os.MkdirAll(logDir, 0755); err != nil {
 		fmt.Println("{}")
@@ -36,16 +102,6 @@ func RunHookCommand(home string) error {
 
 	cfg, err := ReadHookConfig(home)
 	if err != nil {
-		fmt.Println("{}")
-		return nil
-	}
-
-	scanner := bufio.NewScanner(os.Stdin)
-	var input []byte
-	for scanner.Scan() {
-		input = append(input, scanner.Bytes()...)
-	}
-	if err := scanner.Err(); err != nil {
 		fmt.Println("{}")
 		return nil
 	}
@@ -59,34 +115,48 @@ func RunHookCommand(home string) error {
 	defer f.Close()
 
 	ts := time.Now().UTC().Format(time.RFC3339)
-	cwd, _ := os.Getwd()
-	sessionID := os.Getenv("XIT_SESSION_ID")
 
-	var event HookEvent
-	if err := json.Unmarshal(input, &event); err != nil {
-		logEvent(f, ts, cfg.Mode, "", "", "error_fail_open", "parse error: "+err.Error(), cwd, sessionID)
+	if len(input) == 0 {
+		logEvent(f, ts, cfg.Mode, "", "", "error_fail_open", "empty stdin", logCwd, sessionID)
+		fmt.Println("{}")
+		return nil
+	}
+	if event.ToolName == "" {
+		logEvent(f, ts, cfg.Mode, "", "", "error_fail_open", "parse error: missing tool_name", logCwd, sessionID)
 		fmt.Println("{}")
 		return nil
 	}
 
 	if event.ToolName != "Bash" {
-		logEvent(f, ts, cfg.Mode, "", "", "passthrough", "not Bash tool", cwd, sessionID)
+		logEvent(f, ts, cfg.Mode, "", "", "passthrough", "not Bash tool", logCwd, sessionID)
 		fmt.Println("{}")
 		return nil
 	}
 
 	var bash BashInput
 	if err := json.Unmarshal(event.ToolInput, &bash); err != nil {
-		logEvent(f, ts, cfg.Mode, "", "", "error_fail_open", "parse bash input: "+err.Error(), cwd, sessionID)
+		logEvent(f, ts, cfg.Mode, "", "", "error_fail_open", "parse bash input: "+err.Error(), logCwd, sessionID)
 		fmt.Println("{}")
 		return nil
+	}
+
+	// Bash tool calls that are already "xit auto ..." (the AI wrote it
+	// itself per CLAUDE.md rules, or this is the retry after a reroute
+	// recommendation below) are about to genuinely execute through xit.
+	// This is the one observable signal available for the VS Code Claude
+	// Code panel bridge: Claude Code's PreToolUse hook protocol has no
+	// documented mechanism to mutate tool_input like Codex's hook does, so
+	// XiT can never silently rewrite the command here — only recommend
+	// (via deny, below) and observe once the AI has already wrapped it.
+	if isAlreadyWrapped(bash.Command) && vscodebridge.IsVSCodeHost(vscodebridge.CurrentEnv()) {
+		_, _ = vscodebridge.StartClaudeIfVSCode(home, logCwd, bash.Command, time.Now())
 	}
 
 	shouldReroute, recommended := ShouldReroute(bash.Command)
 
 	if cfg.Mode == "reroute" && shouldReroute {
 		reason := fmt.Sprintf("XiT recommends rerunning this high-output Bash command through XiT to reduce terminal noise and preserve raw logs. Please run: %s", recommended)
-		logEvent(f, ts, cfg.Mode, bash.Command, recommended, "reroute", reason, cwd, sessionID)
+		logEvent(f, ts, cfg.Mode, bash.Command, recommended, "reroute", reason, logCwd, sessionID)
 
 		resp := DenyResponse{}
 		resp.HookSpecificOutput.HookEventName = "PreToolUse"
@@ -108,20 +178,20 @@ func RunHookCommand(home string) error {
 	} else {
 		reason = "command not in reroute list"
 	}
-	logEvent(f, ts, cfg.Mode, bash.Command, recommended, action, reason, cwd, sessionID)
+	logEvent(f, ts, cfg.Mode, bash.Command, recommended, action, reason, logCwd, sessionID)
 	fmt.Println("{}")
 	return nil
 }
 
 func logEvent(f *os.File, ts, mode, original, recommended, action, reason, cwd, sessionID string) {
 	rec := map[string]interface{}{
-		"time":              ts,
-		"mode":              mode,
-		"original_command":  original,
+		"time":                ts,
+		"mode":                mode,
+		"original_command":    original,
 		"recommended_command": recommended,
-		"action":            action,
-		"reason":            reason,
-		"cwd":               cwd,
+		"action":              action,
+		"reason":              reason,
+		"cwd":                 cwd,
 	}
 	if sessionID != "" {
 		rec["session_id"] = sessionID

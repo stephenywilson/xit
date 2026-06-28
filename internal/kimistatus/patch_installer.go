@@ -15,23 +15,23 @@ import (
 )
 
 const (
-	PatchBeginMarker = "# --- XiT bottom toolbar patch begin ---"
-	PatchEndMarker   = "# --- XiT bottom toolbar patch end ---"
+	PatchBeginMarker  = "# --- XiT bottom toolbar patch begin ---"
+	PatchEndMarker    = "# --- XiT bottom toolbar patch end ---"
 	HelperBeginMarker = "# --- XiT helper begin ---"
 	HelperEndMarker   = "# --- XiT helper end ---"
 )
 
 // PatchCheckResult holds the result of checking if a Kimi installation is patchable.
 type PatchCheckResult struct {
-	KimiPath       string
-	KimiVersion    string
-	PackageDir     string
-	PromptPyPath   string
-	Patchable      bool
-	Installed      bool
-	BackupPath     string
-	Reason         string
-	TargetVersion  string
+	KimiPath      string
+	KimiVersion   string
+	PackageDir    string
+	PromptPyPath  string
+	Patchable     bool
+	Installed     bool
+	BackupPath    string
+	Reason        string
+	TargetVersion string
 }
 
 // LocateKimiPackage finds the installed kimi_cli Python package directory.
@@ -104,13 +104,13 @@ func DetectKimiVersion() string {
 // CheckPatchable checks if the Kimi prompt.py can be patched.
 func CheckPatchable(pkgDir string) *PatchCheckResult {
 	res := &PatchCheckResult{
-		KimiPath:     "",
-		KimiVersion:  DetectKimiVersion(),
-		PackageDir:   pkgDir,
-		PromptPyPath: filepath.Join(pkgDir, "ui", "shell", "prompt.py"),
-		Patchable:    false,
-		Installed:    false,
-		Reason:       "",
+		KimiPath:      "",
+		KimiVersion:   DetectKimiVersion(),
+		PackageDir:    pkgDir,
+		PromptPyPath:  filepath.Join(pkgDir, "ui", "shell", "prompt.py"),
+		Patchable:     false,
+		Installed:     false,
+		Reason:        "",
 		TargetVersion: "1.47",
 	}
 
@@ -514,7 +514,7 @@ def _xit_format_saved_tokens(saved_bytes):
         return ""
     if saved_tokens < 1000:
         return "省" + str(saved_tokens) + " Token"
-    return "省" + str(round(saved_tokens / 1000)) + "k Token"
+    return "省约 " + ("%.2f" % (saved_tokens / 1000.0)) + "k Token"
 
 def _xit_bottom_toolbar_status_text():
     try:
@@ -711,23 +711,23 @@ def _xit_bottom_toolbar_status_text():
 
 // UpdateCheckResult holds the result of checking whether the patch is still valid.
 type UpdateCheckResult struct {
-	Version          string
-	PromptHash       string
-	PatchMarker      string
-	BackupExists     bool
-	PlacementValid   bool
-	Action           string
+	Version        string
+	PromptHash     string
+	PatchMarker    string
+	BackupExists   bool
+	PlacementValid bool
+	Action         string
 }
 
 // CheckUpdate performs a read-only check of patch health against current Kimi.
 func CheckUpdate(pkgDir string) *UpdateCheckResult {
 	res := &UpdateCheckResult{
-		Version:     DetectKimiVersion(),
-		PromptHash:  "",
-		PatchMarker: "absent",
-		BackupExists: false,
+		Version:        DetectKimiVersion(),
+		PromptHash:     "",
+		PatchMarker:    "absent",
+		BackupExists:   false,
 		PlacementValid: false,
-		Action:      "none",
+		Action:         "none",
 	}
 
 	promptPath := filepath.Join(pkgDir, "ui", "shell", "prompt.py")
@@ -853,12 +853,12 @@ func ComputeToolbarPreview(xitHome string) *ToolbarPreview {
 		ReadyText:             "吸T神功 · Kimi · 准备就绪",
 		GuardingText:          "吸T神功 · Kimi · 守护你的T",
 		AbsorbingText:         "吸T神功 · Kimi · 正在吸T中",
-		AbsorbingProgressText: "吸T神功 · Kimi · 已接管12k Token",
-		CompletedText:         "吸T完成 · Kimi · 本次省9k Token",
-		TurnResultWithAuto:    []string{"本次吸T1次 · 省9k Token", "吸T完成 · raw_log 已留证", "吸T神功 · 等待下轮发功"},
+		AbsorbingProgressText: "吸T神功 · Kimi · 已接管约 12.00k Token",
+		CompletedText:         "吸T完成 · Kimi · 本次省约 9.00k Token",
+		TurnResultWithAuto:    []string{"本次吸T1次 · 省约 9.00k Token", "吸T完成 · raw_log 已留证", "吸T神功 · 等待下轮发功"},
 		Unit:                  "token",
 		TokenMethod:           "saved_bytes / 4",
-		ToolbarExample:        "本次吸T1次 · 省9k Token",
+		ToolbarExample:        "本次吸T1次 · 省约 9.00k Token",
 		TurnResultWithoutAuto: []string{"吸T神功 · 本次已守护", "吸T神功 · 等待下轮发功"},
 		RotationScope:         "completed_only",
 		HistoryInReady:        false,

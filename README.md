@@ -8,9 +8,9 @@
 
 XiT 会把 `go test`、`grep`、`git diff`、`docker logs` 这类高噪音命令输出，吸成 AI 能读懂的短摘要；完整 raw_log 留在本地，随时可查。
 
-适用于所有会调用终端命令的 AI Coding CLI（Kimi · Claude Code · Codex · Cursor 等）。
+XiT / 吸T神功 是面向 AI Coding 工作流的本地终端输出压缩层：把高噪音命令交给 `xit auto`，将长输出压缩成 AI 可读摘要，同时把 raw log 留在本地，减少上下文消耗。已验证适配 Kimi CLI、Claude Code、Codex CLI、OpenCode、Cursor（详见下方[适配图谱](#江湖适配图谱)，不同 CLI 的支持深度不同）。
 
-XiT helps AI coding agents spend fewer tokens on noisy terminal output.
+XiT / 吸T神功 is a local output-compression layer for AI coding workflows. It routes noisy terminal output through `xit auto`, keeps raw logs locally, and shows estimated Token savings in supported CLI / IDE surfaces.
 
 [![npm](https://img.shields.io/npm/v/xitsg?color=56f5a3&label=xitsg&style=flat-square)](https://www.npmjs.com/package/xitsg)
 [![Go](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat-square&logo=go)](https://go.dev)
@@ -68,18 +68,15 @@ xit version 0.2.47
 
 ## VS Code Extension
 
-XiT is now available as a VS Code extension: **吸T神功（XiT）**.
+XiT is available as a VS Code extension: **吸T神功（XiT）**, current version `0.0.33`.
 
-The VS Code extension brings XiT directly into AI coding workflows:
-
-- live status bar updates while `xit auto` is running
-- dark-gold XiT Dashboard
-- token impact: latest saved, today saved, workspace total
-- AI adapter health for Claude, Codex, Kimi, Cursor
-- agent conversation turn awareness based on local hook metadata
+- **Status Bar**: live XiT state（守护中 / 正在吸T / 神功正在收工 / 本次省 约 X.XXk Token）
+- **Dashboard**: 本轮发功（本次省 / 本轮共吸 / 降噪率 / 状态）/ 今日功力 / 功力累计
+- **Codex Chat Bridge**: when Codex (in the VS Code Codex Chat panel) calls `xit auto`, the status bar and Dashboard update automatically through Codex's own hooks — no extra setup
+- **Claude Code panel bridge**: Claude Code's hook protocol can only allow/deny/ask (it cannot rewrite commands like Codex), so XiT denies high-noise commands and recommends the `xit auto` form; once Claude retries with the recommended command, the bridge picks it up. Final results display after Claude's turn ends, or after a short safety fallback if no turn-end signal is available — see [docs/claude.md](docs/claude.md) for current limitations
 - workspace watch diagnostics, so users know which project XiT is monitoring
 
-XiT does **not** read chat content. It only reads local XiT state, run history, and hook metadata.
+XiT does **not** read chat content. It only reads local XiT state, run history, and hook metadata — never the prompt, the AI's reply, raw command output, or full session/thread IDs.
 
 ---
 
@@ -172,10 +169,11 @@ XiT 不替你写代码，也不上传日志。它只做一件事：把终端噪�
 | **Aider** | ✅ rules adapter | `.aider.conf.yml` + `XIT_AIDER.md`；hooks/statusLine not available |
 | **OpenCode** | ✅ hook/reroute | `tool.execute.before` hook reroute + AI 直接写 `xit auto` 时自动注入 OpenCode 上下文 + 工具输出显示中文吸T神功摘要；暂不支持 OpenCode 主界面常驻 statusline/footer |
 | **Cursor** | ✅ hook observe + strict | `beforeShellExecution` observe + strict mode GUI ask + hitrate；reroute/statusLine not enabled |
+| **VS Code Extension** | ✅ done（`0.0.33`） | Status Bar + Dashboard（本轮发功/今日功力/功力累计）+ Codex Chat Bridge + Claude Code panel bridge（deny + 推荐 retry + fallback） |
 | **DeepSeek 系 CLI** | 📋 planned | 调研中 |
-| **Gemini** | 📋 planned | 迁移至 Antigravity |
+| **Gemini** | 📋 not yet supported / planned | 暂未实现，不做未验证承诺 |
 
-XiT 的目标是成为所有 AI Coding CLI 的本地输出压缩层。只要这个 AI 会调用终端命令，就有机会练吸T神功。
+XiT 的长期方向是覆盖更多会调用终端命令的 AI Coding CLI；上表是当前已验证的真实适配范围，不代表对未列出 CLI 的支持承诺。
 
 ---
 
@@ -276,16 +274,16 @@ xit auto --help     # 查看帮助
 - Cursor 适配（beforeShellExecution observe + strict mode GUI ask + hitrate）
 - OpenCode 适配（`tool.execute.before` hook reroute + 工具输出中文摘要；主界面 statusline/footer 暂不支持）
 - npm 全平台分发（macOS / Linux / Windows）
-- VS Code extension `0.0.20` 已发布到 Visual Studio Marketplace
+- VS Code extension `0.0.33` 已发布到 Visual Studio Marketplace（Status Bar + Dashboard + Codex Chat Bridge + Claude Code panel bridge）
 
 **近期**
 
 - DeepSeek 系 AI CLI 调研与适配
 - 更多高噪音命令过滤器
+- VS Code Claude Code 面板的 turn 结束信号（Stop hook）真实可靠性持续验证
 
 **后续**
 
-- VS Code Marketplace 发布
 - 可选 tokenizer 估算增强
 - 更多 AI Coding CLI 接入
 

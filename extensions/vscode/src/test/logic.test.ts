@@ -113,7 +113,7 @@ function bridgeEvent(overrides: Record<string, unknown> = {}): string {
     surface: "codex_chat",
     adapter: "codex",
     workspace_hash: bridgeWorkspaceHash(workspace),
-    host_instance_hash: bridgeHostInstanceHash("1234", workspace),
+    host_instance_hash: bridgeHostInstanceHash("1234"),
     thread_hash: bridgeHash("thread"),
     run_id: "run-1",
     command_hash: bridgeHash("command"),
@@ -178,12 +178,34 @@ test("classifyBridgeEvent soft-accepts when host_instance_hash mismatches but wo
   assert.deepEqual(classifyBridgeEvent(parsed, workspace, undefined), { accepted: true, soft: true });
 });
 
-test("classifyBridgeEvent rejects when workspace_hash mismatches, regardless of host_instance_hash", () => {
+test("classifyBridgeEvent rejects when workspace_hash mismatches AND host_instance_hash gives no corroborating evidence", () => {
+  const parsed = parseVscodeAiBridgeEvent(bridgeEvent());
+  assert.ok(parsed);
+  // pid "9999" never matches the fixture's host_instance_hash (built from
+  // "1234") — no signal at all ties this to the same window, so the event
+  // must be dropped with a clear, non-silent reason.
+  assert.deepEqual(
+    classifyBridgeEvent(parsed, "/tmp/other-workspace", "9999"),
+    { accepted: false, reason: "workspace_hash_mismatch" },
+  );
+  assert.deepEqual(
+    classifyBridgeEvent(parsed, "/tmp/other-workspace", undefined),
+    { accepted: false, reason: "workspace_hash_mismatch" },
+  );
+});
+
+// This is the fix for the reported bug: VS Code has workspace A open, but a
+// command ran from cwd B in the SAME window (e.g. the Claude Code panel cd'd
+// into a different project mid-session). workspace_hash legitimately
+// reflects B (never rewritten), but host_instance_hash — pid-only since the
+// fix, see bridgeHostInstanceHash — verifiably proves "same window" despite
+// the cwd difference. This must be accepted, not silently dropped.
+test("classifyBridgeEvent accepts cross-workspace when host_instance_hash verifiably matches this window", () => {
   const parsed = parseVscodeAiBridgeEvent(bridgeEvent());
   assert.ok(parsed);
   assert.deepEqual(
     classifyBridgeEvent(parsed, "/tmp/other-workspace", "1234"),
-    { accepted: false, reason: "workspace_hash_mismatch" },
+    { accepted: true, soft: false, crossWorkspace: true },
   );
 });
 
@@ -199,9 +221,15 @@ test("classifyBridgeEvent applies the same workspace/host policy to Claude bridg
   assert.deepEqual(classifyBridgeEvent(claudeStarted, workspace, "1234"), { accepted: true, soft: false });
   // host_instance_hash mismatch -> soft accept, same as Codex.
   assert.deepEqual(classifyBridgeEvent(claudeStarted, workspace, "9999"), { accepted: true, soft: true });
-  // workspace_hash mismatch -> rejected, same as Codex.
+  // workspace_hash mismatch but host_instance_hash matches -> crossWorkspace
+  // accept, same as Codex (e.g. Claude Code panel cd'd elsewhere).
   assert.deepEqual(
     classifyBridgeEvent(claudeStarted, "/tmp/other-workspace", "1234"),
+    { accepted: true, soft: false, crossWorkspace: true },
+  );
+  // workspace_hash mismatch AND no host evidence -> rejected, same as Codex.
+  assert.deepEqual(
+    classifyBridgeEvent(claudeStarted, "/tmp/other-workspace", "9999"),
     { accepted: false, reason: "workspace_hash_mismatch" },
   );
 });

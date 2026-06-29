@@ -277,6 +277,25 @@ export interface VscodeAiBridgeEvent {
   run_count?: number;
 }
 
+// Internal/dev-console diagnostics for the VS Code AI bridge watcher(s).
+// Deliberately limited to timestamps, counters, and already-hashed
+// workspace/host signals — never the raw command, cwd, output, prompt, AI
+// reply, or full session id that produced a bridge event.
+export interface BridgeDiagnostics {
+  last_event_at?: string;
+  last_accepted_event_at?: string;
+  last_dropped_event_at?: string;
+  last_drop_reason?: string;
+  accepted_event_count: number;
+  dropped_event_count: number;
+  watcher_alive: boolean;
+  event_file_path: string[];
+  current_workspace_hash?: string;
+  last_event_workspace_hash?: string;
+  last_event_host_instance_hash?: string;
+  last_event_source?: "primary" | "mirror";
+}
+
 export interface AgentTurnView {
   adapter: "claude" | "codex" | "kimi" | "gemini" | "cursor" | "unknown";
   status: AgentTurnStatus;

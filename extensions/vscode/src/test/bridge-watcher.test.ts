@@ -1,7 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
+import {
+  initializeHookCursor,
+  readAppendedHookEvents,
+  type HookFileCursor,
+} from "../bridge-cursor";
 
 // extension.ts imports "vscode", which only exists inside the real extension
 // host, so it can't be required directly under plain node:test. We assert on
@@ -26,10 +32,58 @@ test("vscode-ai-bridge watcher is rooted at the workspace folder, not at .xit/ev
   );
 });
 
-test("vscode-ai-bridge watcher listens for both onDidChange and onDidCreate", () => {
+test("every bridge event source (primary + mirror) listens for both onDidChange and onDidCreate", () => {
   const source = readCompiledExtensionSource();
-  assert.ok(source.includes("watcher.onDidChange(() => { void handleBridgeChange(); }"));
-  assert.ok(source.includes("watcher.onDidCreate(() => { void handleBridgeChange(); }"));
+  assert.ok(source.includes("source.watcher.onDidChange(() => { void handleBridgeChange(source); }"));
+  assert.ok(source.includes("source.watcher.onDidCreate(() => { void handleBridgeChange(source); }"));
+});
+
+// ──────────────────────────────────────────────────────────────────
+// Mirror watcher: the Go-side hook (internal/vscodebridge.MirrorHome) now
+// dual-writes every event into a global ~/.xit/events/vscode-ai-bridge.jsonl
+// in addition to the project-local file, specifically so an event survives
+// even when the AI's cwd at the time differed from this workspace root. The
+// extension must watch BOTH locations and must not double-process an event
+// that the dual-write delivers to both.
+// ──────────────────────────────────────────────────────────────────
+
+test("resolveBridgeMirrorHome respects XIT_VSCODE_BRIDGE_HOME and otherwise defaults to os.homedir()/.xit — matching the Go side's MirrorHome()", () => {
+  const source = readCompiledExtensionSource();
+  const fnMatch = source.match(/function resolveBridgeMirrorHome\(\) \{[\s\S]*?\n\}/);
+  assert.ok(fnMatch, "resolveBridgeMirrorHome should exist");
+  const body = fnMatch![0];
+  assert.ok(body.includes("process.env.XIT_VSCODE_BRIDGE_HOME"));
+  assert.ok(body.includes('path.join(os.homedir(), ".xit")'));
+});
+
+test("registerVscodeAiBridgeWatcher registers a second 'mirror' source only when it differs from the primary file", () => {
+  const source = readCompiledExtensionSource();
+  const fnMatch = source.match(/function registerVscodeAiBridgeWatcher\(context\) \{[\s\S]*?\n\}\n/);
+  assert.ok(fnMatch, "registerVscodeAiBridgeWatcher should exist");
+  const body = fnMatch![0];
+  assert.ok(body.includes('label: "primary"'));
+  assert.ok(body.includes('label: "mirror"'));
+  assert.ok(body.includes("path.resolve(mirrorFile) !== path.resolve(primaryFile)"));
+});
+
+test("the same logical event arriving from both the primary and mirror file is only processed once (dedupe by event kind + run_id)", () => {
+  const fn = extractHandleBridgeChange(readCompiledExtensionSource());
+  assert.match(fn, /const dedupeKey = `\$\{event\.event\}\|\$\{event\.run_id\}`/);
+  assert.ok(fn.includes("hasProcessedBridgeEvent(dedupeKey)"));
+  assert.ok(fn.includes("markBridgeEventProcessed(dedupeKey)"));
+  // The dedupe check must come before classification/dispatch — a duplicate
+  // delivery must not double-count diagnostics or call the state setters again.
+  const dedupeIdx = fn.indexOf("hasProcessedBridgeEvent(dedupeKey)");
+  const classifyIdx = fn.indexOf("classifyBridgeEvent");
+  assert.ok(dedupeIdx > -1 && classifyIdx > -1 && dedupeIdx < classifyIdx);
+});
+
+test("the recent-event-key dedupe set is capped so a long-running session can't leak memory", () => {
+  const source = readCompiledExtensionSource();
+  assert.match(source, /RECENT_BRIDGE_EVENT_KEY_CAP = \d+/);
+  const fnMatch = source.match(/function markBridgeEventProcessed\(key\) \{[\s\S]*?\n\}/);
+  assert.ok(fnMatch, "markBridgeEventProcessed should exist");
+  assert.ok(fnMatch![0].includes(".shift()"), "must evict the oldest key once over the cap");
 });
 
 test("bridge diagnostics only go to the Output Channel (appendOutput), never showOutput", () => {
@@ -50,7 +104,7 @@ test("bridge diagnostics never include a full workspace path, PID, or thread id 
 });
 
 function extractHandleBridgeChange(source: string): string {
-  const match = source.match(/const handleBridgeChange = .*?async \(\) => \{[\s\S]*?\n    \};/);
+  const match = source.match(/const handleBridgeChange = .*?async \(source\) => \{[\s\S]*?\n    \};/);
   assert.ok(match, "handleBridgeChange should exist");
   return match![0];
 }
@@ -130,10 +184,125 @@ test("handleBridgeChange processes every appended line, not just the first (mult
 });
 
 test("initializeHookCursor falls back to offset 0 when the bridge file does not exist yet (first creation is still read)", () => {
-  const source = readCompiledExtensionSource();
-  const fnMatch = source.match(/function initializeHookCursor\(hookFile\) \{[\s\S]*?\n\}/);
-  assert.ok(fnMatch, "initializeHookCursor should exist");
-  assert.match(fnMatch![0], /catch[\s\S]*?offset: 0/, "must fall back to offset 0 (read-from-start) when the file doesn't exist at watcher registration time");
+  const cursor = initializeHookCursor(path.join(os.tmpdir(), `xit-bridge-cursor-does-not-exist-${Date.now()}.jsonl`));
+  assert.equal(cursor.offset, 0);
+});
+
+// ──────────────────────────────────────────────────────────────────
+// Real behavioral coverage for the bridge file cursor — extracted into
+// bridge-cursor.ts (no "vscode" import) specifically so these can be tested
+// against real temp files instead of only structural assertions on compiled
+// source. Covers: a burst of many rapid appends, malformed/partial lines,
+// and file truncation/rotation (e.g. log rotation, or a test/dev workflow
+// that resets the bridge file) — none of these may kill the watcher.
+// ──────────────────────────────────────────────────────────────────
+
+function makeTempBridgeFile(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "xit-bridge-cursor-test-"));
+  return path.join(dir, "vscode-ai-bridge.jsonl");
+}
+
+function appendLine(file: string, obj: unknown): void {
+  fs.appendFileSync(file, `${JSON.stringify(obj)}\n`, "utf-8");
+}
+
+test("a burst of 50 rapid appends are all read back, in order, across repeated reads", () => {
+  const file = makeTempBridgeFile();
+  fs.writeFileSync(file, "", "utf-8");
+  const cursor = initializeHookCursor(file);
+
+  for (let i = 0; i < 50; i++) {
+    appendLine(file, { event: "run.started", run_id: `run-${i}` });
+  }
+
+  const events = readAppendedHookEvents(file, cursor);
+  assert.equal(events.length, 50);
+  assert.equal((events[0] as any).run_id, "run-0");
+  assert.equal((events[49] as any).run_id, "run-49");
+
+  // A subsequent read with no new appends must be empty, not re-deliver —
+  // the cursor must have actually advanced past all 50 lines.
+  assert.deepEqual(readAppendedHookEvents(file, cursor), []);
+});
+
+test("a malformed/partial JSON line is skipped without losing the well-formed lines around it, and without throwing", () => {
+  const file = makeTempBridgeFile();
+  fs.writeFileSync(file, "", "utf-8");
+  const cursor = initializeHookCursor(file);
+
+  fs.appendFileSync(
+    file,
+    [
+      JSON.stringify({ event: "run.started", run_id: "good-1" }),
+      "{not valid json at all",
+      JSON.stringify({ event: "run.finished", run_id: "good-2" }),
+    ].join("\n") + "\n",
+    "utf-8",
+  );
+
+  const events = readAppendedHookEvents(file, cursor);
+  assert.equal(events.length, 2, "the malformed line must be skipped, not crash the whole read");
+  assert.equal((events[0] as any).run_id, "good-1");
+  assert.equal((events[1] as any).run_id, "good-2");
+});
+
+test("a write split mid-line (no trailing newline yet) is held as a remainder and completed by the next read, not dropped or duplicated", () => {
+  const file = makeTempBridgeFile();
+  fs.writeFileSync(file, "", "utf-8");
+  const cursor = initializeHookCursor(file);
+
+  const fullLine = JSON.stringify({ event: "run.started", run_id: "split-1" });
+  fs.appendFileSync(file, fullLine.slice(0, 10), "utf-8"); // no trailing newline — write is "in flight"
+  assert.deepEqual(readAppendedHookEvents(file, cursor), []);
+
+  fs.appendFileSync(file, `${fullLine.slice(10)}\n`, "utf-8");
+  const events = readAppendedHookEvents(file, cursor);
+  assert.equal(events.length, 1);
+  assert.equal((events[0] as any).run_id, "split-1");
+});
+
+test("file truncation (e.g. log rotation) resets the read offset instead of throwing or getting stuck", () => {
+  const file = makeTempBridgeFile();
+  fs.writeFileSync(file, "", "utf-8");
+  const cursor = initializeHookCursor(file);
+
+  appendLine(file, { event: "run.started", run_id: "before-rotate" });
+  readAppendedHookEvents(file, cursor); // advance past it
+
+  // Truncate and write a fresh, shorter file — same inode on most platforms,
+  // but stat.size is now smaller than cursor.offset.
+  fs.writeFileSync(file, "", "utf-8");
+  appendLine(file, { event: "run.started", run_id: "after-rotate" });
+
+  const events = readAppendedHookEvents(file, cursor);
+  assert.equal(events.length, 1);
+  assert.equal((events[0] as any).run_id, "after-rotate");
+});
+
+test("file replacement (new inode, e.g. atomic rename-based rotation) is also recovered, not silently dropped", () => {
+  const file = makeTempBridgeFile();
+  fs.writeFileSync(file, "", "utf-8");
+  const cursor = initializeHookCursor(file);
+
+  appendLine(file, { event: "run.started", run_id: "before-replace" });
+  readAppendedHookEvents(file, cursor);
+
+  const replacement = `${file}.new`;
+  fs.writeFileSync(replacement, `${JSON.stringify({ event: "run.started", run_id: "after-replace" })}\n`, "utf-8");
+  fs.renameSync(replacement, file); // new inode at the same path
+
+  const events = readAppendedHookEvents(file, cursor);
+  assert.equal(events.length, 1);
+  assert.equal((events[0] as any).run_id, "after-replace");
+});
+
+test("readAppendedHookEvents never throws even if the file is deleted between the watcher firing and the read", () => {
+  const file = makeTempBridgeFile();
+  const cursor: HookFileCursor = { offset: 0, mtimeMs: 0, remainder: "" };
+  assert.doesNotThrow(() => {
+    const events = readAppendedHookEvents(file, cursor);
+    assert.deepEqual(events, []);
+  });
 });
 
 // ──────────────────────────────────────────────────────────────────
@@ -273,4 +442,98 @@ test("the Dashboard status card value never shows the typo '收工中' — must 
   assert.ok(!extensionSource.includes("收工中"), "extension.js must not contain the '收工中' typo");
   assert.ok(!logicSource.includes("收工中"), "logic.js must not contain the '收工中' typo");
   assert.ok(logicSource.includes("收功中"), "logic.js should render the corrected '收功中' status value");
+});
+
+// ──────────────────────────────────────────────────────────────────
+// Status bar must never stay stuck on "准备就绪" because it was hidden or
+// disposed without being re-shown. Both render paths re-assert .show() on
+// every update — cheap, and rules this entire bug class out regardless of
+// root cause.
+// ──────────────────────────────────────────────────────────────────
+
+test("updateStatusBar re-asserts statusBarItem.show() (when enabled) on every call", () => {
+  const source = readCompiledExtensionSource();
+  const fnMatch = source.match(/async function updateStatusBar\(\) \{[\s\S]*?\n    const workspaceSnapshot/);
+  assert.ok(fnMatch, "updateStatusBar should exist");
+  assert.ok(fnMatch![0].includes("statusBarItem.show()"));
+});
+
+test("updateStatusBarLive re-asserts statusBarItem.show() (when enabled) on every call", () => {
+  const source = readCompiledExtensionSource();
+  const fnMatch = source.match(/async function updateStatusBarLive\(\)[\s\S]*?\n    const workspaceSnapshot/);
+  assert.ok(fnMatch, "updateStatusBarLive should exist");
+  assert.ok(fnMatch![0].includes("statusBarItem.show()"));
+});
+
+test("handleBridgeChange also calls statusBarItem.show() before refreshing, so a bridge event always surfaces even if the bar was somehow hidden", () => {
+  const fn = extractHandleBridgeChange(readCompiledExtensionSource());
+  assert.ok(fn.includes("statusBarItem.show();"));
+});
+
+// ──────────────────────────────────────────────────────────────────
+// Cross-workspace acceptance: when workspace_hash mismatches (the AI cd'd to
+// a different project mid-session) but host_instance_hash verifiably
+// matches this window, classifyBridgeEvent now returns
+// { accepted: true, crossWorkspace: true } instead of rejecting outright —
+// see logic.test.ts for the pure-function coverage. The watcher must log
+// this distinctly from a same-workspace accept and must still dispatch
+// through the normal state setters.
+// ──────────────────────────────────────────────────────────────────
+
+test("a cross-workspace accept is logged distinctly and still dispatches through the normal event-kind switch", () => {
+  const fn = extractHandleBridgeChange(readCompiledExtensionSource());
+  assert.ok(fn.includes("decision.crossWorkspace"));
+  assert.match(fn, /accepted: cross-workspace/);
+  // The switch dispatch below is unconditional on accepted, not on crossWorkspace —
+  // confirmed by the switch existing once, used for all 3 acceptance branches.
+  assert.match(fn, /switch \(event\.event\)/);
+});
+
+// ──────────────────────────────────────────────────────────────────
+// Diagnostics (Section 3): internal/dev-console fields only — timestamps,
+// counters, and already-hashed signals. Never the raw command, cwd, output,
+// prompt, AI reply, or full session id that produced an event.
+// ──────────────────────────────────────────────────────────────────
+
+test("bridgeDiagnostics tracks accepted/dropped counts and last-event metadata, with no raw command/cwd/output fields", () => {
+  const source = readCompiledExtensionSource();
+  const fnMatch = source.match(/const bridgeDiagnostics = \{[\s\S]*?\n\};/);
+  assert.ok(fnMatch, "bridgeDiagnostics initializer should exist");
+  assert.ok(fnMatch![0].includes("accepted_event_count: 0"));
+  assert.ok(fnMatch![0].includes("dropped_event_count: 0"));
+  assert.ok(fnMatch![0].includes("watcher_alive: false"));
+  assert.ok(fnMatch![0].includes("event_file_path: []"));
+
+  const fn = extractHandleBridgeChange(source);
+  for (const field of [
+    "last_event_at",
+    "last_event_workspace_hash",
+    "last_event_host_instance_hash",
+    "last_event_source",
+    "current_workspace_hash",
+    "accepted_event_count++",
+    "last_accepted_event_at",
+    "dropped_event_count++",
+    "last_dropped_event_at",
+    "last_drop_reason",
+  ]) {
+    assert.ok(fn.includes(field), `handleBridgeChange should update bridgeDiagnostics.${field}`);
+  }
+  for (const forbidden of ["raw_command", "raw_cwd", "raw_output", "prompt", "session_id", "original_command"]) {
+    assert.ok(!fn.includes(forbidden), `handleBridgeChange must never touch ${forbidden}`);
+  }
+});
+
+test("XiT: Diagnose AI Workflow surfaces the bridge diagnostics block with short (8-char) hashes, not full hashes or paths leaking raw data", () => {
+  const source = readCompiledExtensionSource();
+  const fnMatch = source.match(/async function runDiagnose\(\)[\s\S]*?\n\}/);
+  assert.ok(fnMatch, "runDiagnose should exist");
+  const body = fnMatch![0];
+  assert.ok(body.includes("VS Code AI bridge watcher:"));
+  assert.ok(body.includes("bridgeDiagnostics.watcher_alive"));
+  assert.ok(body.includes("bridgeDiagnostics.accepted_event_count"));
+  assert.ok(body.includes("bridgeDiagnostics.dropped_event_count"));
+  assert.ok(body.includes("shortHash(bridgeDiagnostics.current_workspace_hash)"));
+  assert.ok(body.includes("shortHash(bridgeDiagnostics.last_event_workspace_hash)"));
+  assert.ok(body.includes("shortHash(bridgeDiagnostics.last_event_host_instance_hash)"));
 });

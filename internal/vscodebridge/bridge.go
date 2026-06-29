@@ -146,8 +146,15 @@ func WorkspaceHash(workspace string) string {
 	return SHA256Hex(NormalizeWorkspace(workspace))
 }
 
-func HostInstanceHash(pid, workspace string) string {
-	return SHA256Hex(pid + "\x00" + NormalizeWorkspace(workspace))
+// HostInstanceHash intentionally depends on pid alone, not workspace. It is
+// the one signal meant to answer "is this the same VS Code window?"
+// independent of which directory the command that produced the event
+// happened to run in — e.g. the AI cd'd to a different project mid-session.
+// Folding workspace into this hash (as an earlier version did) made it
+// impossible to ever use for that purpose, since it would then differ
+// between two commands run from different cwds in the very same window.
+func HostInstanceHash(pid string) string {
+	return SHA256Hex(pid)
 }
 
 func ThreadHash(threadID string) string {
@@ -189,7 +196,7 @@ func StartIfCodexVSCode(home, workspace, command, sessionID, runID string, now t
 		ThreadHash:       ThreadHash(sessionID),
 		CommandHash:      CommandHashFromCommand(command),
 		WorkspaceHash:    WorkspaceHash(workspace),
-		HostInstanceHash: HostInstanceHash(env.VSCodePID, workspace),
+		HostInstanceHash: HostInstanceHash(env.VSCodePID),
 		StartedAt:        now.UTC().Format(time.RFC3339),
 	}
 	_ = CleanupExpired(home, now)
@@ -338,7 +345,7 @@ func StartClaudeIfVSCode(home, workspace, command string, now time.Time) (*Pendi
 		RunID:            NewRunID(),
 		CommandHash:      CommandHashFromCommand(command),
 		WorkspaceHash:    wsHash,
-		HostInstanceHash: HostInstanceHash(env.VSCodePID, workspace),
+		HostInstanceHash: HostInstanceHash(env.VSCodePID),
 		StartedAt:        now.UTC().Format(time.RFC3339),
 	}
 	_ = CleanupExpired(home, now)
@@ -418,7 +425,7 @@ func StartTurnIfVSCode(home, workspace, adapter, surface string, now time.Time) 
 		Surface:          surface,
 		Adapter:          adapter,
 		WorkspaceHash:    WorkspaceHash(workspace),
-		HostInstanceHash: HostInstanceHash(env.VSCodePID, workspace),
+		HostInstanceHash: HostInstanceHash(env.VSCodePID),
 		RunID:            NewRunID(),
 		StartedAt:        now.UTC().Format(time.RFC3339),
 	})
@@ -438,7 +445,7 @@ func FinishTurnIfVSCode(home, workspace, adapter, surface string, now time.Time)
 		Surface:          surface,
 		Adapter:          adapter,
 		WorkspaceHash:    WorkspaceHash(workspace),
-		HostInstanceHash: HostInstanceHash(env.VSCodePID, workspace),
+		HostInstanceHash: HostInstanceHash(env.VSCodePID),
 		RunID:            NewRunID(),
 		StartedAt:        ts,
 		FinishedAt:       ts,
@@ -474,7 +481,41 @@ func CleanupExpired(home string, now time.Time) error {
 	return nil
 }
 
-func AppendEvent(home string, event Event) error {
+// MirrorHome is a second, workspace-independent home that AppendEvent always
+// also writes bridge events to (see appendEventFile). The Go-side `home`
+// passed into every Start*/Finish* function above is derived from the
+// command's own cwd (see resolveClaudeHome/resolveCodexHome in the hook
+// packages) — correct for run-history/state, but it means the bridge event
+// itself lands in whichever project the AI's cwd happened to be in, not
+// necessarily the project the VS Code window watching for it has open. The
+// mirror gives the extension's bridge watcher a second, cwd-independent
+// place to find the same event (see classifyBridgeEvent on the TS side,
+// which still scopes acceptance by workspace_hash/host_instance_hash —
+// mirroring does not by itself relax any privacy/isolation guarantee).
+// XIT_VSCODE_BRIDGE_HOME overrides the default (tests use this to avoid
+// writing into the real machine's home directory); empty return disables
+// the mirror rather than erroring.
+func MirrorHome() string {
+	if v := os.Getenv("XIT_VSCODE_BRIDGE_HOME"); v != "" {
+		return v
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".xit")
+}
+
+func samePath(a, b string) bool {
+	ra, errA := filepath.Abs(a)
+	rb, errB := filepath.Abs(b)
+	if errA != nil || errB != nil {
+		return a == b
+	}
+	return ra == rb
+}
+
+func appendEventFile(home string, event Event) error {
 	path := filepath.Join(home, "events", "vscode-ai-bridge.jsonl")
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
@@ -489,5 +530,13 @@ func AppendEvent(home string, event Event) error {
 	}
 	defer f.Close()
 	_, err = f.Write(append(data, '\n'))
+	return err
+}
+
+func AppendEvent(home string, event Event) error {
+	err := appendEventFile(home, event)
+	if mirror := MirrorHome(); mirror != "" && !samePath(mirror, home) {
+		_ = appendEventFile(mirror, event)
+	}
 	return err
 }

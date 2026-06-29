@@ -11,6 +11,21 @@ import (
 	"github.com/stephenywilson/xit/internal/vscodebridge"
 )
 
+// TestMain redirects vscodebridge's AppendEvent mirror write (MirrorHome())
+// into a throwaway temp dir for this package's whole test run, so the many
+// VS-Code-bridge tests below (which set VSCODE_PID) never append a real
+// event into the machine's actual ~/.xit/events/vscode-ai-bridge.jsonl as a
+// side effect of `go test`.
+func TestMain(m *testing.M) {
+	tmp, err := os.MkdirTemp("", "xit-claudehook-test-mirror-home")
+	if err != nil {
+		panic(err)
+	}
+	defer os.RemoveAll(tmp)
+	os.Setenv("XIT_VSCODE_BRIDGE_HOME", tmp)
+	os.Exit(m.Run())
+}
+
 // runHookCommand pipes payload into RunHookCommand's stdin and captures its
 // stdout, mirroring internal/codexhook's test helper of the same shape.
 func runHookCommand(t *testing.T, fallbackHome, payload string) string {

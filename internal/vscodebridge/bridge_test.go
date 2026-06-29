@@ -9,6 +9,21 @@ import (
 	"time"
 )
 
+// TestMain redirects MirrorHome() (the AppendEvent dual-write target — see
+// bridge.go) into a throwaway temp dir for the whole package's test run.
+// Without this, every test below that sets VSCODE_PID would also append a
+// real event into the machine's actual ~/.xit/events/vscode-ai-bridge.jsonl
+// as a side effect of just running `go test`.
+func TestMain(m *testing.M) {
+	tmp, err := os.MkdirTemp("", "xit-vscodebridge-test-mirror-home")
+	if err != nil {
+		panic(err)
+	}
+	defer os.RemoveAll(tmp)
+	os.Setenv("XIT_VSCODE_BRIDGE_HOME", tmp)
+	os.Exit(m.Run())
+}
+
 func TestCodexVSCodeSourceRecognition(t *testing.T) {
 	if !IsCodexVSCode(Env{VSCodePID: "123"}) {
 		t.Fatal("expected VSCODE_PID present to be recognized")
@@ -219,7 +234,7 @@ func TestPendingContextDoesNotStoreRawSensitiveValues(t *testing.T) {
 		ThreadHash:       SHA256Hex("session-secret"),
 		CommandHash:      SHA256Hex("command-secret"),
 		WorkspaceHash:    WorkspaceHash("/tmp/private-workspace"),
-		HostInstanceHash: HostInstanceHash("12345", "/tmp/private-workspace"),
+		HostInstanceHash: HostInstanceHash("12345"),
 		StartedAt:        time.Now().UTC().Format(time.RFC3339),
 	}
 	if err := WritePending(home, ctx); err != nil {
@@ -435,7 +450,7 @@ func TestPendingContextTTLAndRunID(t *testing.T) {
 		ThreadHash:       SHA256Hex("session"),
 		CommandHash:      SHA256Hex("command"),
 		WorkspaceHash:    WorkspaceHash("/tmp/ws"),
-		HostInstanceHash: HostInstanceHash("pid", "/tmp/ws"),
+		HostInstanceHash: HostInstanceHash("pid"),
 		StartedAt:        now.Add(-11 * time.Minute).Format(time.RFC3339),
 	}
 	if err := WritePending(home, ctx); err != nil {
@@ -549,6 +564,76 @@ func TestTurnEventsNeverLeakRawData(t *testing.T) {
 	}
 	if strings.Contains(string(data), workspace) || strings.Contains(string(data), "secret-workspace-name") {
 		t.Fatalf("turn events leaked the raw workspace path: %s", data)
+	}
+}
+
+// TestHostInstanceHashIsWorkspaceIndependent locks in the fix: two commands
+// run from the same VS Code window (same VSCODE_PID) but different cwds must
+// produce the SAME host_instance_hash, so the extension can recognize "same
+// window" even when the AI cd'd to a different project mid-session.
+func TestHostInstanceHashIsWorkspaceIndependent(t *testing.T) {
+	if HostInstanceHash("4242") != HostInstanceHash("4242") {
+		t.Fatal("expected the same pid to always produce the same host_instance_hash")
+	}
+	if HostInstanceHash("4242") == HostInstanceHash("9999") {
+		t.Fatal("expected different pids to produce different host_instance_hash")
+	}
+}
+
+// TestAppendEventMirrorsToGlobalHome: AppendEvent must also write a copy of
+// every bridge event into MirrorHome() (XIT_VSCODE_BRIDGE_HOME in this test,
+// via TestMain — shared across this whole package's test run, so other
+// tests' events legitimately accumulate there too; this test only checks
+// that ITS OWN event, identified by its unique RunID, shows up) in addition
+// to the per-project home it's given — this is what lets a VS Code window
+// watching its own workspace's mirror copy observe an event whose primary
+// copy landed in a different project's .xit dir because the AI's cwd
+// differed from the VS Code workspace root.
+func TestAppendEventMirrorsToGlobalHome(t *testing.T) {
+	home := filepath.Join(t.TempDir(), ".xit")
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	t.Setenv("VSCODE_PID", "4242")
+
+	if _, ok := StartClaudeIfVSCode(home, workspace, "xit auto go test ./...", time.Now()); !ok {
+		t.Fatal("expected started bridge event")
+	}
+
+	primary := readEvents(t, home)
+	if len(primary) != 1 {
+		t.Fatalf("expected 1 primary event, got %d", len(primary))
+	}
+
+	var found *Event
+	for _, e := range readEvents(t, MirrorHome()) {
+		if e.RunID == primary[0].RunID {
+			found = &e
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected an event with run_id %s to be mirrored into MirrorHome()", primary[0].RunID)
+	}
+	if found.WorkspaceHash != primary[0].WorkspaceHash {
+		t.Fatalf("mirrored event does not match primary event: mirror=%+v primary=%+v", found, primary[0])
+	}
+}
+
+// TestAppendEventDoesNotDuplicateWhenHomeIsAlreadyTheMirror: if a caller's
+// home already resolves to the same path as MirrorHome() (e.g. XIT_HOME and
+// XIT_VSCODE_BRIDGE_HOME both point at the same directory), the event must
+// be appended exactly once, not twice.
+func TestAppendEventDoesNotDuplicateWhenHomeIsAlreadyTheMirror(t *testing.T) {
+	shared := filepath.Join(t.TempDir(), ".xit")
+	t.Setenv("XIT_VSCODE_BRIDGE_HOME", shared)
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	t.Setenv("VSCODE_PID", "4242")
+
+	if !StartTurnIfVSCode(shared, workspace, AdapterClaude, SurfaceClaudeCode, time.Now()) {
+		t.Fatal("expected turn.started to be recorded")
+	}
+	events := readEvents(t, shared)
+	if len(events) != 1 {
+		t.Fatalf("expected exactly 1 event (no duplicate write), got %d", len(events))
 	}
 }
 

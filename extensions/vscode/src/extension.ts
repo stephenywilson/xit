@@ -9,8 +9,10 @@ import {
   promptRunWithAutoCompression,
   type VsCodeCommandRunRequest,
 } from "./runner";
+import { initializeHookCursor, readAppendedHookEvents, type HookFileCursor } from "./bridge-cursor";
 import type {
   AdapterEvent,
+  BridgeDiagnostics,
   CurrentRunState,
   LatestRun,
   LiveStatusView,
@@ -129,16 +131,46 @@ interface ActiveRunIdentity {
   rawLog?: string;
 }
 
-interface HookFileCursor {
-  offset: number;
-  inode?: number;
-  mtimeMs: number;
-  lastLineSignature?: string;
-  remainder: string;
-}
-
 let activeRunIdentity: ActiveRunIdentity | undefined;
 let activeVsCodeRun: ActiveVsCodeRun | undefined;
+
+// Hidden/internal diagnostics for the bridge watcher(s) — surfaced via "XiT:
+// Diagnose AI Workflow", never via the status bar/Dashboard themselves. Only
+// timestamps, counters, and already-hashed signals; see BridgeDiagnostics.
+const bridgeDiagnostics: BridgeDiagnostics = {
+  accepted_event_count: 0,
+  dropped_event_count: 0,
+  watcher_alive: false,
+  event_file_path: [],
+};
+
+// The Go-side hook now dual-writes every bridge event into both the
+// project-local file AND a global mirror file (see internal/vscodebridge
+// MirrorHome()), so that an event survives even when the AI's cwd at the
+// time differs from this workspace root. In the common case (AI never cd's
+// elsewhere) BOTH files receive the very same event — this cap-bounded
+// recent-keys set is what stops that dual-write from being processed twice.
+const RECENT_BRIDGE_EVENT_KEY_CAP = 200;
+const recentBridgeEventKeys: string[] = [];
+const recentBridgeEventKeySet = new Set<string>();
+
+function hasProcessedBridgeEvent(key: string): boolean {
+  return recentBridgeEventKeySet.has(key);
+}
+
+function markBridgeEventProcessed(key: string): void {
+  if (recentBridgeEventKeySet.has(key)) {
+    return;
+  }
+  recentBridgeEventKeySet.add(key);
+  recentBridgeEventKeys.push(key);
+  if (recentBridgeEventKeys.length > RECENT_BRIDGE_EVENT_KEY_CAP) {
+    const oldest = recentBridgeEventKeys.shift();
+    if (oldest !== undefined) {
+      recentBridgeEventKeySet.delete(oldest);
+    }
+  }
+}
 
 function getRefreshIntervalMs(): number {
   const cfg = vscode.workspace.getConfiguration("xit");
@@ -936,6 +968,14 @@ async function updateStatusBar(): Promise<void> {
   if (!statusBarItem) {
     return;
   }
+  // Defensive: nothing in this codebase should hide the status bar item
+  // once created (other than the user disabling xit.enableStatusBar), but a
+  // stuck-looking "准备就绪" has repeatedly turned out to be a status bar
+  // that silently lost its visible state. Re-asserting .show() on every
+  // update is cheap and rules that class of bug out entirely.
+  if (isEnabled()) {
+    statusBarItem.show();
+  }
 
   const workspaceSnapshot = resolveActiveXitWorkspace();
   const status = await fetchStatus(workspaceSnapshot);
@@ -1127,6 +1167,9 @@ async function updateStatusBar(): Promise<void> {
 async function updateStatusBarLive(): Promise<void> {
   if (!statusBarItem) {
     return;
+  }
+  if (isEnabled()) {
+    statusBarItem.show();
   }
 
   const workspaceSnapshot = resolveActiveXitWorkspace();
@@ -1325,20 +1368,83 @@ function logBridgeDiagnostic(message: string): void {
   appendOutput(`[XiT Bridge] ${message}`);
 }
 
+// Mirrors internal/vscodebridge.MirrorHome() on the Go side: same env var,
+// same default. The two sides must resolve to the same filesystem path for
+// the mirror watcher (below) to ever observe what the Go-side hook wrote —
+// this is plain os.homedir()/.xit in the overwhelming majority of setups,
+// since both the VS Code extension host and the AI CLI's hook subprocess
+// run as the same OS user on the same machine.
+function resolveBridgeMirrorHome(): string {
+  const configured = process.env.XIT_VSCODE_BRIDGE_HOME;
+  if (configured) {
+    return configured;
+  }
+  return path.join(os.homedir(), ".xit");
+}
+
+interface BridgeEventSource {
+  label: "primary" | "mirror";
+  bridgeFile: string;
+  watcher: vscode.FileSystemWatcher;
+  cursor: HookFileCursor;
+}
+
 function registerVscodeAiBridgeWatcher(context: vscode.ExtensionContext): void {
   const workspacePath = resolveActiveXitWorkspace();
-  const bridgeFile = path.join(workspacePath, ".xit", "events", "vscode-ai-bridge.jsonl");
-  const cursor = initializeHookCursor(bridgeFile);
-  // Base the watcher on the workspace root (always exists), not on
-  // .xit/events (which may not exist yet on a fresh workspace — a watcher
-  // rooted at a non-existent directory may never attach and silently miss
-  // the file's later creation).
-  const watcher = vscode.workspace.createFileSystemWatcher(
-    new vscode.RelativePattern(workspacePath, ".xit/events/vscode-ai-bridge.jsonl"),
-  );
+  const primaryFile = path.join(workspacePath, ".xit", "events", "vscode-ai-bridge.jsonl");
+  const mirrorHome = resolveBridgeMirrorHome();
+  const mirrorFile = path.join(mirrorHome, "events", "vscode-ai-bridge.jsonl");
 
-  const handleBridgeChange = async (): Promise<void> => {
-    const appended = readAppendedHookEvents(bridgeFile, cursor) as unknown[];
+  // Base each watcher on a directory that always exists (the workspace root,
+  // or the user's home directory), not on .xit/events itself (which may not
+  // exist yet on a fresh workspace/machine — a watcher rooted at a
+  // non-existent directory may never attach and silently miss the file's
+  // later creation).
+  const sources: BridgeEventSource[] = [
+    {
+      label: "primary",
+      bridgeFile: primaryFile,
+      cursor: initializeHookCursor(primaryFile),
+      watcher: vscode.workspace.createFileSystemWatcher(
+        new vscode.RelativePattern(workspacePath, ".xit/events/vscode-ai-bridge.jsonl"),
+      ),
+    },
+  ];
+
+  // The mirror file is everything the primary watcher can't see by
+  // construction: when the AI's cwd at the time of a command differs from
+  // this workspace root (e.g. it cd'd into a different project mid-session),
+  // the Go-side hook's *primary* write lands in that OTHER project's .xit —
+  // but its dual-write always also lands here, in the global mirror.
+  if (path.resolve(mirrorFile) !== path.resolve(primaryFile)) {
+    // mirrorHome (typically ~/.xit) may not exist yet on a fresh machine —
+    // root the watcher at the home directory itself (which always exists)
+    // rather than mirrorHome, the same reasoning as the primary watcher
+    // above. Only falls back to mirrorHome directly for the advanced/test
+    // case where XIT_VSCODE_BRIDGE_HOME points outside the home directory.
+    const homeDir = os.homedir();
+    const relativeToHome = path.relative(homeDir, mirrorHome);
+    const mirrorWatchBase =
+      relativeToHome === "" ||
+      (!relativeToHome.startsWith(`..${path.sep}`) && relativeToHome !== ".." && !path.isAbsolute(relativeToHome))
+        ? homeDir
+        : mirrorHome;
+    const mirrorWatchPattern = path.relative(mirrorWatchBase, mirrorFile);
+    sources.push({
+      label: "mirror",
+      bridgeFile: mirrorFile,
+      cursor: initializeHookCursor(mirrorFile),
+      watcher: vscode.workspace.createFileSystemWatcher(
+        new vscode.RelativePattern(mirrorWatchBase, mirrorWatchPattern),
+      ),
+    });
+  }
+
+  bridgeDiagnostics.event_file_path = sources.map((s) => s.bridgeFile);
+  bridgeDiagnostics.watcher_alive = true;
+
+  const handleBridgeChange = async (source: BridgeEventSource): Promise<void> => {
+    const appended = readAppendedHookEvents(source.bridgeFile, source.cursor) as unknown[];
     let changed = false;
     for (const raw of appended) {
       const event = parseVscodeAiBridgeEvent(JSON.stringify(raw));
@@ -1346,21 +1452,46 @@ function registerVscodeAiBridgeWatcher(context: vscode.ExtensionContext): void {
         continue;
       }
       const kind = event.event; // "turn.started" | "run.started" | "run.finished" | "turn.finished"
+      const nowIso = new Date().toISOString();
+      bridgeDiagnostics.last_event_at = nowIso;
+      bridgeDiagnostics.last_event_workspace_hash = event.workspace_hash;
+      bridgeDiagnostics.last_event_host_instance_hash = event.host_instance_hash;
+      bridgeDiagnostics.last_event_source = source.label;
+      bridgeDiagnostics.current_workspace_hash = bridgeWorkspaceHash(workspacePath);
+
+      // The Go-side dual-write means the same logical event can arrive via
+      // both sources; without this, every run would be processed twice.
+      const dedupeKey = `${event.event}|${event.run_id}`;
+      if (hasProcessedBridgeEvent(dedupeKey)) {
+        continue;
+      }
+      markBridgeEventProcessed(dedupeKey);
+
       logBridgeDiagnostic(
-        `event received: ${kind} run=${shortHash(event.run_id)} ws=${shortHash(event.workspace_hash)} host=${shortHash(event.host_instance_hash)}`,
+        `event received: ${kind} run=${shortHash(event.run_id)} ws=${shortHash(event.workspace_hash)} host=${shortHash(event.host_instance_hash)} source=${source.label}`,
       );
       if (!bridgeEventIsFresh(event, bridgeActivatedAtMs)) {
+        bridgeDiagnostics.dropped_event_count++;
+        bridgeDiagnostics.last_dropped_event_at = nowIso;
+        bridgeDiagnostics.last_drop_reason = "stale_or_pre_activation";
         logBridgeDiagnostic(`ignored: event predates this VS Code session (stale or pre-activation) run=${shortHash(event.run_id)}`);
         continue;
       }
       const decision = classifyBridgeEvent(event, workspacePath);
       if (!decision.accepted) {
+        bridgeDiagnostics.dropped_event_count++;
+        bridgeDiagnostics.last_dropped_event_at = nowIso;
+        bridgeDiagnostics.last_drop_reason = decision.reason;
         logBridgeDiagnostic(
           `ignored: ${decision.reason} event=${shortHash(event.workspace_hash)} current=${shortHash(bridgeWorkspaceHash(workspacePath))}`,
         );
         continue;
       }
-      if (decision.soft) {
+      bridgeDiagnostics.accepted_event_count++;
+      bridgeDiagnostics.last_accepted_event_at = nowIso;
+      if (decision.crossWorkspace) {
+        logBridgeDiagnostic(`accepted: cross-workspace (host matches, workspace differs) run=${shortHash(event.run_id)} source=${source.label}`);
+      } else if (decision.soft) {
         logBridgeDiagnostic(`soft accepted: host_instance_hash mismatch run=${shortHash(event.run_id)}`);
       } else {
         logBridgeDiagnostic(`accepted: ${kind} run=${shortHash(event.run_id)}`);
@@ -1396,6 +1527,7 @@ function registerVscodeAiBridgeWatcher(context: vscode.ExtensionContext): void {
       changed = true;
     }
     if (changed && statusBarItem) {
+      statusBarItem.show();
       const status = await fetchStatus(workspacePath);
       updateDashboardIfOpen(status, buildLiveStatusOverride(workspacePath), workspacePath);
       logBridgeDiagnostic("dashboard refreshed");
@@ -1403,9 +1535,16 @@ function registerVscodeAiBridgeWatcher(context: vscode.ExtensionContext): void {
     }
   };
 
-  watcher.onDidChange(() => { void handleBridgeChange(); }, null, context.subscriptions);
-  watcher.onDidCreate(() => { void handleBridgeChange(); }, null, context.subscriptions);
-  context.subscriptions.push(watcher);
+  for (const source of sources) {
+    source.watcher.onDidChange(() => { void handleBridgeChange(source); }, null, context.subscriptions);
+    source.watcher.onDidCreate(() => { void handleBridgeChange(source); }, null, context.subscriptions);
+    context.subscriptions.push(source.watcher);
+  }
+  context.subscriptions.push({
+    dispose: () => {
+      bridgeDiagnostics.watcher_alive = false;
+    },
+  });
 }
 
 function resolveXiTHome(): string {
@@ -1472,66 +1611,6 @@ export function eventBelongsToWorkspace(
 export function hookEventIsFresh(event: AdapterEvent, now = Date.now()): boolean {
   const eventMs = parseIsoTimeMs(event.time);
   return eventMs !== undefined && Math.abs(now - eventMs) <= HOOK_EVENT_FRESH_MS;
-}
-
-export function initializeHookCursor(hookFile: string): HookFileCursor {
-  try {
-    const stat = fs.statSync(hookFile);
-    return {
-      offset: stat.size,
-      inode: stat.ino,
-      mtimeMs: stat.mtimeMs,
-      remainder: "",
-    };
-  } catch {
-    return { offset: 0, mtimeMs: 0, remainder: "" };
-  }
-}
-
-export function readAppendedHookEvents(
-  hookFile: string,
-  cursor: HookFileCursor,
-): AdapterEvent[] {
-  try {
-    const stat = fs.statSync(hookFile);
-    const replaced = cursor.inode !== undefined && stat.ino !== cursor.inode;
-    const truncated = stat.size < cursor.offset;
-    const start = replaced || truncated ? 0 : cursor.offset;
-    if (stat.size === start) {
-      cursor.inode = stat.ino;
-      cursor.mtimeMs = stat.mtimeMs;
-      return [];
-    }
-
-    const length = stat.size - start;
-    const buffer = Buffer.alloc(length);
-    const fd = fs.openSync(hookFile, "r");
-    try {
-      fs.readSync(fd, buffer, 0, length, start);
-    } finally {
-      fs.closeSync(fd);
-    }
-
-    cursor.offset = stat.size;
-    cursor.inode = stat.ino;
-    cursor.mtimeMs = stat.mtimeMs;
-
-    const chunks = `${cursor.remainder}${buffer.toString("utf-8")}`.split("\n");
-    cursor.remainder = chunks.pop() || "";
-    const events: AdapterEvent[] = [];
-    for (const line of chunks) {
-      if (!line.trim() || line === cursor.lastLineSignature) continue;
-      cursor.lastLineSignature = line;
-      try {
-        events.push(JSON.parse(line) as AdapterEvent);
-      } catch {
-        // Ignore malformed appended lines; a later complete line will be processed.
-      }
-    }
-    return events;
-  } catch {
-    return [];
-  }
 }
 
 function registerAdapterHookWatchers(context: vscode.ExtensionContext): void {
@@ -1672,6 +1751,20 @@ async function runDiagnose(): Promise<void> {
     "Agent conversation hooks:",
     ...hookLines,
     ...cannotReadChatNote,
+    "─".repeat(50),
+    "VS Code AI bridge watcher:",
+    `  watcher_alive:             ${bridgeDiagnostics.watcher_alive ? "yes" : "no"}`,
+    `  event_file_path:           ${bridgeDiagnostics.event_file_path.length > 0 ? bridgeDiagnostics.event_file_path.join(" | ") : "none"}`,
+    `  accepted_event_count:      ${bridgeDiagnostics.accepted_event_count}`,
+    `  dropped_event_count:       ${bridgeDiagnostics.dropped_event_count}`,
+    `  last_event_at:             ${bridgeDiagnostics.last_event_at || "none"}`,
+    `  last_accepted_event_at:    ${bridgeDiagnostics.last_accepted_event_at || "none"}`,
+    `  last_dropped_event_at:     ${bridgeDiagnostics.last_dropped_event_at || "none"}`,
+    `  last_drop_reason:          ${bridgeDiagnostics.last_drop_reason || "none"}`,
+    `  current_workspace_hash:    ${shortHash(bridgeDiagnostics.current_workspace_hash)}`,
+    `  last_event_workspace_hash: ${shortHash(bridgeDiagnostics.last_event_workspace_hash)}`,
+    `  last_event_host_hash:      ${shortHash(bridgeDiagnostics.last_event_host_instance_hash)}`,
+    `  last_event_source:         ${bridgeDiagnostics.last_event_source || "none"}`,
     "─".repeat(50),
     "Selected current turn:",
     `  adapter:   ${agentTurn.isFreshActive ? agentTurn.adapter : "none"}`,

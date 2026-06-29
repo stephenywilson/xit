@@ -265,11 +265,18 @@ export function bridgeWorkspaceHash(workspacePath: string): string {
   return bridgeHash(normalizeWorkspaceForBridge(workspacePath));
 }
 
-export function bridgeHostInstanceHash(vscodePid: string | undefined, workspacePath: string): string | undefined {
+// bridgeHostInstanceHash intentionally depends on vscodePid alone, not the
+// workspace path. It answers "is this the same VS Code window?" — folding
+// the workspace in (as an earlier version did) made that question
+// unanswerable for the one case it most needs to cover: the AI cd'd to a
+// different project's directory mid-session, so the command that produced
+// the event ran with a workspace path that differs from this window's own,
+// even though it's unmistakably the same window/host.
+export function bridgeHostInstanceHash(vscodePid: string | undefined): string | undefined {
   if (!vscodePid) {
     return undefined;
   }
-  return bridgeHash(`${vscodePid}\x00${normalizeWorkspaceForBridge(workspacePath)}`);
+  return bridgeHash(vscodePid);
 }
 
 function isHexSha256(value: unknown): value is string {
@@ -339,37 +346,53 @@ export function bridgeEventMatchesCurrentInstance(
   workspacePath: string,
   vscodePid = process.env.VSCODE_PID,
 ): boolean {
-  const hostHash = bridgeHostInstanceHash(vscodePid, workspacePath);
+  const hostHash = bridgeHostInstanceHash(vscodePid);
   return !!hostHash &&
     event.workspace_hash === bridgeWorkspaceHash(workspacePath) &&
     event.host_instance_hash === hostHash;
 }
 
 export type BridgeEventDecision =
-  | { accepted: true; soft: boolean }
+  | { accepted: true; soft: boolean; crossWorkspace?: boolean }
   | { accepted: false; reason: "workspace_hash_mismatch" };
 
-// workspace_hash is a hard requirement — it is the only signal that reliably
-// scopes an event to "this project". host_instance_hash is best-effort: it
-// is derived from VSCODE_PID, which is not guaranteed to be the same value
-// inside the Codex agent harness (Go side, writing the event) and inside
-// this VS Code extension host (TS side, reading it) — different spawn
-// points in the process tree can see different VSCODE_PID, or none at all.
-// Dropping every soft-mismatched event would mean a real Codex Chat Bridge
-// run for the right project is silently ignored. So: workspace match alone
-// is enough to accept (soft); an additional host_instance_hash match just
-// upgrades the same accept to "strong" for diagnostics.
+// workspace_hash is the primary signal that scopes an event to "this
+// project". host_instance_hash is best-effort: it is derived from
+// VSCODE_PID, which is not guaranteed to be the same value inside the Codex
+// agent harness / Claude hook process (Go side, writing the event) and
+// inside this VS Code extension host (TS side, reading it) — different
+// spawn points in the process tree can see different VSCODE_PID, or none at
+// all. Dropping every soft-mismatched event would mean a real Codex Chat
+// Bridge run for the right project is silently ignored. So: workspace match
+// alone is enough to accept (soft); an additional host_instance_hash match
+// just upgrades the same accept to "strong" for diagnostics.
+//
+// When workspace_hash does NOT match, the event is not automatically
+// rejected anymore: if host_instance_hash verifiably matches this exact
+// window's VSCODE_PID, the event is accepted as crossWorkspace — this is
+// the case where the AI ran a command from a different project's directory
+// than the one this VS Code window has open (e.g. `cd
+// ../other-project && xit auto ...` from inside the same Claude Code panel).
+// The command genuinely ran somewhere else (workspace_hash correctly
+// reflects that, and is never rewritten), but it is unmistakably the same
+// window/host, so the Dashboard/status bar must not silently freeze instead
+// of reflecting it. Only when NEITHER signal matches is the event dropped —
+// and the caller is expected to record reason "workspace_hash_mismatch" for
+// diagnostics rather than silently discarding it.
 export function classifyBridgeEvent(
   event: VscodeAiBridgeEvent,
   workspacePath: string,
   vscodePid = process.env.VSCODE_PID,
 ): BridgeEventDecision {
-  if (event.workspace_hash !== bridgeWorkspaceHash(workspacePath)) {
-    return { accepted: false, reason: "workspace_hash_mismatch" };
-  }
-  const hostHash = bridgeHostInstanceHash(vscodePid, workspacePath);
+  const hostHash = bridgeHostInstanceHash(vscodePid);
   const hostInstanceMatch = !!hostHash && event.host_instance_hash === hostHash;
-  return { accepted: true, soft: !hostInstanceMatch };
+  if (event.workspace_hash === bridgeWorkspaceHash(workspacePath)) {
+    return { accepted: true, soft: !hostInstanceMatch };
+  }
+  if (hostInstanceMatch) {
+    return { accepted: true, soft: false, crossWorkspace: true };
+  }
+  return { accepted: false, reason: "workspace_hash_mismatch" };
 }
 
 export function bridgeEventIsFresh(event: VscodeAiBridgeEvent, activatedAtMs: number, nowMs = Date.now()): boolean {

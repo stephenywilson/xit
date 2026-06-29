@@ -13,11 +13,33 @@ XiT / 吸T神功 是面向 AI Coding 工作流的本地终端输出压缩层：�
 XiT / 吸T神功 is a local output-compression layer for AI coding workflows. It routes noisy terminal output through `xit auto`, keeps raw logs locally, and shows estimated Token savings in supported CLI / IDE surfaces.
 
 [![npm](https://img.shields.io/npm/v/xitsg?color=56f5a3&label=xitsg&style=flat-square)](https://www.npmjs.com/package/xitsg)
+[![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/XiT.xit-vscode?color=0098ff&label=VS%20Code&style=flat-square)](https://marketplace.visualstudio.com/items?itemName=XiT.xit-vscode)
+[![GitHub release](https://img.shields.io/github/v/release/stephenywilson/xit?color=8a63d2&style=flat-square)](https://github.com/stephenywilson/xit/releases)
 [![Go](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat-square&logo=go)](https://go.dev)
 [![License](https://img.shields.io/badge/license-MIT-b8860b?style=flat-square)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-6b7280?style=flat-square)](#npm-包说明)
 
+**当前版本 / Current release** — CLI / npm `xitsg@0.2.48` · VS Code Extension `0.0.34` · GitHub Release `v0.2.48`
+
 </div>
+
+---
+
+## 最新版 / Latest: 0.2.48 · VS Code 0.0.34
+
+**0.2.48 / VS Code 0.0.34 是一个紧急 hotfix**，修复了 Dashboard / 状态栏多轮使用后可能不再更新的问题，尤其是 AI agent 在同一个 VS Code 窗口里切换到其他项目目录（cwd）执行命令的场景。
+
+This hotfix restores reliable VS Code Dashboard / Status Bar updates across repeated AI workflow runs, including cases where an AI agent changes cwd outside the current VS Code workspace.
+
+主要修复点：
+
+- Go 侧新增 global VS Code bridge **mirror event file**，跨 workspace 场景下事件仍可被当前窗口读到。
+- VS Code 扩展同时 watch primary event file 与 mirror event file。
+- 新增 `host_instance_hash` corroboration，使同一窗口内的 AI 事件即便命令 cwd 与 workspace root 不一致也能被接受。
+- watcher resilience：容忍坏 JSON / 半行 / 截断 / 轮转 / 重复事件。
+- bridge 诊断信息不暴露 prompt、命令、终端输出或完整 session id。
+
+> 此 hotfix 需要同时升级 `xitsg@0.2.48` 与 VS Code 扩展 `0.0.34` 才能完整生效。
 
 ---
 
@@ -63,12 +85,12 @@ xit --version
 Expected:
 
 ```text
-xit version 0.2.47
+xit version 0.2.48
 ```
 
 ## VS Code Extension
 
-XiT is available as a VS Code extension: **吸T神功（XiT）**, current version `0.0.33`.
+XiT is available as a VS Code extension: **吸T神功（XiT）**, current version `0.0.34`. Install "XiT" from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=XiT.xit-vscode).
 
 - **Status Bar**: live XiT state（守护中 / 正在吸T / 神功正在收工 / 本次省 约 X.XXk Token）
 - **Dashboard**: 本轮发功（本次省 / 本轮共吸 / 降噪率 / 状态）/ 今日功力 / 功力累计
@@ -168,8 +190,8 @@ XiT 不替你写代码，也不上传日志。它只做一件事：把终端噪�
 | **Codex CLI** | ✅ done | AGENTS.md rules + PreToolUse hook observe + hitrate；bottom statusLine unsupported by current Codex CLI |
 | **Aider** | ✅ rules adapter | `.aider.conf.yml` + `XIT_AIDER.md`；hooks/statusLine not available |
 | **OpenCode** | ✅ hook/reroute | `tool.execute.before` hook reroute + AI 直接写 `xit auto` 时自动注入 OpenCode 上下文 + 工具输出显示中文吸T神功摘要；暂不支持 OpenCode 主界面常驻 statusline/footer |
-| **Cursor** | ✅ hook observe + strict | `beforeShellExecution` observe + strict mode GUI ask + hitrate；reroute/statusLine not enabled |
-| **VS Code Extension** | ✅ done（`0.0.33`） | Status Bar + Dashboard（本轮发功/今日功力/功力累计）+ Codex Chat Bridge + Claude Code panel bridge（deny + 推荐 retry + fallback） |
+| **Cursor** | 🧪 Experimental / Observe | `beforeShellExecution` observe + strict mode GUI ask + hitrate；reroute/statusLine not enabled，不做完整支持承诺 |
+| **VS Code Extension** | ✅ Supported（`0.0.34`） | Status Bar + Dashboard（本轮发功/今日功力/功力累计）+ Codex Chat Bridge + Claude Code panel bridge（deny + 推荐 retry + fallback finalization） |
 | **DeepSeek 系 CLI** | 📋 planned | 调研中 |
 | **Gemini** | 📋 not yet supported / planned | 暂未实现，不做未验证承诺 |
 
@@ -274,7 +296,7 @@ xit auto --help     # 查看帮助
 - Cursor 适配（beforeShellExecution observe + strict mode GUI ask + hitrate）
 - OpenCode 适配（`tool.execute.before` hook reroute + 工具输出中文摘要；主界面 statusline/footer 暂不支持）
 - npm 全平台分发（macOS / Linux / Windows）
-- VS Code extension `0.0.33` 已发布到 Visual Studio Marketplace（Status Bar + Dashboard + Codex Chat Bridge + Claude Code panel bridge）
+- VS Code extension `0.0.34` 已发布到 Visual Studio Marketplace（Status Bar + Dashboard + Codex Chat Bridge + Claude Code panel bridge）
 
 **近期**
 

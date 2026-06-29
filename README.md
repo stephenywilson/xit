@@ -27,19 +27,16 @@ XiT / 吸T神功 is a local output-compression layer for AI coding workflows. It
 
 ## 最新版 / Latest: 0.2.48 · VS Code 0.0.34
 
-**0.2.48 / VS Code 0.0.34 是一个紧急 hotfix**，修复了 Dashboard / 状态栏多轮使用后可能不再更新的问题，尤其是 AI agent 在同一个 VS Code 窗口里切换到其他项目目录（cwd）执行命令的场景。
+0.2.48 / VS Code 0.0.34 is a reliability hotfix for the VS Code extension.
 
-This hotfix restores reliable VS Code Dashboard / Status Bar updates across repeated AI workflow runs, including cases where an AI agent changes cwd outside the current VS Code workspace.
+It improves Dashboard and Status Bar updates across repeated AI workflow runs, including cases where an AI agent changes directories during a session. Users should upgrade both the CLI package and the VS Code extension for the fix to take effect.
 
-主要修复点：
+0.2.48 / VS Code 0.0.34 是 VS Code 扩展稳定性 hotfix，提升了 Dashboard / 状态栏在多轮 AI 工作流中的更新可靠性，尤其是 AI agent 在会话中切换目录执行命令的场景。请同时升级 CLI 与 VS Code 扩展。
 
-- Go 侧新增 global VS Code bridge **mirror event file**，跨 workspace 场景下事件仍可被当前窗口读到。
-- VS Code 扩展同时 watch primary event file 与 mirror event file。
-- 新增 `host_instance_hash` corroboration，使同一窗口内的 AI 事件即便命令 cwd 与 workspace root 不一致也能被接受。
-- watcher resilience：容忍坏 JSON / 半行 / 截断 / 轮转 / 重复事件。
-- bridge 诊断信息不暴露 prompt、命令、终端输出或完整 session id。
+> 隐私不变：无遥测，raw log 留在本地，XiT 不上传终端输出、prompt、AI 回复或完整 session id。
+> No telemetry. Raw logs stay local. XiT does not upload terminal output, prompts, AI replies, or full session ids.
 
-> 此 hotfix 需要同时升级 `xitsg@0.2.48` 与 VS Code 扩展 `0.0.34` 才能完整生效。
+完整变更记录见 [docs/releases/](docs/releases/)。
 
 ---
 

@@ -16,6 +16,12 @@ binding = "METRICS_DB"
 database_name = "xit-metrics"
 database_id = "9846074c-ad3f-4179-9ef2-1faaa62c8a39"
 
+# --- Scheduled (cron) --------------------------------------------------------
+# Daily at 00:10 UTC: refresh external public counters (npm downloads, optional
+# VS Code installs) into external_stats_snapshots. Fail-open in scheduled().
+[triggers]
+crons = ["10 0 * * *"]
+
 # --- KV (optional rate limiting) ---------------------------------------------
 # [[kv_namespaces]]
 # binding = "RATE_LIMIT_KV"

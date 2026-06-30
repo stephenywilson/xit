@@ -29,6 +29,24 @@ CREATE INDEX IF NOT EXISTS idx_metrics_ts      ON metrics_events (ts);
 CREATE INDEX IF NOT EXISTS idx_metrics_adapter ON metrics_events (adapter);
 CREATE INDEX IF NOT EXISTS idx_metrics_version ON metrics_events (cli_version);
 
+-- External (public) download / install counters for the dashboard.
+--
+-- These are PUBLIC aggregate counters, not user data: npm download totals and
+-- (optionally) VS Code Marketplace cumulative installs. A daily scheduled
+-- (cron) handler upserts one row per (day, source, metric). No identifier,
+-- request body, or per-user field is ever stored here.
+CREATE TABLE IF NOT EXISTS external_stats_snapshots (
+  day        TEXT    NOT NULL,            -- UTC date, YYYY-MM-DD
+  source     TEXT    NOT NULL,            -- npm | vscode_marketplace
+  metric     TEXT    NOT NULL,            -- downloads_last_day | installs | ...
+  value      INTEGER NOT NULL,
+  raw_json   TEXT,
+  created_at TEXT    NOT NULL,
+  PRIMARY KEY (day, source, metric)
+);
+
+CREATE INDEX IF NOT EXISTS idx_external_source ON external_stats_snapshots (source, metric);
+
 -- Example aggregation: saved tokens per day per adapter.
 --
 --   SELECT substr(ts, 1, 10) AS day, adapter,

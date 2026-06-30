@@ -18,6 +18,9 @@
 
 import { validateMetrics, MAX_BODY_BYTES } from "./validate.js";
 import { computeStats } from "./stats.js";
+import { computeDashboard, isValidRange } from "./dashboard.js";
+import { readExternal, runScheduled } from "./external.js";
+import { DASHBOARD_HTML } from "./page.js";
 
 // Version-check payload. In production this is best served from config/KV so it
 // can change without a redeploy; inline default keeps the Worker self-contained.
@@ -69,7 +72,37 @@ export default {
       return handleStats(env);
     }
 
+    // Visual dashboard (static HTML). The page fetches /api/dashboard itself.
+    if (request.method === "GET" && pathname === "/dashboard") {
+      return new Response(DASHBOARD_HTML, {
+        status: 200,
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+          "cache-control": "public, max-age=300",
+        },
+      });
+    }
+
+    // Aggregate-only dashboard JSON. ?range=1d|7d|30d|180d|365d|all (default
+    // 30d). Returns summary, by_adapter, by_cli_version, by_vscode_version,
+    // daily_trend, adapter_daily_trend, and external (public) counters. Never
+    // returns any per-user / per-install / per-run identifier.
+    if (request.method === "GET" && pathname === "/api/dashboard") {
+      return handleDashboard(url, env);
+    }
+
     return json({ error: "not found" }, 404);
+  },
+
+  // Daily cron (see wrangler.toml [triggers]). Refreshes external public
+  // counters (npm downloads, optional VS Code installs). Fail-open: a fetch or
+  // storage error is swallowed so a bad run never wedges the schedule.
+  async scheduled(event, env, ctx) {
+    try {
+      await runScheduled(env);
+    } catch {
+      /* fail-open: never throw out of scheduled() */
+    }
   },
 };
 
@@ -103,6 +136,28 @@ async function handleStats(env) {
     return json(await computeStats(env.METRICS_DB));
   } catch {
     return json({ error: "stats unavailable" }, 503);
+  }
+}
+
+async function handleDashboard(url, env) {
+  const range = url.searchParams.get("range") || "30d";
+  if (!isValidRange(range)) {
+    return json(
+      { error: "invalid range (use 1d|7d|30d|180d|365d|all)" },
+      400,
+      { "access-control-allow-origin": "*" },
+    );
+  }
+  const db = env && env.METRICS_DB ? env.METRICS_DB : null;
+  try {
+    const external = await readExternal(db, env);
+    const payload = await computeDashboard(db, range, external);
+    // Read-only aggregate; safe to expose to any origin for the dashboard page.
+    return json(payload, 200, { "access-control-allow-origin": "*" });
+  } catch {
+    return json({ error: "dashboard unavailable" }, 503, {
+      "access-control-allow-origin": "*",
+    });
   }
 }
 

@@ -690,14 +690,25 @@ export function computeLiveRunView(
     const isFailed = liveStatus.exitCode !== 0;
     const reductionPct = isFailed ? undefined : computeReductionPct(liveStatus.savedBytes, liveStatus.summaryBytes);
     const runCount = liveStatus.runCount;
+    // "无需发功", not a fake "成功 · 0 Token · 0次 · 0%": a finished run that
+    // compressed nothing AND has no counted runs did no real work. Presenting
+    // that as a success with all-zero metrics is exactly the misleading panel
+    // the user reported. A real success keeps "成功".
+    const savedTokens = getSavedTokens(liveStatus.savedTokens, liveStatus.savedBytes) ?? 0;
+    // A non-zero saved-tokens DISPLAY (e.g. "约 9.00k Token") is itself
+    // evidence of real work even when the numeric fields aren't carried on the
+    // status — only "0 Token"/empty counts as nothing saved.
+    const hasRealSaving =
+      (!!liveStatus.savedTokensDisplay && liveStatus.savedTokensDisplay !== "0 Token") || savedTokens > 0;
+    const noWork = !isFailed && !hasRealSaving && (runCount === undefined || runCount <= 0);
     return {
       reportPanelActive: true,
       subtitle: "本次会话的最新结果",
       savedDisplay: liveStatus.savedTokensDisplay || "—",
       reductionDisplay: formatReductionPct(reductionPct),
       runCountDisplay: formatRunCount(runCount),
-      statusDisplay: isFailed ? "失败" : "成功",
-      savedHighlight: !!liveStatus.savedTokensDisplay && !isFailed,
+      statusDisplay: isFailed ? "失败" : noWork ? "无需发功" : "成功",
+      savedHighlight: hasRealSaving && !isFailed && !noWork,
       reductionHighlight: typeof reductionPct === "number" && reductionPct > 0,
       runCountHighlight: typeof runCount === "number" && runCount > 0,
     };
@@ -722,6 +733,9 @@ export function computeLiveRunView(
         : typeof currentRunState.estimated_reduction === "number" && currentRunState.estimated_reduction > 0
           ? currentRunState.estimated_reduction * 100
           : computeReductionPct(savedBytesValue, currentRunState.summary_bytes);
+      // A completed run that saved nothing is "无需发功", not a 0-Token
+      // "成功" — same honesty rule as the bridge branch above.
+      const noWork = !isFailed && savedTokens <= 0;
       return {
         reportPanelActive: true,
         subtitle: "本次会话的最新结果",
@@ -731,7 +745,7 @@ export function computeLiveRunView(
         // local fact (not derived from any Codex turn counter), never
         // fabricated.
         runCountDisplay: "1次",
-        statusDisplay: isFailed ? "失败" : "成功",
+        statusDisplay: isFailed ? "失败" : noWork ? "无需发功" : "成功",
         savedHighlight: savedTokens > 0,
         reductionHighlight: typeof reductionPct === "number" && reductionPct > 0,
         runCountHighlight: true,

@@ -82,6 +82,41 @@ type Event struct {
 	// RunCount is the same per-turn counter the Codex CLI footer reports as
 	// "本轮共吸 N次" — never a different (e.g. today's total) count.
 	RunCount *int `json:"run_count,omitempty"`
+
+	// Multi-channel attribution fields (CLI 0.2.49). All OPTIONAL and additive
+	// to the existing xit.vscode-ai-bridge.v1 schema — an old extension that
+	// doesn't know them simply ignores them, and a new one derives ChannelID
+	// itself when an old CLI omits it. None of these full values ever leave the
+	// machine (telemetry only carries adapter/surface aggregates).
+	//
+	//   ChannelID groups events from the same AI task/conversation/panel so
+	//     the VS Code Dashboard can keep concurrent tasks isolated. It is an
+	//     anonymous hash of (adapter|surface|host_instance_hash|workspace_hash)
+	//     — never a prompt/command/cwd/path/repo/username/full session id.
+	//   TurnID groups run.* events under one AI turn (best-effort).
+	//   EventID is a per-event unique id; the extension uses it to dedupe the
+	//     primary + mirror dual-write of the SAME logical event.
+	ChannelID string `json:"channel_id,omitempty"`
+	TurnID    string `json:"turn_id,omitempty"`
+	EventID   string `json:"event_id,omitempty"`
+}
+
+// ChannelID derives the anonymous, stable per-task channel id from signals
+// that are already anonymous/hashed. Same inputs the TS side uses in
+// deriveChannelId, so both compute an identical value. Never includes a
+// prompt, command, cwd, path, repo, username, or full session id.
+func ChannelID(adapter, surface, hostInstanceHash, workspaceHash string) string {
+	return SHA256Hex(strings.Join([]string{adapter, surface, hostInstanceHash, workspaceHash}, "|"))
+}
+
+// NewEventID returns a random per-event id used only for primary/mirror
+// dedupe on the extension side. Opaque; carries no meaning.
+func NewEventID() string {
+	var b [12]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "ev-" + SHA256Hex(time.Now().UTC().Format(time.RFC3339Nano))[:20]
+	}
+	return "ev-" + hex.EncodeToString(b[:])
 }
 
 // FinishResult carries the non-sensitive outcome fields FinishIfPending needs
@@ -534,6 +569,15 @@ func appendEventFile(home string, event Event) error {
 }
 
 func AppendEvent(home string, event Event) error {
+	// Stamp the multi-channel attribution fields ONCE, before the dual-write,
+	// so the primary file and the mirror file receive the very same event_id
+	// (the extension dedupes the dual-write by it) and channel_id.
+	if event.ChannelID == "" {
+		event.ChannelID = ChannelID(event.Adapter, event.Surface, event.HostInstanceHash, event.WorkspaceHash)
+	}
+	if event.EventID == "" {
+		event.EventID = NewEventID()
+	}
 	err := appendEventFile(home, event)
 	if mirror := MirrorHome(); mirror != "" && !samePath(mirror, home) {
 		_ = appendEventFile(mirror, event)

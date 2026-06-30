@@ -43,6 +43,77 @@ func stripEnv(env []string, key string) []string {
 	return out
 }
 
+// seedBlockedVersionCache writes a fresh ~/.xit/version-check.json under the
+// given fake HOME that declares the running CLI below-minimum, so the version
+// gate (which reads cache only on the hot path) evaluates to severity=blocked
+// without any network access.
+func seedBlockedVersionCache(t *testing.T, home string) {
+	t.Helper()
+	dir := filepath.Join(home, ".xit")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	body := map[string]any{
+		"latest_cli":  "99.0.0",
+		"min_cli":     "99.0.0", // current version < min => escalates to blocked
+		"severity":    "blocked",
+		"message":     "This XiT version is no longer supported.",
+		"npm_command": "npm install -g xitsg@latest",
+		"fetched_at":  time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	data, _ := json.Marshal(body)
+	if err := os.WriteFile(filepath.Join(dir, "version-check.json"), data, 0o644); err != nil {
+		t.Fatalf("write cache: %v", err)
+	}
+}
+
+// TestVersionBlockedRefusesAuto: severity=blocked must refuse the core
+// `xit auto` path (spec §六) — non-zero exit, with the upgrade command
+// printed and the user's command NEVER run. Fail-closed only for the core
+// path; never auto-installs.
+func TestVersionBlockedRefusesAuto(t *testing.T) {
+	bin := buildXit(t)
+	home := t.TempDir()
+	seedBlockedVersionCache(t, home)
+
+	marker := filepath.Join(t.TempDir(), "ran.txt")
+	cmd := exec.Command(bin, "auto", "sh", "-c", "echo hi > "+marker)
+	cmd.Env = append(noXitAdapterEnv(), "HOME="+home, "XIT_NONINTERACTIVE=1")
+	cmd.Env = stripEnv(cmd.Env, "XIT_API_BASE")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("blocked `xit auto` must exit non-zero; got success\n%s", out)
+	}
+	if _, statErr := os.Stat(marker); statErr == nil {
+		t.Fatal("blocked `xit auto` must NOT run the user's command")
+	}
+	if !strings.Contains(string(out), "npm install -g xitsg@latest") {
+		t.Fatalf("blocked output must show the upgrade command, got:\n%s", out)
+	}
+}
+
+// TestVersionBlockedNeverBlocksRecoveryCommands: even when blocked,
+// --version / doctor / telemetry / upgrade must keep working (spec §六.1) —
+// they are the user's only way to recover, and are dispatched before the gate.
+func TestVersionBlockedNeverBlocksRecoveryCommands(t *testing.T) {
+	bin := buildXit(t)
+	home := t.TempDir()
+	seedBlockedVersionCache(t, home)
+
+	for _, args := range [][]string{
+		{"--version"},
+		{"telemetry", "status"},
+		{"doctor"},
+	} {
+		cmd := exec.Command(bin, args...)
+		cmd.Env = append(noXitAdapterEnv(), "HOME="+home, "XIT_NONINTERACTIVE=1")
+		cmd.Env = stripEnv(cmd.Env, "XIT_API_BASE")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("`xit %s` must NOT be blocked by version gate: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+}
+
 // noXitAdapterEnv returns os.Environ() with XiT adapter env stripped so tests
 // are not affected by an outer shell running under an adapter.
 func noXitAdapterEnv() []string {
@@ -92,6 +163,17 @@ func TestNoNetworkCalls(t *testing.T) {
 	// an explicit `telemetry: false` field as a privacy declaration.
 	// Actual network telemetry is verified by the absence of net/http above.
 
+	// internal/telemetry and internal/updatecheck are the ONLY two packages
+	// allowed to make network calls — anonymous metrics ingest and the version
+	// check, both documented (docs/telemetry.md), opt-out, and fail-open. They
+	// are excluded here so the guard stays strict for every OTHER file (no
+	// other code path may ever reach the network), without false-positiving on
+	// the sanctioned egress points.
+	sanctioned := []string{
+		filepath.FromSlash("internal/telemetry/"),
+		filepath.FromSlash("internal/updatecheck/"),
+	}
+
 	root := "../../"
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -99,6 +181,11 @@ func TestNoNetworkCalls(t *testing.T) {
 		}
 		if info.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
+		}
+		for _, s := range sanctioned {
+			if strings.Contains(filepath.ToSlash(path), filepath.ToSlash(s)) {
+				return nil
+			}
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -305,8 +392,9 @@ func TestVersionOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("xit --version failed: %v", err)
 	}
-	if !strings.Contains(string(out), "0.2.48") {
-		t.Errorf("expected version 0.2.48, got: %s", out)
+	// Assert against the actual `version` const so this never drifts on a bump.
+	if !strings.Contains(string(out), version) {
+		t.Errorf("expected version %s, got: %s", version, out)
 	}
 }
 

@@ -275,6 +275,15 @@ export interface VscodeAiBridgeEvent {
   saved_bytes?: number;
   summary_bytes?: number;
   run_count?: number;
+  // Multi-channel attribution (added in CLI 0.2.49 / extension 0.0.35).
+  // All OPTIONAL so old v1 events still parse; the extension derives a
+  // channel_id locally from (adapter, surface, host_instance_hash,
+  // workspace_hash) when these are absent. channel_id/run_id/turn_id/event_id
+  // FULL values are never uploaded — they exist only for local Dashboard
+  // task isolation and primary/mirror dedupe.
+  channel_id?: string;
+  turn_id?: string;
+  event_id?: string;
 }
 
 // Internal/dev-console diagnostics for the VS Code AI bridge watcher(s).

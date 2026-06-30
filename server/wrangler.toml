@@ -1,0 +1,22 @@
+# Cloudflare Worker config for the XiT backend.
+
+name = "xit-api"
+main = "src/index.js"
+compatibility_date = "2026-01-01"
+workers_dev = true
+
+# --- Custom domain -----------------------------------------------------------
+[[routes]]
+pattern = "xit-api.stephenwilson.dev"
+custom_domain = true
+
+# --- D1 (metrics storage) ----------------------------------------------------
+[[d1_databases]]
+binding = "METRICS_DB"
+database_name = "xit-metrics"
+database_id = "9846074c-ad3f-4179-9ef2-1faaa62c8a39"
+
+# --- KV (optional rate limiting) ---------------------------------------------
+# [[kv_namespaces]]
+# binding = "RATE_LIMIT_KV"
+# id = "REPLACE_WITH_KV_NAMESPACE_ID"

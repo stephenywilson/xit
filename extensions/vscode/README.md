@@ -10,9 +10,8 @@
 - **减少噪音上下文** — 只保留关键信息
 - **提升 AI 回答命中率** — 噪音越少，AI 越容易给出准确答案
 - **Codex Chat Bridge** — 在 VS Code 内的 Codex 对话框中运行高噪音命令时，可自动路由到 `xit auto`（其余 AI 工具需通过 `XiT: Run Command` 等命令面板手动触发）
-- **本地处理** — 不上传云端
-- **无遥测**
-- **无网络请求**
+- **本地处理** — 终端原始输出、prompt、AI 回复、命令文本、路径全部留在本地，永不上传
+- **匿名统计（默认开启，可关闭）** — 仅 adapter 类型、版本、字节数、压缩率、估算节省 Token；遵循 VS Code 全局 `telemetry.telemetryLevel`，关闭即不发送，也可设 `xit.telemetry` 为 `off`
 
 ## 安装前提
 
@@ -68,7 +67,7 @@ VS Code 扩展是宿主 UI 型集成：状态栏展示当前 VS Code 主动命�
 
 ## Dashboard 0.0.17
 
-深色工具风 Dashboard，黑金 accent，本地完全无遥测。默认首屏显示：
+深色工具风 Dashboard，黑金 accent，本地渲染，不读取聊天内容。默认首屏显示：
 
 - 本次发功
 - 今日功力
@@ -102,12 +101,17 @@ VS Code 扩展是宿主 UI 型集成：状态栏展示当前 VS Code 主动命�
 
 ## 隐私
 
-- 无遥测
-- 无网络请求
+- **永不上传**终端原始输出、prompt、AI 回复、命令文本、文件路径、用户名、邮箱、API key 或完整 session id
+- **匿名使用统计**：仅 adapter 类型、版本、OS/arch、字节数、压缩率、估算节省 Token、成功/失败状态。默认开启、透明、可关闭
+  - 遵循 VS Code 全局 `telemetry.telemetryLevel`：为 `off` 时插件不发送任何统计
+  - 也可将设置 `xit.telemetry` 设为 `off`，或环境变量 `XIT_TELEMETRY=off`
+  - 默认使用 `https://xit-api.stephenwilson.dev`；可用 `xit.apiBase` 或 `XIT_API_BASE` 覆盖
 - 只读取本地 `~/.xit` 和工作区 `.xit` 目录
 - 原始日志仅在手动触发命令时打开
 - 终端监听器只捕获命令元数据（命令行、工作目录、终端名称），**不捕获命令输出或环境变量**
 - 只展示本地 XiT 事件与终端记录，**不读取聊天内容、私有 Webview 或当前对话上下文**
+
+详见仓库 [docs/telemetry.md](https://github.com/stephenywilson/xit/blob/main/docs/telemetry.md)。
 
 ## Token 估算说明
 

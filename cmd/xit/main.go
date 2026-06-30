@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/stephenywilson/xit/internal/aiderrulesinstall"
+	"github.com/stephenywilson/xit/internal/apibase"
 	"github.com/stephenywilson/xit/internal/autoshim"
 	"github.com/stephenywilson/xit/internal/autostate"
 	"github.com/stephenywilson/xit/internal/claudehook"
@@ -35,11 +36,18 @@ import (
 	"github.com/stephenywilson/xit/internal/runner"
 	"github.com/stephenywilson/xit/internal/session"
 	"github.com/stephenywilson/xit/internal/shim"
+	"github.com/stephenywilson/xit/internal/telemetry"
+	"github.com/stephenywilson/xit/internal/updatecheck"
 	"github.com/stephenywilson/xit/internal/vscodebridge"
 	"os/exec"
 )
 
-const version = "0.2.48"
+const version = "0.2.50"
+
+// vscodeExtensionVersion is the current VS Code extension version, surfaced in
+// upgrade guidance and the /v1/version comparison. Keep in sync with
+// extensions/vscode/package.json.
+const vscodeExtensionVersion = "0.0.35"
 
 func main() {
 	mode, rest := parseArgs(os.Args[1:])
@@ -164,6 +172,26 @@ func main() {
 		}
 	case "uninstall":
 		if err := cmdUninstall(rest[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	case "telemetry":
+		// Never blocked by version gate (privacy control must always work).
+		if err := cmdTelemetry(rest[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	case "upgrade":
+		// Never blocked by version gate (this is how users recover).
+		cmdUpgrade(rest[1:])
+		os.Exit(0)
+	case "update-check":
+		// Never blocked by version gate (it's a diagnostic). Performs a LIVE
+		// /v1/version check (bypassing the 24h cache) so users/CI can confirm
+		// the endpoint is reachable and see the current severity.
+		if err := cmdUpdateCheck(rest[1:]); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
@@ -424,6 +452,11 @@ Usage:
   xit gain                                           Show saved token statistics
   xit gain --json                                    Show saved token statistics as JSON
   xit raw <run-id>                                   Display a saved raw log
+  xit upgrade                                         Check for a newer XiT and show upgrade commands
+  xit update-check                                   Live /v1/version probe (endpoint reachability + severity)
+  xit telemetry status                               Show anonymous usage metrics status
+  xit telemetry off                                  Disable anonymous usage metrics
+  xit telemetry on                                   Enable anonymous usage metrics
   xit --version                                      Show version
   xit --help                                         Show this help
 
@@ -663,6 +696,36 @@ func cmdDoctor(args []string) string {
 		autoHookStatus = "claude official_hook"
 	}
 	b.WriteString(fmt.Sprintf("* auto hook:          %s\n", autoHookStatus))
+
+	// Telemetry status (privacy transparency).
+	teleEnabled, teleSource := telemetry.EnabledSource(home)
+	teleState := "off"
+	if teleEnabled {
+		teleState = "on"
+	}
+	b.WriteString("\nTelemetry:\n\n")
+	b.WriteString(fmt.Sprintf("* anonymous metrics: %s (%s)\n", teleState, teleSource))
+	b.WriteString("* never sent:        raw output, prompts, AI replies, commands, paths, ids\n")
+	b.WriteString("* disable:           xit telemetry off  (or XIT_TELEMETRY=off)\n")
+
+	// Version check (fail-open, cache-only so doctor stays fast/offline).
+	uc := updatecheck.NewClient(home, version)
+	uc.RefreshAsync()
+	vres := uc.CheckCachedOnly()
+	b.WriteString("\nVersion:\n\n")
+	b.WriteString(fmt.Sprintf("* cli:               %s\n", version))
+	b.WriteString(fmt.Sprintf("* vscode extension:  %s\n", vscodeExtensionVersion))
+	if vres.Available {
+		b.WriteString(fmt.Sprintf("* latest cli:        %s (severity: %s)\n", orUnknown(vres.Info.LatestCLI), vres.Severity))
+		if vres.UpgradeNeeded || vres.BelowMinimum {
+			b.WriteString("* action:            run `xit upgrade`\n")
+		} else {
+			b.WriteString("* action:            up to date\n")
+		}
+	} else {
+		b.WriteString("* latest cli:        unknown (offline or not configured)\n")
+	}
+
 	if !r.ConfigOK {
 		b.WriteString("\nRecommendation:\n")
 		b.WriteString("Run: xit init\n")
@@ -1669,11 +1732,59 @@ func cmdAuto(args []string) error {
 	// State file setup (fail-open).
 	home := xitHome()
 	workspaceCwd, _ := os.Getwd()
+
+	// Telemetry + version-check use the USER home (~/.xit) so the anonymous
+	// install id and version cache are stable across projects, independent of
+	// the project-local .xit used for run state above.
+	uHome := userXiTHome()
+	telemetrySurface := "cli"
+	if bridgeRunID != "" || os.Getenv("VSCODE_PID") != "" {
+		telemetrySurface = "bridge"
+	}
+	teleClient := telemetry.NewClient(uHome, version)
+	// High-risk gate: when the running version is required/blocked, refuse to
+	// drive the VS Code bridge (a high-risk path), but NEVER block the user's
+	// actual command — `xit auto` still runs and compresses normally.
+	gate := versionGate(uHome)
+	// severity=blocked is the one level that refuses the CORE path (`xit auto`
+	// itself), not just the bridge. We print the upgrade command and stop
+	// BEFORE running anything — but never auto-install, and never block when
+	// version info is unavailable (network failure => fail-open). info/
+	// recommended only prompt; required strongly urges but still runs.
+	if gate.ShouldBlockCorePath() {
+		fmt.Fprintf(os.Stderr, "xit: this version is blocked (severity: %s) and `xit auto` is disabled.\n", gate.Severity)
+		if msg := strings.TrimSpace(gate.Info.Message); msg != "" {
+			fmt.Fprintf(os.Stderr, "xit: %s\n", msg)
+		}
+		fmt.Fprintf(os.Stderr, "xit: upgrade required — run:\n    %s\n", gate.UpgradeCommand())
+		return fmt.Errorf("xit auto blocked: version out of date (run %s)", gate.UpgradeCommand())
+	}
+	bridgeBlocked := gate.ShouldBlockHighRisk()
+	if bridgeBlocked {
+		fmt.Fprintf(os.Stderr, "xit: this version is out of date (%s); VS Code bridge disabled. Run `xit upgrade`.\n", gate.Severity)
+	}
+	// emitTelemetry sends a single privacy-safe run.finished event (fail-open).
+	emitTelemetry := func(status, errorKind string, inputBytes, summaryBytes, savedBytes, runCount int) {
+		teleClient.EmitSync(telemetry.Metrics{
+			Event:        "run.finished",
+			Adapter:      xcAdapter,
+			Surface:      telemetrySurface,
+			InputBytes:   inputBytes,
+			SummaryBytes: summaryBytes,
+			SavedBytes:   savedBytes,
+			RunCount:     runCount,
+			Status:       status,
+			ErrorKind:    errorKind,
+		})
+	}
 	// finishBridge's summaryBytes/runCount default to 0 for early-exit call
 	// sites that run before a real summary/turn-count exists yet — which
 	// matches what the Codex CLI footer would show for those same cases
 	// (its own turn counter is also untouched at that point).
 	finishBridge := func(exitCode, savedBytes, summaryBytes, runCount int) {
+		if bridgeBlocked {
+			return // high-risk path disabled for out-of-date versions
+		}
 		if savedBytes < 0 {
 			savedBytes = 0
 		}
@@ -1719,6 +1830,7 @@ func cmdAuto(args []string) error {
 			"raw_log":        "",
 		})
 		finishBridge(-1, 0, 0, 0)
+		emitTelemetry("error", "command_failed", 0, 0, 0, 0)
 		return fmt.Errorf("cannot find original %s path", tool)
 	}
 
@@ -1739,6 +1851,7 @@ func cmdAuto(args []string) error {
 	writeState(baseRunningState)
 
 	stopHeartbeat := make(chan struct{})
+	var stopHeartbeatOnce sync.Once
 	var heartbeatWG sync.WaitGroup
 	heartbeatWG.Add(1)
 	go func() {
@@ -1763,12 +1876,18 @@ func cmdAuto(args []string) error {
 			}
 		}
 	}()
-	defer func() {
-		close(stopHeartbeat)
-		heartbeatWG.Wait()
-	}()
+	stopHeartbeatNow := func() {
+		stopHeartbeatOnce.Do(func() {
+			close(stopHeartbeat)
+			heartbeatWG.Wait()
+		})
+	}
+	defer stopHeartbeatNow()
 
 	res, err := runner.Run(actualArgs)
+	// Once the child command exits, no later write should be able to resurrect
+	// a stale "running" state over settling/completed.
+	stopHeartbeatNow()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "xit: auto run error:", err)
 		now := time.Now().UTC().Format(time.RFC3339)
@@ -1785,6 +1904,7 @@ func cmdAuto(args []string) error {
 			"raw_log":        rawLogPath,
 		})
 		finishBridge(-1, 0, 0, 0)
+		emitTelemetry("error", "command_failed", 0, 0, 0, 0)
 		return err
 	}
 
@@ -1815,6 +1935,7 @@ func cmdAuto(args []string) error {
 			"raw_log":              rawLogPath,
 		})
 		finishBridge(res.ExitCode, 0, rawBytes, 0)
+		emitTelemetry(runStatus(res.ExitCode), runErrorKind(res.ExitCode), rawBytes, rawBytes, 0, 0)
 		return nil
 	}
 
@@ -1847,6 +1968,7 @@ func cmdAuto(args []string) error {
 			"raw_log":              res.RawLogPath,
 		})
 		finishBridge(res.ExitCode, 0, rawBytes, 0)
+		emitTelemetry("error", "parse_failed", rawBytes, rawBytes, 0, 0)
 		return nil
 	}
 
@@ -1990,8 +2112,213 @@ func cmdAuto(args []string) error {
 		runCount = claudeRunCount
 	}
 	finishBridge(res.ExitCode, savedBytes, summaryBytes, runCount)
+	emitTelemetry(runStatus(res.ExitCode), runErrorKind(res.ExitCode), rawBytes, summaryBytes, savedBytes, runCount)
 
 	return nil
+}
+
+// runStatus maps an exit code to a telemetry status.
+func runStatus(exitCode int) string {
+	if exitCode == 0 {
+		return "success"
+	}
+	return "error"
+}
+
+// runErrorKind maps an exit code to a telemetry error_kind.
+func runErrorKind(exitCode int) string {
+	if exitCode == 0 {
+		return "none"
+	}
+	return "command_failed"
+}
+
+// cmdTelemetry implements: xit telemetry on|off|status
+func cmdTelemetry(args []string) error {
+	home := userXiTHome()
+	sub := "status"
+	if len(args) > 0 {
+		sub = strings.ToLower(args[0])
+	}
+	switch sub {
+	case "on", "enable":
+		if err := telemetry.SetEnabled(home, true); err != nil {
+			return err
+		}
+		fmt.Println("XiT anonymous usage metrics: ON")
+		fmt.Println("匿名使用统计：已开启。可随时用 `xit telemetry off` 关闭。")
+		return nil
+	case "off", "disable":
+		if err := telemetry.SetEnabled(home, false); err != nil {
+			return err
+		}
+		fmt.Println("XiT anonymous usage metrics: OFF")
+		fmt.Println("匿名使用统计：已关闭。XiT 不会再发送任何使用统计。")
+		return nil
+	case "status":
+		enabled, source := telemetry.EnabledSource(home)
+		state := "off"
+		if enabled {
+			state = "on"
+		}
+		fmt.Println("XiT Telemetry")
+		fmt.Println()
+		fmt.Printf("status:        %s\n", state)
+		fmt.Printf("source:        %s\n", source)
+		fmt.Printf("install_id:    %s\n", telemetry.InstallID(home))
+		fmt.Printf("endpoint:      %s\n", orUnknown(apibase.Resolve()))
+		fmt.Printf("endpoint src:  %s\n", apibase.Source())
+		fmt.Println()
+		fmt.Println("collected:     adapter, version, os/arch, byte counts, compression ratio,")
+		fmt.Println("               estimated saved tokens, success/error status")
+		fmt.Println("never sent:    raw output, prompts, AI replies, command text, file paths,")
+		fmt.Println("               usernames, emails, API keys, full session ids")
+		fmt.Println()
+		fmt.Println("disable with:  xit telemetry off   (or XIT_TELEMETRY=off)")
+		return nil
+	default:
+		return fmt.Errorf("usage: xit telemetry on|off|status")
+	}
+}
+
+// cmdUpdateCheck implements: xit update-check — a live /v1/version probe.
+// Unlike the cached hot-path gate, this always hits the network so it can be
+// used to confirm a (local or production) endpoint is reachable. Fail-open:
+// with no endpoint configured it explains that, never erroring.
+func cmdUpdateCheck(args []string) error {
+	jsonOut := false
+	for _, a := range args {
+		if a == "--json" {
+			jsonOut = true
+		}
+	}
+	home := userXiTHome()
+	base := apibase.Resolve()
+	c := updatecheck.NewClient(home, version)
+	res := c.CheckLive()
+
+	if jsonOut {
+		out := map[string]any{
+			"endpoint":        base,
+			"endpoint_source": apibase.Source(),
+			"current_cli":     version,
+			"current_vscode":  vscodeExtensionVersion,
+			"available":       res.Available,
+			"upgrade_needed":  res.UpgradeNeeded,
+			"below_minimum":   res.BelowMinimum,
+			"severity":        res.Severity,
+			"latest_cli":      res.Info.LatestCLI,
+			"min_cli":         res.Info.MinCLI,
+			"latest_vscode":   res.Info.LatestVSCode,
+			"min_vscode":      res.Info.MinVSCode,
+			"npm_command":     res.Info.NpmCommand,
+		}
+		data, _ := json.MarshalIndent(out, "", "  ")
+		fmt.Println(string(data))
+		return nil
+	}
+
+	fmt.Println("XiT Update Check")
+	fmt.Println()
+	fmt.Printf("endpoint:      %s\n", orUnknown(base))
+	fmt.Printf("source:        %s\n", apibase.Source())
+	fmt.Printf("current cli:   %s\n", version)
+	if !res.Available {
+		fmt.Println("result:        unavailable (no endpoint or network/cache miss) — fail-open, nothing blocked")
+		return nil
+	}
+	fmt.Printf("latest cli:    %s\n", orUnknown(res.Info.LatestCLI))
+	fmt.Printf("min cli:       %s\n", orUnknown(res.Info.MinCLI))
+	fmt.Printf("severity:      %s\n", res.Severity)
+	if res.UpgradeNeeded || res.BelowMinimum {
+		fmt.Printf("upgrade:       %s\n", res.UpgradeCommand())
+	} else {
+		fmt.Println("result:        up to date")
+	}
+	return nil
+}
+
+// cmdUpgrade implements: xit upgrade — shows upgrade guidance. It NEVER runs
+// npm/vsce itself; it only prints the exact commands for the user to run.
+func cmdUpgrade(args []string) {
+	home := userXiTHome()
+	jsonOut := false
+	for _, a := range args {
+		if a == "--json" {
+			jsonOut = true
+		}
+	}
+	c := updatecheck.NewClient(home, version)
+	res := c.Check()
+
+	if jsonOut {
+		out := map[string]any{
+			"current_cli":     version,
+			"current_vscode":  vscodeExtensionVersion,
+			"available":       res.Available,
+			"upgrade_needed":  res.UpgradeNeeded,
+			"below_minimum":   res.BelowMinimum,
+			"severity":        res.Severity,
+			"latest_cli":      res.Info.LatestCLI,
+			"min_cli":         res.Info.MinCLI,
+			"latest_vscode":   res.Info.LatestVSCode,
+			"npm_command":     res.Info.NpmCommand,
+			"marketplace_url": res.Info.VSCodeMarketplaceURL,
+		}
+		b, _ := json.MarshalIndent(out, "", "  ")
+		fmt.Println(string(b))
+		return
+	}
+
+	fmt.Println("XiT Upgrade")
+	fmt.Println()
+	fmt.Printf("current CLI:     %s\n", version)
+	fmt.Printf("current VS Code: %s\n", vscodeExtensionVersion)
+	if !res.Available {
+		fmt.Println()
+		fmt.Println("Could not reach the XiT version service (offline or not configured).")
+		fmt.Println("无法获取最新版本信息（离线或未配置）。可手动升级：")
+		fmt.Println()
+		fmt.Println("  npm install -g xitsg@latest")
+		fmt.Println("  VS Code Marketplace: https://marketplace.visualstudio.com/items?itemName=XiT.xit-vscode")
+		return
+	}
+	fmt.Printf("latest CLI:      %s\n", orUnknown(res.Info.LatestCLI))
+	if res.Info.LatestVSCode != "" {
+		fmt.Printf("latest VS Code:  %s\n", res.Info.LatestVSCode)
+	}
+	fmt.Printf("severity:        %s\n", res.Severity)
+	if res.Info.Message != "" {
+		fmt.Printf("message:         %s\n", res.Info.Message)
+	}
+	fmt.Println()
+	if !res.UpgradeNeeded && !res.BelowMinimum {
+		fmt.Println("You are on the latest CLI. 已是最新版本。")
+		return
+	}
+	npmCmd := res.Info.NpmCommand
+	if npmCmd == "" {
+		npmCmd = "npm install -g xitsg@latest"
+	}
+	market := res.Info.VSCodeMarketplaceURL
+	if market == "" {
+		market = "https://marketplace.visualstudio.com/items?itemName=XiT.xit-vscode"
+	}
+	fmt.Println("To upgrade (run yourself — XiT will not run these for you):")
+	fmt.Println("升级方式（请自行执行，XiT 不会替你运行）：")
+	fmt.Println()
+	fmt.Printf("  %s\n", npmCmd)
+	fmt.Printf("  VS Code Marketplace: %s\n", market)
+}
+
+// versionGate performs a fast, cache-only version check for high-risk surfaces
+// (hooks / VS Code bridge). It triggers a non-blocking background refresh so the
+// 24h cache stays warm, and returns the evaluated result. Fail-open by design:
+// if nothing is cached, the result is non-blocking.
+func versionGate(home string) updatecheck.Result {
+	c := updatecheck.NewClient(home, version)
+	c.RefreshAsync()
+	return c.CheckCachedOnly()
 }
 
 func cmdShim(args []string) error {

@@ -139,7 +139,7 @@ test("any accepted bridge event triggers a dashboard refresh and a status bar up
   // changed=true is only set inside the per-event loop when accepted, and the
   // refresh block runs unconditionally once any event was accepted.
   assert.ok(fn.includes("changed = true;"));
-  assert.ok(fn.includes("dashboard_1.updateDashboardIfOpen)(status, buildLiveStatusOverride(workspacePath), workspacePath)"));
+  assert.ok(fn.includes("dashboard_1.updateDashboardIfOpen)(status, buildLiveStatusOverride(workspacePath), workspacePath, channelStore.dashboardView())"));
   assert.match(fn, /dashboard refreshed/);
   assert.ok(fn.includes("await updateStatusBar();"));
 });

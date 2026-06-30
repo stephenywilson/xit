@@ -356,3 +356,54 @@ p {
     font-size: 20px;
   }
 }
+
+/* ──────────────────────────────────────────────────────────────────
+   Multi-channel task cards (任务通道 / Active Tasks). One card per
+   concurrent AI task; status chip color reflects running/settling/
+   finished/error so two tasks never read as one merged state.
+   ────────────────────────────────────────────────────────────────── */
+.task-channel-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 10px;
+  margin-top: 6px;
+}
+.task-card {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.task-card.task-running { border-color: var(--border-strong); }
+.task-card.task-settling { border-color: var(--border-strong); }
+.task-card.task-error { border-color: var(--danger-soft); }
+.task-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.task-adapter { font-weight: 600; color: var(--text); }
+.task-status-chip {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 5px;
+  background: var(--surface-3);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.task-running .task-status-chip,
+.task-settling .task-status-chip { color: var(--gold); background: var(--gold-soft); }
+.task-finished .task-status-chip { color: var(--success); background: var(--success-soft); }
+.task-error .task-status-chip { color: var(--danger); background: var(--danger-soft); }
+.task-card-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  color: var(--text);
+  font-size: 13px;
+}
+.task-card-foot { color: var(--dim); font-size: 11px; }

@@ -3,6 +3,7 @@ import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
 import { showDashboard, updateDashboardIfOpen } from "./dashboard";
+import { ChannelStore } from "./channels";
 import {
   openXiTTerminal,
   promptRunCommand,
@@ -51,6 +52,19 @@ import {
   promoteSettlingToFinal,
   runRecordMatchesActiveTask,
 } from "./logic";
+import {
+  buildMetricsEvent,
+  compareVersions,
+  fetchVersionInfo,
+  isTelemetryEnabled,
+  readCliTelemetryEnabled,
+  resolveInstallId,
+  sendMetrics,
+  type TelemetrySetting,
+  type VersionInfo,
+} from "./telemetry";
+
+const EXTENSION_VERSION = "0.0.35";
 
 let statusBarItem: vscode.StatusBarItem | undefined;
 let refreshTimer: NodeJS.Timeout | undefined;
@@ -122,6 +136,50 @@ const BRIDGE_FINAL_RESULT_HOLD_MS = 20000;
 // idle, and never by a plain timeout.
 let lastFinalizedBridgeResult: LiveStatusView | undefined;
 let lastFinalizedBridgeResultWorkspace: string | undefined;
+
+// ──────────────────────────────────────────────────────────────────
+// MULTI-CHANNEL TASK STATE (the blocker fix). One channel per concurrent
+// AI task/conversation. The legacy single-channel globals above still drive
+// the LOCAL manual VS Code run and the "本轮发功" detail panel for the
+// most-recent channel; the channelStore is the authority for the AGGREGATE
+// status bar + Dashboard task list, so one task finishing can never reset
+// another that is still running. See channels.ts.
+// ──────────────────────────────────────────────────────────────────
+const channelStore = new ChannelStore();
+// Per-channel fallback finalize timers (settling → finished) keyed by
+// channel_id. A real turn.finished preempts the timer; the timer only fires
+// for adapters/sessions where no turn-level signal ever arrives. Keyed per
+// channel so two concurrent tasks each get their OWN timer — one task's
+// finalize never cancels another's.
+const channelFinalizeTimers = new Map<string, NodeJS.Timeout>();
+
+function clearChannelFinalizeTimer(channelId: string): void {
+  const t = channelFinalizeTimers.get(channelId);
+  if (t) {
+    clearTimeout(t);
+    channelFinalizeTimers.delete(channelId);
+  }
+}
+
+function armChannelFinalizeTimer(channelId: string, workspacePath: string): void {
+  clearChannelFinalizeTimer(channelId);
+  const timer = setTimeout(() => {
+    channelFinalizeTimers.delete(channelId);
+    if (channelStore.finalize(channelId)) {
+      void refreshAfterChannelChange(workspacePath);
+    }
+  }, BRIDGE_SETTLE_FALLBACK_MS);
+  channelFinalizeTimers.set(channelId, timer);
+}
+
+async function refreshAfterChannelChange(workspacePath: string): Promise<void> {
+  if (statusBarItem) {
+    statusBarItem.show();
+  }
+  const status = await fetchStatus(workspacePath);
+  updateDashboardIfOpen(status, buildLiveStatusOverride(workspacePath), workspacePath, channelStore.dashboardView());
+  await updateStatusBar();
+}
 
 interface ActiveRunIdentity {
   workspace: string;
@@ -341,6 +399,28 @@ function enterSuccessPhase(hasSavings: boolean, latestRun?: LatestRun, workspace
   } else {
     doSettle();
   }
+}
+
+// buildChannelTooltip summarizes the multi-channel task list for the status
+// bar tooltip. Only adapter labels, status, and already-computed display
+// values — never a command, cwd, or any raw signal.
+function buildChannelTooltip(): string {
+  const view = channelStore.dashboardView();
+  const lines: string[] = [];
+  if (view.activeCount === 0) {
+    lines.push("当前状态：等待下一轮发功");
+  } else if (view.activeCount === 1) {
+    lines.push("当前状态：1 个任务正在吸T");
+  } else {
+    lines.push(`当前状态：${view.activeCount} 个任务正在吸T`);
+  }
+  for (const t of view.tasks.slice(0, 5)) {
+    lines.push(`· ${t.adapterLabel} [${t.statusLabel}] 省 ${t.savedDisplay} · ${t.relativeTime}`);
+  }
+  lines.push("─".repeat(20));
+  lines.push("本地处理 · 不读取聊天内容");
+  lines.push("点击打开 XiT Dashboard");
+  return lines.join("\n");
 }
 
 function buildLiveStatusOverride(activeWorkspace?: string): LiveStatusView | undefined {
@@ -1013,6 +1093,18 @@ async function updateStatusBar(): Promise<void> {
     return;
   }
 
+  // Multi-channel aggregate takes precedence whenever any AI-task channel
+  // exists. This is the deterministic rule that fixes the blocker: the bar
+  // reflects the COUNT of active tasks, so one task finishing can never flip
+  // it to 准备就绪 while another is still running.
+  const channelText = channelStore.statusBarText();
+  if (channelText !== undefined) {
+    statusBarItem.text = channelText;
+    statusBarItem.tooltip = buildChannelTooltip();
+    updateDashboardIfOpen(status, buildLiveStatusOverride(workspaceSnapshot), workspaceSnapshot, channelStore.dashboardView());
+    return;
+  }
+
   const useLiveState = liveStateBelongsToWorkspace(workspaceSnapshot);
 
   if (useLiveState && liveState === "running") {
@@ -1170,6 +1262,15 @@ async function updateStatusBarLive(): Promise<void> {
   }
   if (isEnabled()) {
     statusBarItem.show();
+  }
+
+  // Multi-channel aggregate wins over the legacy single-channel liveState
+  // whenever any AI-task channel exists (see updateStatusBar for rationale).
+  const channelText = channelStore.statusBarText();
+  if (channelText !== undefined) {
+    statusBarItem.text = channelText;
+    statusBarItem.tooltip = buildChannelTooltip();
+    return;
   }
 
   const workspaceSnapshot = resolveActiveXitWorkspace();
@@ -1496,6 +1597,19 @@ function registerVscodeAiBridgeWatcher(context: vscode.ExtensionContext): void {
       } else {
         logBridgeDiagnostic(`accepted: ${kind} run=${shortHash(event.run_id)}`);
       }
+      // Multi-channel: route every accepted event into its own channel so
+      // concurrent AI tasks never overwrite each other's state. The legacy
+      // single-channel setBridge* calls below still drive the most-recent
+      // channel's detail view + local fallback, but the aggregate status
+      // bar/Dashboard are derived from the store.
+      const channelId = channelStore.apply(event, Date.now());
+      if (channelId) {
+        if (event.event === "run.finished") {
+          armChannelFinalizeTimer(channelId, workspacePath);
+        } else {
+          clearChannelFinalizeTimer(channelId);
+        }
+      }
       switch (event.event) {
         case "turn.started":
           setBridgeTurnActive(event, workspacePath);
@@ -1529,7 +1643,7 @@ function registerVscodeAiBridgeWatcher(context: vscode.ExtensionContext): void {
     if (changed && statusBarItem) {
       statusBarItem.show();
       const status = await fetchStatus(workspacePath);
-      updateDashboardIfOpen(status, buildLiveStatusOverride(workspacePath), workspacePath);
+      updateDashboardIfOpen(status, buildLiveStatusOverride(workspacePath), workspacePath, channelStore.dashboardView());
       logBridgeDiagnostic("dashboard refreshed");
       await updateStatusBar();
     }
@@ -1545,6 +1659,120 @@ function registerVscodeAiBridgeWatcher(context: vscode.ExtensionContext): void {
       bridgeDiagnostics.watcher_alive = false;
     },
   });
+}
+
+// DEFAULT_API_BASE is the production API base shipped with a release build —
+// the VS Code counterpart of the CLI's apibase.Default.
+const DEFAULT_API_BASE = "https://xit-api.stephenwilson.dev";
+
+// resolveApiBase resolves the XiT API base. Priority: xit.apiBase setting >
+// XIT_API_BASE env > built-in DEFAULT_API_BASE. So a normal user needs NO
+// manual configuration once a release ships a non-empty DEFAULT_API_BASE.
+// Empty => version check / telemetry no-op.
+function resolveApiBase(): string {
+  const configured = vscode.workspace.getConfiguration("xit").get<string>("apiBase", "");
+  return (configured || process.env.XIT_API_BASE || DEFAULT_API_BASE || "").trim().replace(/\/+$/, "");
+}
+
+// telemetryAllowed resolves whether the extension may send telemetry, honoring:
+// VS Code global telemetry level (absolute off), the CLI's `xit telemetry off`
+// opt-out (~/.xit/telemetry.json), then the xit.telemetry setting / env.
+function telemetryAllowed(): boolean {
+  const vscodeOn = vscode.env.isTelemetryEnabled;
+  if (!vscodeOn) {
+    return false;
+  }
+  const cliPref = readCliTelemetryEnabled(resolveXiTHome());
+  if (cliPref === false) {
+    return false; // user ran `xit telemetry off`
+  }
+  const setting = vscode.workspace
+    .getConfiguration("xit")
+    .get<TelemetrySetting>("telemetry", "default");
+  return isTelemetryEnabled({
+    vscodeTelemetryEnabled: vscodeOn,
+    xitSetting: setting,
+    envOverride: process.env.XIT_TELEMETRY,
+  });
+}
+
+// initTelemetryAndVersionCheck runs once on activation. Both halves are
+// fully fail-open and never block activation.
+function initTelemetryAndVersionCheck(context: vscode.ExtensionContext): void {
+  const apiBase = resolveApiBase();
+
+  // Anonymous activation ping (only when allowed and an endpoint exists). The
+  // per-run metrics come from the CLI's `xit auto`; this just records that the
+  // extension is in use, with the same privacy-safe schema.
+  try {
+    if (apiBase && telemetryAllowed()) {
+      const event = buildMetricsEvent({
+        event: "extension.activated",
+        installId: resolveInstallId(resolveXiTHome()),
+        vscodeExtensionVersion: EXTENSION_VERSION,
+        adapter: "vscode",
+        surface: "vscode",
+        status: "success",
+      });
+      sendMetrics(apiBase, event);
+    }
+  } catch {
+    /* fail-open */
+  }
+
+  // Version check (cached 24h in globalState), then suggest upgrade once.
+  void maybeCheckVersion(context, apiBase);
+}
+
+async function maybeCheckVersion(
+  context: vscode.ExtensionContext,
+  apiBase: string,
+): Promise<void> {
+  try {
+    if (!apiBase) {
+      return;
+    }
+    const CACHE_KEY = "xit.versionCheck";
+    const cached = context.globalState.get<{ at: number; info: VersionInfo }>(CACHE_KEY);
+    let info: VersionInfo | undefined = cached?.info;
+    const fresh = cached && Date.now() - cached.at < 24 * 60 * 60 * 1000;
+    if (!fresh) {
+      const fetched = await fetchVersionInfo(apiBase);
+      if (fetched) {
+        info = fetched;
+        await context.globalState.update(CACHE_KEY, { at: Date.now(), info: fetched });
+      }
+    }
+    if (!info || !info.latest_vscode) {
+      return;
+    }
+    if (compareVersions(EXTENSION_VERSION, info.latest_vscode) >= 0) {
+      return; // up to date
+    }
+    const severity = (info.severity || "info").toLowerCase();
+    if (severity === "info") {
+      return; // newer exists but no nudge requested
+    }
+    // Only nudge once per known latest version.
+    const NUDGE_KEY = "xit.versionNudge";
+    if (context.globalState.get<string>(NUDGE_KEY) === info.latest_vscode) {
+      return;
+    }
+    await context.globalState.update(NUDGE_KEY, info.latest_vscode);
+    const msg =
+      info.message ||
+      `XiT extension ${info.latest_vscode} is available (you have ${EXTENSION_VERSION}).`;
+    const open = "Open Marketplace";
+    const choice = await vscode.window.showInformationMessage(msg, open);
+    if (choice === open) {
+      const url =
+        info.vscode_marketplace_url ||
+        "https://marketplace.visualstudio.com/items?itemName=XiT.xit-vscode";
+      void vscode.env.openExternal(vscode.Uri.parse(url));
+    }
+  } catch {
+    /* fail-open */
+  }
 }
 
 function resolveXiTHome(): string {
@@ -1848,6 +2076,7 @@ export function activate(context: vscode.ExtensionContext): void {
   registerVscodeAiBridgeWatcher(context);
   registerAdapterHookWatchers(context);
   registerTerminalListeners(context);
+  initTelemetryAndVersionCheck(context);
 
   context.subscriptions.push(
     vscode.commands.registerCommand("xit.openDashboard", async () => {
@@ -1859,6 +2088,9 @@ export function activate(context: vscode.ExtensionContext): void {
         status,
         buildLiveStatusOverride(workspaceSnapshot),
         workspaceSnapshot,
+        // Replay ALL active channels on reopen (spec §三/§八), not just the
+        // most-recent one.
+        channelStore.dashboardView(),
       );
     }),
     vscode.commands.registerCommand("xit.refresh", async () => {

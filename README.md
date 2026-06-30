@@ -33,8 +33,8 @@ It improves Dashboard and Status Bar updates across repeated AI workflow runs, i
 
 0.2.48 / VS Code 0.0.34 是 VS Code 扩展稳定性 hotfix，提升了 Dashboard / 状态栏在多轮 AI 工作流中的更新可靠性，尤其是 AI agent 在会话中切换目录执行命令的场景。请同时升级 CLI 与 VS Code 扩展。
 
-> 隐私不变：无遥测，raw log 留在本地，XiT 不上传终端输出、prompt、AI 回复或完整 session id。
-> No telemetry. Raw logs stay local. XiT does not upload terminal output, prompts, AI replies, or full session ids.
+> 隐私边界不变：无 raw-log 遥测，仅匿名使用统计，且可关闭。raw log 始终留在本地。XiT 永不上传终端原始输出、prompt、AI 回复、命令文本、文件路径、用户名、邮箱、API key 或完整 session id。`xit telemetry off` 或 `XIT_TELEMETRY=off` 可关闭统计。
+> No raw-log telemetry. Anonymous usage metrics only, and can be disabled. Raw logs stay local. XiT never uploads raw terminal output, prompts, AI replies, command text, file paths, usernames, emails, API keys, or full session ids. Disable with `xit telemetry off` or `XIT_TELEMETRY=off`.
 
 完整变更记录见 [docs/releases/](docs/releases/)。
 
@@ -51,7 +51,7 @@ It improves Dashboard and Status Bar updates across repeated AI workflow runs, i
 | 路由命中率目标 | 90%+ |
 | 单次冗长测试预计节省 | 约 5k–15k Token |
 | 原始证据 | 本地 raw_log 留存 |
-| 数据上传 | 无遥测 / 不上传 |
+| 数据上传 | 无 raw-log 遥测；仅匿名统计，可关闭 |
 
 实际效果取决于命令类型、输出规模和 AI CLI 是否正确使用 `xit auto`；Token 按 `saved_bytes / 4` 估算。
 
@@ -248,14 +248,16 @@ DeepSeek 在中文开发者里有很强认知。XiT 下一步会优先调研 Dee
 
 ## 安全与隐私
 
-- **零遥测**：不收集任何使用数据，不上传日志
-- **全程本地**：所有处理在本机完成，不经过任何外部服务器
+- **无 raw-log 遥测**：XiT 永不上传终端原始输出、prompt、AI 回复、命令文本、文件路径、用户名、邮箱、API key 或完整 session id
+- **匿名使用统计（默认开启，可关闭）**：XiT 可发送匿名使用统计，例如 adapter 类型、版本号、字节数、压缩率、估算节省 Token、成功/失败状态。可通过 `xit telemetry off` 或 `XIT_TELEMETRY=off` 关闭
 - **raw_log 留证**：完整原始输出保存在 `.xit/runs/`，随时可查
 - **本地统计**：`.xit/history.jsonl` 保存本地压缩统计，不离开本机
 - **状态栏 patch**：可选高级功能，修改本地 Kimi package，可随时回滚
 - **Token 节省**：估算值，计算方式为 `saved_tokens = saved_bytes / 4`
 
-详见 [docs/privacy.md](docs/privacy.md)。
+XiT may send anonymous usage metrics such as adapter type, version, byte counts, compression ratio, and estimated token savings. XiT never uploads raw terminal output, prompts, AI replies, command text, file paths, usernames, emails, API keys, or full session ids. Disable with `xit telemetry off` or `XIT_TELEMETRY=off`.
+
+详见 [docs/privacy.md](docs/privacy.md) 与 [docs/telemetry.md](docs/telemetry.md)。
 
 ---
 

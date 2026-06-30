@@ -7,6 +7,7 @@ import type {
   LiveStatusView,
   XiTStatus,
 } from "./types";
+import type { DashboardView } from "./channels";
 import {
   readCurrentRunState,
   resolveActiveXitWorkspace,
@@ -203,12 +204,65 @@ export function selectCumulativeStats(
   return runs.length > 0 ? computeCumulative(runs) : cached;
 }
 
+// statusChipLabel maps a channel status to its user-facing chip text.
+function statusChipLabel(status: string): string {
+  switch (status) {
+    case "running":
+      return "running · 吸T中";
+    case "settling":
+      return "settling · 收功中";
+    case "finished":
+      return "finished · 已收功";
+    case "error":
+      return "error · 执行失败";
+    default:
+      return "idle";
+  }
+}
+
+// renderTaskChannels builds the "任务通道 / Active Tasks" section — one card
+// per concurrent AI task. This is the visible half of the multi-channel
+// blocker fix: each task has its OWN card and never overwrites another's.
+function renderTaskChannels(channelView: DashboardView | undefined): string {
+  if (!channelView || channelView.tasks.length === 0) {
+    return "";
+  }
+  const cards = channelView.tasks
+    .map(
+      (t) => `
+        <div class="task-card task-${escapeHtml(t.status)}">
+          <div class="task-card-head">
+            <span class="task-adapter">${escapeHtml(t.adapterLabel)}</span>
+            <span class="task-status-chip">${escapeHtml(statusChipLabel(t.status))}</span>
+          </div>
+          <div class="task-card-metrics">
+            <span>本轮省 ${escapeHtml(t.savedDisplay)}</span>
+            <span>本轮共吸 ${escapeHtml(t.runCountDisplay)}</span>
+            <span>降噪率 ${escapeHtml(t.reductionDisplay)}</span>
+          </div>
+          <div class="task-card-foot">${escapeHtml(t.surface)} · ${escapeHtml(t.relativeTime)}</div>
+        </div>`,
+    )
+    .join("");
+  return `
+    <section class="panel">
+      <div class="section-heading">
+        <div>
+          <h2>任务通道 / Active Tasks</h2>
+          <p class="section-subtitle">${escapeHtml(channelView.topStatus)}</p>
+        </div>
+      </div>
+      <div class="task-channel-grid">${cards}</div>
+    </section>`;
+}
+
 function buildDashboardHtml(
   status: XiTStatus,
   cspSource: string,
   stylesheetHref: string,
   workspaceSnapshot: string,
   liveOverride?: LiveStatusView,
+  channelView?: DashboardView,
 ): string {
   // ──────────────────────────────────────────────────────────────────
   // SINGLE AUTHORITY: active XiT workspace
@@ -282,11 +336,17 @@ function buildDashboardHtml(
       ? `<section class="banner warning">${escapeHtml(hardErrors.join(" · "))}</section>`
       : ""}
 
+    ${renderTaskChannels(channelView)}
+
     <section class="panel ${liveRunView.reportPanelActive ? "panel-active" : ""}">
       <div class="section-heading">
         <div>
           <h2>本轮发功</h2>
-          <p class="section-subtitle">${escapeHtml(liveRunView.subtitle)}</p>
+          <p class="section-subtitle">${escapeHtml(
+            channelView && channelView.activeCount > 1
+              ? `${channelView.topStatus}（下方为最近活跃任务）`
+              : liveRunView.subtitle,
+          )}</p>
         </div>
       </div>
       ${liveRunView.reportPanelActive
@@ -342,6 +402,7 @@ export function showDashboard(
   status: XiTStatus,
   liveOverride?: LiveStatusView,
   workspaceSnapshot = resolveActiveXitWorkspace(),
+  channelView?: DashboardView,
 ): void {
   const mediaRoot = vscode.Uri.joinPath(context.extensionUri, "media");
   if (panel) {
@@ -364,7 +425,7 @@ export function showDashboard(
     .asWebviewUri(vscode.Uri.joinPath(mediaRoot, "dashboard.css"))
     .toString();
   panel.webview.html = buildDashboardHtml(
-    status, panel.webview.cspSource, stylesheetHref, workspaceSnapshot, liveOverride,
+    status, panel.webview.cspSource, stylesheetHref, workspaceSnapshot, liveOverride, channelView,
   );
 }
 
@@ -372,12 +433,13 @@ export function updateDashboardIfOpen(
   status: XiTStatus,
   liveOverride?: LiveStatusView,
   workspaceSnapshot = resolveActiveXitWorkspace(),
+  channelView?: DashboardView,
 ): void {
   if (!panel) return;
   const stylesheetHref = panel.webview
     .asWebviewUri(vscode.Uri.joinPath(panel.webview.options.localResourceRoots![0], "dashboard.css"))
     .toString();
   panel.webview.html = buildDashboardHtml(
-    status, panel.webview.cspSource, stylesheetHref, workspaceSnapshot, liveOverride,
+    status, panel.webview.cspSource, stylesheetHref, workspaceSnapshot, liveOverride, channelView,
   );
 }

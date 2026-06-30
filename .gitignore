@@ -79,3 +79,8 @@ Thumbs.db
 .codex/
 .opencode/
 xit-image/
+
+# Cloudflare Wrangler local cache / backups
+server/.wrangler/
+server/wrangler.toml.bak.*
+*.bak.*

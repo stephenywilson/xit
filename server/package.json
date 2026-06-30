@@ -1,0 +1,17 @@
+{
+  "name": "xit-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "XiT backend: version check + anonymous metrics ingest (Cloudflare Worker).",
+  "scripts": {
+    "test": "node --test",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:create": "wrangler d1 create xit-metrics",
+    "db:schema": "wrangler d1 execute xit-metrics --file=./schema.sql"
+  },
+  "devDependencies": {
+    "wrangler": "^3.0.0"
+  }
+}

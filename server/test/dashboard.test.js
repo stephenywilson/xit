@@ -72,6 +72,11 @@ test("computeDashboard returns summary, by_adapter, daily_trend and versions", a
     "GROUP BY vscode_extension_version": [{ vscode_version: "0.0.35", runs: 80 }],
     "GROUP BY day\n        ORDER": [{ day: "2026-06-30", runs: 100, saved_tokens: 50000, saved_bytes: 200000 }],
     "GROUP BY day, adapter": [{ day: "2026-06-30", adapter: "claude", runs: 60, saved_tokens: 30000 }],
+    "GROUP BY surface\n        ORDER": [
+      { surface: "codex_cli", runs: 25, saved_tokens: 12000, saved_bytes: 48000, success_runs: 24 },
+      { surface: "chatgpt_desktop_codex", runs: 15, saved_tokens: 8000, saved_bytes: 32000, success_runs: 13 },
+    ],
+    "GROUP BY day, surface": [{ day: "2026-06-30", surface: "codex_cli", runs: 25, saved_tokens: 12000 }],
   });
   const d = await computeDashboard(db, "30d", { npm_downloads: {}, vscode_installs: { value: null } });
   assert.equal(d.range, "30d");
@@ -85,6 +90,10 @@ test("computeDashboard returns summary, by_adapter, daily_trend and versions", a
   assert.equal(d.by_vscode_version[0].vscode_version, "0.0.35");
   assert.equal(d.daily_trend[0].day, "2026-06-30");
   assert.equal(d.adapter_daily_trend[0].adapter, "claude");
+  assert.equal(d.by_surface.length, 2);
+  assert.equal(d.by_surface[0].surface, "codex_cli");
+  assert.equal(d.by_surface[1].surface, "chatgpt_desktop_codex");
+  assert.equal(d.surface_daily_trend[0].surface, "codex_cli");
   assert.ok(d.generated_at);
 });
 
@@ -94,6 +103,8 @@ test("empty DB yields a valid zeroed shape (no division by zero)", async () => {
   assert.equal(d.summary.success_rate, 0);
   assert.deepEqual(d.by_adapter, []);
   assert.deepEqual(d.daily_trend, []);
+  assert.deepEqual(d.by_surface, []);
+  assert.deepEqual(d.surface_daily_trend, []);
 });
 
 test("no db returns an empty-but-valid dashboard with supplied external", async () => {

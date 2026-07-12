@@ -624,6 +624,48 @@ func TestRewriteCommandForTurnShortCommandNoOp(t *testing.T) {
 	}
 }
 
+// TestRewriteCommandForTurnVersionCommandNeverRecurses guards against `xit
+// --version` (or any other direct `xit` invocation) ever being rerouted
+// through `xit auto` itself — that would recurse.
+func TestRewriteCommandForTurnVersionCommandNeverRecurses(t *testing.T) {
+	for _, cmd := range []string{"xit --version", "xit doctor", "xit telemetry status"} {
+		if _, changed := RewriteCommandForTurn(cmd, "s1", "t1", ""); changed {
+			t.Errorf("RewriteCommandForTurn(%q) must never rewrite a direct xit invocation (would recurse)", cmd)
+		}
+	}
+}
+
+// TestRewriteCommandForTurnReroutesNewHighNoiseCommands locks in the 0.2.51
+// follow-up coverage additions (yarn test, kubectl logs, ruff) alongside the
+// commands already covered.
+func TestRewriteCommandForTurnReroutesNewHighNoiseCommands(t *testing.T) {
+	cases := []string{
+		"yarn test",
+		"kubectl logs my-pod",
+		"ruff check .",
+	}
+	for _, cmd := range cases {
+		rewritten, changed := RewriteCommandForTurn(cmd, "s1", "t1", "")
+		if !changed {
+			t.Errorf("RewriteCommandForTurn(%q): expected reroute, got no change", cmd)
+			continue
+		}
+		if !strings.Contains(rewritten, "xit auto "+cmd) {
+			t.Errorf("RewriteCommandForTurn(%q) = %q, expected it to contain %q", cmd, rewritten, "xit auto "+cmd)
+		}
+	}
+}
+
+// TestRewriteCommandForTurnPassthroughForNewShortCommands ensures the new
+// tupleKey passthrough entries (kubectl get, yarn install) stay untouched.
+func TestRewriteCommandForTurnPassthroughForNewShortCommands(t *testing.T) {
+	for _, cmd := range []string{"kubectl get pods", "yarn install"} {
+		if _, changed := RewriteCommandForTurn(cmd, "s1", "t1", ""); changed {
+			t.Errorf("RewriteCommandForTurn(%q): expected passthrough, got a rewrite", cmd)
+		}
+	}
+}
+
 func TestRewriteCommandForTurnShellWrapper(t *testing.T) {
 	rewritten, changed := RewriteCommandForTurn(`bash -lc 'xit auto go test -v ./...'`, "s1", "t1", "")
 	if !changed {

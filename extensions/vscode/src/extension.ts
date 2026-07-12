@@ -54,7 +54,7 @@ import {
 } from "./logic";
 import {
   buildMetricsEvent,
-  compareVersions,
+  evaluateVersionGate,
   fetchVersionInfo,
   isTelemetryEnabled,
   readCliTelemetryEnabled,
@@ -64,7 +64,7 @@ import {
   type VersionInfo,
 } from "./telemetry";
 
-const EXTENSION_VERSION = "0.0.35";
+const EXTENSION_VERSION = "0.0.36";
 
 let statusBarItem: vscode.StatusBarItem | undefined;
 let refreshTimer: NodeJS.Timeout | undefined;
@@ -1746,13 +1746,16 @@ async function maybeCheckVersion(
     if (!info || !info.latest_vscode) {
       return;
     }
-    if (compareVersions(EXTENSION_VERSION, info.latest_vscode) >= 0) {
-      return; // up to date
+    // Full gate, mirroring internal/updatecheck.evaluate() on the CLI side:
+    // current >= latest_vscode always evaluates to "info" (nothing to nudge
+    // about, regardless of a stale/broad server severity), current ==
+    // min_vscode (or above) is never "blocked", and an overly-conservative
+    // server "blocked" between [min, latest) is downgraded to "required".
+    const gate = evaluateVersionGate(EXTENSION_VERSION, info.min_vscode, info.latest_vscode, info.severity);
+    if (!gate.upgradeNeeded || gate.severity === "info") {
+      return; // up to date / ahead of latest — nothing to nudge
     }
-    const severity = (info.severity || "info").toLowerCase();
-    if (severity === "info") {
-      return; // newer exists but no nudge requested
-    }
+    const { severity } = gate;
     // Only nudge once per known latest version.
     const NUDGE_KEY = "xit.versionNudge";
     if (context.globalState.get<string>(NUDGE_KEY) === info.latest_vscode) {

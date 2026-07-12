@@ -166,6 +166,58 @@ func Uninstall(projectPath string) error {
 	return nil
 }
 
+// codexUserConfigDir is the OS user's home directory, where Codex's own
+// USER-level hook layer lives at ~/.codex/hooks.json — a real, documented
+// layer distinct from the project-level <project>/.codex/hooks.json (Codex
+// hooks docs: "the four most useful locations are ~/.codex/hooks.json,
+// ~/.codex/config.toml, <repo>/.codex/hooks.json, <repo>/.codex/config.toml"
+// and "Codex loads all matching hooks [from every layer]... higher-precedence
+// config layers don't replace lower-precedence hooks" — i.e. a hook present
+// in BOTH layers for the same project fires twice, concurrently).
+func codexUserConfigDir() string {
+	if h := os.Getenv("HOME"); h != "" {
+		return h
+	}
+	if h, err := os.UserHomeDir(); err == nil {
+		return h
+	}
+	return ""
+}
+
+// DuplicateHookCheck reports whether XiT's hook is registered in BOTH the
+// project-level and the Codex user-level (~/.codex/hooks.json) layer at
+// once — which per Codex's documented "loads all matching hooks, layers
+// coexist" behavior would fire twice for any Bash command in this project.
+type DuplicateHookCheck struct {
+	ProjectLevelInstalled bool
+	UserLevelInstalled    bool
+	UserLevelPath         string
+}
+
+// Duplicate reports whether both layers are simultaneously active.
+func (c DuplicateHookCheck) Duplicate() bool {
+	return c.ProjectLevelInstalled && c.UserLevelInstalled
+}
+
+// CheckDuplicateHook inspects both the project-level and Codex user-level
+// hooks.json for an XiT-managed handler. It never modifies either file.
+func CheckDuplicateHook(projectPath string) (DuplicateHookCheck, error) {
+	projCfg, err := ReadHooksConfig(projectPath)
+	if err != nil {
+		return DuplicateHookCheck{}, err
+	}
+	userDir := codexUserConfigDir()
+	userCfg, err := ReadHooksConfig(userDir)
+	if err != nil {
+		return DuplicateHookCheck{}, err
+	}
+	return DuplicateHookCheck{
+		ProjectLevelInstalled: HasXiTHook(projCfg),
+		UserLevelInstalled:    HasXiTHook(userCfg),
+		UserLevelPath:         filepath.Join(userDir, ".codex", "hooks.json"),
+	}, nil
+}
+
 type StatusResult struct {
 	HooksPath string
 	Installed bool // true only if ALL four lifecycle events are installed

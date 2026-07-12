@@ -7,10 +7,33 @@
 //
 // Severity ladder:
 //
-//	info        - no action; newer version merely exists
-//	recommended - suggest upgrading
-//	required    - strongly urge upgrade; high-risk paths (hooks / bridge) may refuse
-//	blocked     - this version is below min_cli/min_vscode; block high-risk paths
+//	info        - no action; newer version merely exists, or current is
+//	              already at/ahead of latest_cli (nothing to upgrade to)
+//	recommended - suggest upgrading (current is between min and latest)
+//	required    - strongly urge upgrade (current is between min and latest);
+//	              purely advisory — does NOT refuse anything by itself
+//	blocked     - current < min_cli/min_vscode (strictly below); the ONLY
+//	              severity that refuses anything — both the core path
+//	              (`xit auto`) and high-risk paths (hooks / VS Code bridge)
+//
+// "blocked" means current < minimum and nothing else — the ONLY thing that
+// disables the VS Code bridge or refuses `xit auto`. Every other tier
+// (info/recommended/required) is purely advisory: it may prompt an upgrade
+// message, but never blocks anything. In particular:
+//
+//   - current == minimum is allowed (equality is never "below"), and
+//     current > minimum is allowed.
+//   - current >= latest_cli (at or ahead of the published version) always
+//     evaluates to "info", regardless of what the server's severity said —
+//     there is nothing to upgrade to, so "required"/"blocked" can never
+//     linger and disable the bridge for an up-to-date (or newer-than-known)
+//     install.
+//   - The server's `severity` field is advisory input, not gospel:
+//     evaluate() escalates to "blocked" when the client detects
+//     current < min_cli locally (even if the server was conservative), and
+//     downgrades an overly-conservative server "blocked" to "required"
+//     whenever current >= min_cli — a misconfigured server flag can never
+//     lock out a version that already satisfies the minimum.
 //
 // What is NEVER blocked, regardless of severity:
 //
@@ -70,13 +93,18 @@ type Result struct {
 }
 
 // ShouldBlockHighRisk reports whether high-risk paths (hooks / VS Code bridge)
-// should refuse to run. Only required/blocked do so, and only when we actually
-// have an answer. Fail-open: no info => never block.
+// should refuse to run. Only the terminal "blocked" severity does this —
+// info/recommended/required are purely advisory and never disable the
+// bridge. (Prior to 0.2.51's follow-up fix, "required" also disabled
+// high-risk paths; that let a stale server response keep the VS Code bridge
+// disabled for a CLI that was already at or ahead of latest_cli. Only
+// current < min_cli may disable anything now.) Fail-open: no info => never
+// block.
 func (r Result) ShouldBlockHighRisk() bool {
 	if !r.Available {
 		return false
 	}
-	return r.Severity == SeverityRequired || r.Severity == SeverityBlocked
+	return r.Severity == SeverityBlocked
 }
 
 // ShouldBlockCorePath reports whether XiT's CORE path (`xit auto`, hooks,
@@ -195,10 +223,26 @@ func (c *Client) evaluate(info VersionInfo) Result {
 	r.BelowMinimum = info.MinCLI != "" && Compare(c.CurrentCLI, info.MinCLI) < 0
 
 	sev := normalizeSeverity(info.Severity)
-	// Local escalation: if we're below the declared minimum, treat as blocked
-	// even if the server was conservative.
-	if r.BelowMinimum && rank(sev) < rank(SeverityBlocked) {
+	switch {
+	case r.BelowMinimum:
+		// current < min_cli: always blocked, even if the server was
+		// conservative and only said "required" or lower (escalate).
 		sev = SeverityBlocked
+	case !r.UpgradeNeeded:
+		// current >= latest_cli (at or ahead of the published version — e.g.
+		// a fresh local build, or the server's latest_cli hasn't caught up
+		// yet). There is nothing to upgrade TO, so severity can never be
+		// blocked/required/recommended here regardless of what the server
+		// says — only "info". This is what actually stops `required`/`blocked`
+		// from lingering (and disabling the VS Code bridge) once the running
+		// version has already caught up to or passed latest_cli.
+		sev = SeverityInfo
+	case sev == SeverityBlocked:
+		// current is in [min_cli, latest_cli) — never actually "blocked"
+		// here; a stale or overly-conservative server flag is downgraded to
+		// "required" so the user is still strongly urged to upgrade, but the
+		// core path keeps running.
+		sev = SeverityRequired
 	}
 	r.Severity = sev
 	return r
@@ -283,18 +327,6 @@ func normalizeSeverity(s string) string {
 	}
 }
 
-func rank(s string) int {
-	switch s {
-	case SeverityRecommended:
-		return 1
-	case SeverityRequired:
-		return 2
-	case SeverityBlocked:
-		return 3
-	default:
-		return 0
-	}
-}
 
 // Compare compares two dotted version strings ("0.2.48"). Returns -1, 0, or 1.
 // Non-numeric / missing segments are treated as 0. Robust to a leading "v".

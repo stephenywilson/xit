@@ -884,6 +884,10 @@ func TestShouldPassthroughMachineReadable(t *testing.T) {
 }
 
 func TestRunHookCommandRerouteDeny(t *testing.T) {
+	// fail_open=true (the default) only denies when xit auto is confirmed
+	// available; stub that explicitly so this test doesn't depend on
+	// whether this machine's PATH/version-check cache reports it usable.
+	withFakeAvailability(t, xitAvailability{Available: true, Reason: "available"})
 	tmp := t.TempDir()
 	home := filepath.Join(tmp, ".xit")
 	os.Setenv("XIT_HOME", home)

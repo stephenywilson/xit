@@ -42,7 +42,7 @@ import (
 	"os/exec"
 )
 
-const version = "0.2.50"
+const version = "0.2.51"
 
 // vscodeExtensionVersion is the current VS Code extension version, surfaced in
 // upgrade guidance and the /v1/version comparison. Keep in sync with
@@ -50,6 +50,14 @@ const version = "0.2.50"
 const vscodeExtensionVersion = "0.0.35"
 
 func main() {
+	// Hook commands (claude-hook, kimi-hook) run inside this same binary and
+	// need to know its own version to evaluate the fail-open availability
+	// probe's version-gate check in-process (see internal/claudehook and
+	// internal/kimihook's availability.go) — set once, unconditionally, so
+	// it's ready before any dispatch path below.
+	claudehook.SetCLIVersion(version)
+	kimihook.SetCLIVersion(version)
+
 	mode, rest := parseArgs(os.Args[1:])
 
 	if len(rest) < 1 {
@@ -151,6 +159,12 @@ func main() {
 		os.Exit(cmdKimiTurnStatus(rest[1:]))
 	case "kimi-instructions":
 		cmdKimiInstructions()
+		os.Exit(0)
+	case "chatgpt":
+		if err := cmdChatGPT(rest[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
 		os.Exit(0)
 	case "hook":
 		if err := cmdHook(rest[1:]); err != nil {
@@ -449,6 +463,12 @@ Usage:
   xit claude statusline uninstall --yes              Remove XiT statusLine from .claude/settings.local.json
   xit claude                                         Launch Claude with XiT wrapper
   xit codex                                          Launch Codex with XiT wrapper
+  xit hook install chatgpt --scope project --yes     Install Codex hook shared by ChatGPT Desktop's Codex mode
+  xit hook status chatgpt                            Show shared Codex hook status (ChatGPT Desktop framing)
+  xit hook uninstall chatgpt --yes                   Uninstall the shared Codex hook (affects CLI/IDE/Desktop)
+  xit chatgpt status                                 Detect ChatGPT Desktop app + shared Codex hook status
+  xit chatgpt diagnose                               Deep read-only diagnostics for ChatGPT Desktop Codex mode
+  xit chatgpt setup --auto                           Configure automatic-mode hook for this project (one shot)
   xit gain                                           Show saved token statistics
   xit gain --json                                    Show saved token statistics as JSON
   xit raw <run-id>                                   Display a saved raw log
@@ -1245,12 +1265,7 @@ func buildNaturalLanguageSummary(summary *output.Summary) string {
 }
 
 // buildCodexToolOutput is the Codex per-tool-call output renderer
-// (effectiveAdapter()=="codex"). Architecture: the XiT footer must appear ONCE
-// at the end of the turn's final assistant answer (driven by the
-// UserPromptSubmit/PreToolUse/PostToolUse/Stop hook lifecycle in
-// internal/codexhook), NEVER inside an individual tool card. So this function
-// renders ONLY the real, useful result — no XiT branding, no token counts, no
-// footer of any kind:
+// (effectiveAdapter()=="codex"). Renders the real, useful result:
 //   - real diagnostic content (errors/test failures/file:line) from a
 //     high-confidence filter is preserved verbatim;
 //   - low-confidence/fallback bookkeeping (bare numeric KeyFacts, e.g.
@@ -1259,7 +1274,19 @@ func buildNaturalLanguageSummary(summary *output.Summary) string {
 //     safeFallback path that produces that bug;
 //   - if there is nothing useful to show, a minimal acknowledgement is
 //     printed instead of an empty tool result.
-func buildCodexToolOutput(summary *output.Summary) string {
+//
+// A single trailing status line ("XiT · auto · ...") is appended so the user
+// can see, per compressed command, that XiT actually ran — this only ever
+// runs for a command the PreToolUse hook already classified should_compress
+// (see internal/codexhook.RewriteCommandForTurn), so it never appears for a
+// passthrough command. It carries only byte counts, an estimated token
+// figure, and the exit code — never the command text, a path, or any other
+// identifying detail. This is IN ADDITION TO, not a replacement for, the
+// once-per-turn two-line footer appended to the turn's final assistant
+// answer by the UserPromptSubmit/PreToolUse/PostToolUse/Stop hook lifecycle
+// in internal/codexhook — that footer reports the whole turn's cumulative
+// savings, this line reports just this one command.
+func buildCodexToolOutput(summary *output.Summary, rawBytes, summaryBytes, savedBytes, exitCode int) string {
 	var b strings.Builder
 	if summary != nil && summary.Confidence != "low" {
 		for _, line := range summary.BodyLines {
@@ -1279,11 +1306,33 @@ func buildCodexToolOutput(summary *output.Summary) string {
 	}
 	if b.Len() == 0 {
 		if summary != nil && summary.ExitCode != 0 {
-			return fmt.Sprintf("命令以退出码 %d 结束，输出已压缩。\n", summary.ExitCode)
+			b.WriteString(fmt.Sprintf("命令以退出码 %d 结束，输出已压缩。\n", summary.ExitCode))
+		} else {
+			b.WriteString("命令执行成功，无需展开重复输出。\n")
 		}
-		return "命令执行成功，无需展开重复输出。\n"
 	}
+	b.WriteString(formatCodexAutoStatusLine(rawBytes, summaryBytes, savedBytes, exitCode))
+	b.WriteString("\n")
 	return b.String()
+}
+
+// formatCodexAutoStatusLine renders the single, low-noise "XiT was here"
+// status line shown per compressed command: "XiT · auto · 48.2 KB → 4.7 KB ·
+// saved ~10.9k tokens · exit 0". Never includes command text, a path, a
+// repo name, a prompt, an AI reply, an install id, or any secret — only
+// aggregate byte/token counts and the exit code.
+func formatCodexAutoStatusLine(rawBytes, summaryBytes, savedBytes, exitCode int) string {
+	saved := savedBytes / 4
+	savedStr := fmt.Sprintf("%d", saved)
+	if saved >= 1000 {
+		savedStr = fmt.Sprintf("%.1fk", float64(saved)/1000)
+	}
+	return fmt.Sprintf("XiT · auto · %s → %s · saved ~%s tokens · exit %d",
+		formatKB(rawBytes), formatKB(summaryBytes), savedStr, exitCode)
+}
+
+func formatKB(n int) string {
+	return fmt.Sprintf("%.1f KB", float64(n)/1024)
 }
 
 var codexFileLineDiagnosticRe = regexp.MustCompile(`(?:^|\s)(?:[A-Za-z0-9_./-]+\.(?:go|ts|tsx|js|jsx|py|rs|java|kt|swift|c|cc|cpp|h|hpp|rb|php|cs|m|mm|scala|clj|ex|exs|erl|hrl|lua|sh|bash|zsh|fish|sql|yaml|yml|json|toml|md):\d+(?::\d+)?:\s*\S.*)$`)
@@ -1741,6 +1790,16 @@ func cmdAuto(args []string) error {
 	if bridgeRunID != "" || os.Getenv("VSCODE_PID") != "" {
 		telemetrySurface = "bridge"
 	}
+	if xcAdapter == "codex" {
+		// Finer-grained Codex front-end breakdown for the Dashboard's "By
+		// Surface" view (codex_cli / codex_ide / chatgpt_desktop_codex),
+		// replacing the generic cli/bridge value above for codex specifically.
+		// adapter stays "codex" either way — see internal/codexhook.DetectSurface
+		// for the ambient-signal detection (VSCODE_PID, __CFBundleIdentifier),
+		// evidenced on-machine against the real ChatGPT desktop app and the
+		// Codex VS Code extension.
+		telemetrySurface = codexhook.DetectSurface()
+	}
 	teleClient := telemetry.NewClient(uHome, version)
 	// High-risk gate: when the running version is required/blocked, refuse to
 	// drive the VS Code bridge (a high-risk path), but NEVER block the user's
@@ -2034,18 +2093,19 @@ func cmdAuto(args []string) error {
 	// OpenCode 1.16.2.
 	// Antigravity and Claude show a short natural-language result (no machine fields /
 	// raw_log, since the bottom statusline already reports savings); Codex
-	// shows ONLY the real compressed result (no XiT branding at all here — the
-	// two-line footer is appended once to the turn's FINAL answer by the
-	// UserPromptSubmit/PreToolUse/PostToolUse/Stop hook lifecycle in
-	// internal/codexhook, never to an individual tool card); other adapters
-	// use the full auto-rendered summary.
+	// shows the real compressed result plus a single low-noise "XiT · auto ·
+	// ..." status line per compressed command (see buildCodexToolOutput), IN
+	// ADDITION to the once-per-turn two-line footer appended to the turn's
+	// FINAL answer by the UserPromptSubmit/PreToolUse/PostToolUse/Stop hook
+	// lifecycle in internal/codexhook; other adapters use the full
+	// auto-rendered summary.
 	switch xcAdapter {
 	case "opencode":
 		fmt.Print(buildOpenCodeToolOutput(summary, savedBytes, opencodeRunCount, opencodeHasTurn, opencodeDiagnostics))
 	case "antigravity", "claude":
 		fmt.Print(buildNaturalLanguageSummary(summary))
 	case "codex":
-		fmt.Print(buildCodexToolOutput(summary))
+		fmt.Print(buildCodexToolOutput(summary, rawBytes, summaryBytes, savedBytes, res.ExitCode))
 	default:
 		fmt.Print(rendered)
 	}
@@ -2238,6 +2298,276 @@ func cmdUpdateCheck(args []string) error {
 	return nil
 }
 
+// cmdChatGPT implements: xit chatgpt status|diagnose|setup --auto.
+//
+// ChatGPT Desktop's Codex mode is NOT a separate integration — it shares the
+// exact same canonical Codex hook (.codex/hooks.json, project-scoped) as
+// Codex CLI and Codex IDE. `status`/`diagnose` only surface detection +
+// status; `setup --auto` (or `xit hook install|status|uninstall chatgpt`,
+// equivalent to the `codex` target) actually manages the shared hook.
+// Automatic mode means: once the hook is installed (and trusted via Codex's
+// own /hooks approval) for a project, high-noise Bash commands run there are
+// deterministically rerouted through `xit auto` by the PreToolUse hook (see
+// internal/codexhook.RewriteCommandForTurn) — never dependent on whether the
+// model chooses to reference the Skill.
+//
+// Detection is entirely read-only and privacy-safe: it stats
+// /Applications/ChatGPT.app and reads its own Info.plist (bundle id,
+// version) via `plutil`. It never launches the app, injects into its
+// process, reads its signature, or reads any chat/prompt/file content.
+func cmdChatGPT(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: xit chatgpt status|diagnose|setup --auto")
+	}
+	home := userXiTHome()
+	projectPath, _ := os.Getwd()
+	app := codexhook.DetectChatGPTApp()
+
+	switch args[0] {
+	case "status":
+		printChatGPTAutomaticModeStatus(projectPath, home, app)
+		return nil
+	case "setup":
+		return cmdChatGPTSetupAuto(args[1:], projectPath, home, app)
+	case "diagnose":
+		fmt.Println("XiT ChatGPT Desktop Diagnose")
+		fmt.Println()
+		fmt.Printf("1. ChatGPT.app installed:        %s\n", boolToYesNo(app.Installed))
+		if app.Installed {
+			fmt.Printf("   bundle id:                     %s\n", orUnknown(app.BundleID))
+			fmt.Printf("   version:                       %s\n", orUnknown(app.Version))
+			fmt.Printf("   matches known Codex build:     %s\n", boolToYesNo(app.IsChatGPTCodexApp()))
+		}
+		codexHome := os.Getenv("HOME") + "/.codex"
+		_, codexHomeErr := os.Stat(codexHome)
+		fmt.Printf("2. Shared ~/.codex present:       %s\n", boolToYesNo(codexHomeErr == nil))
+		hooksPath := filepath.Join(projectPath, ".codex", "hooks.json")
+		_, hooksErr := os.Stat(hooksPath)
+		fmt.Printf("3. Project .codex/hooks.json:     %s\n", boolToYesNo(hooksErr == nil))
+		fmt.Printf("   path:                          %s\n", hooksPath)
+		status, statusErr := codexhook.Status(projectPath, home)
+		if statusErr == nil {
+			fmt.Printf("4. Hook installed (all events):   %s\n", boolToYesNo(status.Installed))
+		} else {
+			fmt.Println("4. Hook installed (all events):   unable to read hooks.json")
+		}
+		fmt.Println()
+		fmt.Println("Runtime surface signals available to a live hook process (informational —")
+		fmt.Println("reflects THIS xit process, not a real Codex-invoked one):")
+		vscodePID := os.Getenv("VSCODE_PID")
+		bundleEnv := os.Getenv("__CFBundleIdentifier")
+		fmt.Printf("   VSCODE_PID set:                %s\n", boolToYesNo(vscodePID != ""))
+		fmt.Printf("   __CFBundleIdentifier:          %s\n", orUnknown(bundleEnv))
+		fmt.Println()
+		switch {
+		case !app.Installed:
+			fmt.Println("Diagnosis: ChatGPT desktop app not found on this machine — nothing to configure.")
+		case hooksErr != nil:
+			fmt.Println("Diagnosis: no shared Codex hook installed yet in this project.")
+			fmt.Println("           Run: xit hook install chatgpt --scope project --yes")
+		case statusErr == nil && !status.Installed:
+			fmt.Println("Diagnosis: hooks.json exists but is incomplete — re-run install to repair it.")
+			fmt.Println("           Run: xit hook install chatgpt --scope project --yes")
+		default:
+			fmt.Println("Diagnosis: shared Codex hook is installed and covers ChatGPT Desktop's Codex mode.")
+		}
+		if dup, dupErr := codexhook.CheckDuplicateHook(projectPath); dupErr == nil {
+			fmt.Printf("5. Duplicate hook (project + user layer): %s\n", boolToYesNo(dup.Duplicate()))
+			if dup.Duplicate() {
+				fmt.Printf("   WARNING: XiT hook also found at %s — Codex fires both concurrently.\n", dup.UserLevelPath)
+			}
+		}
+		if ts, tsErr := codexhook.CheckTrustStatus(projectPath); tsErr == nil {
+			fmt.Printf("6. Hook trust recorded in %s: %s\n", ts.ConfigPath, boolToYesNo(ts.AllRecorded))
+		}
+		fmt.Println()
+		fmt.Println("Privacy: this diagnostic never reads prompts, AI replies, command text, or file")
+		fmt.Println("         contents — only app/hook presence metadata.")
+		return nil
+	default:
+		return fmt.Errorf("usage: xit chatgpt status|diagnose|setup --auto")
+	}
+}
+
+// printChatGPTAutomaticModeStatus prints the plain-language status block a
+// non-technical user can read directly (used by both `xit chatgpt status`
+// and at the end of `xit chatgpt setup --auto`).
+func printChatGPTAutomaticModeStatus(projectPath, home string, app codexhook.ChatGPTAppInfo) {
+	fmt.Println("XiT ChatGPT Desktop Status")
+	fmt.Println()
+	fmt.Println("Supports: Codex mode inside the ChatGPT desktop app, via the shared Codex")
+	fmt.Println("          configuration and hook system. Does NOT collect or claim to support")
+	fmt.Println("          the ChatGPT app's general Chat or Work modes.")
+	fmt.Println()
+
+	if app.Installed {
+		if app.IsChatGPTCodexApp() {
+			fmt.Printf("ChatGPT Desktop Codex mode: supported (app version %s)\n", app.Version)
+		} else {
+			fmt.Printf("ChatGPT Desktop Codex mode: unconfirmed (bundle id %q at the expected path)\n", app.BundleID)
+		}
+	} else {
+		fmt.Println("ChatGPT Desktop Codex mode: supported (app not found on this machine)")
+	}
+
+	plugin := codexhook.DetectLocalPluginInstall()
+	if plugin.PluginFound {
+		fmt.Println("XiT Plugin:                 installed (local personal marketplace)")
+	} else {
+		fmt.Println("XiT Plugin:                 not installed locally")
+	}
+	fmt.Println("Skill:                      bundled in the plugin — enable/disable is a ChatGPT")
+	fmt.Println("                            Desktop UI toggle XiT cannot read; confirm there")
+
+	status, statusErr := codexhook.Status(projectPath, home)
+	dup, dupErr := codexhook.CheckDuplicateHook(projectPath)
+	ts, tsErr := codexhook.CheckTrustStatus(projectPath)
+
+	hookInstalled := statusErr == nil && status.Installed
+	isDuplicate := dupErr == nil && dup.Duplicate()
+	trusted := tsErr == nil && ts.AllRecorded
+	automatic := hookInstalled && !isDuplicate
+
+	fmt.Printf("Automatic mode:             %s (this project: %s)\n", enabledDisabled(automatic), projectPath)
+	fmt.Println("Hook provider:              shared_codex_user_hook (the one canonical Codex")
+	fmt.Println("                            hook — Codex CLI, Codex IDE, and ChatGPT Desktop's")
+	fmt.Println("                            Codex mode all resolve to it; the plugin ships no")
+	fmt.Println("                            hook of its own, so there is nothing to conflict)")
+	if tsErr == nil {
+		fmt.Printf("Hook trusted:               %s (recorded in %s)\n", boolToYesNo(trusted), ts.ConfigPath)
+	} else {
+		fmt.Println("Hook trusted:               unable to check")
+	}
+	fmt.Printf("Duplicate hook:             %s\n", boolToYesNo(isDuplicate))
+	fmt.Printf("CLI:                        %s\n", version)
+	enabled, source := telemetry.EnabledSource(home)
+	fmt.Printf("Telemetry:                  %s (%s)\n", onOff(enabled), source)
+	fmt.Println()
+	switch {
+	case !hookInstalled:
+		fmt.Println("Next step: xit chatgpt setup --auto")
+	case isDuplicate:
+		fmt.Printf("Next step: remove the duplicate at %s (see `xit chatgpt diagnose`)\n", dup.UserLevelPath)
+	case !trusted:
+		fmt.Println("Next step: open Codex (CLI/IDE/ChatGPT Desktop) in this project and run /hooks")
+		fmt.Println("           once to approve/trust the hook — XiT cannot do this for you.")
+	default:
+		fmt.Println("Status: ready. High-output commands in this project are automatically routed")
+		fmt.Println("        through XiT — no manual Skill selection needed.")
+	}
+}
+
+func enabledDisabled(b bool) string {
+	if b {
+		return "enabled"
+	}
+	return "disabled"
+}
+
+func onOff(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
+}
+
+// cmdChatGPTSetupAuto implements: xit chatgpt setup --auto — a one-shot,
+// non-interactive command that configures automatic-mode for the CURRENT
+// project directory. It backs up any existing hooks.json before touching it,
+// refuses to proceed (rather than silently double-firing) if a duplicate
+// hook is already present across the project and Codex user-level layers,
+// and re-verifies the result before printing the final status block.
+//
+// Scope note (must stay honest in the printed output): this configures
+// automatic mode for THIS project only. Codex hooks are project- or
+// user-level; installing at the user level too would apply everywhere but
+// risks double-firing in any project (like this one) that already has its
+// own project-level hook, so this command deliberately stays project-scoped.
+func cmdChatGPTSetupAuto(args []string, projectPath, home string, app codexhook.ChatGPTAppInfo) error {
+	auto := false
+	for _, a := range args {
+		if a == "--auto" {
+			auto = true
+		}
+	}
+	if !auto {
+		return fmt.Errorf("usage: xit chatgpt setup --auto")
+	}
+
+	fmt.Println("XiT ChatGPT Desktop — Automatic Mode Setup")
+	fmt.Println()
+	fmt.Printf("Project:  %s\n", projectPath)
+	if app.Installed {
+		fmt.Printf("1. ChatGPT.app detected: yes (version %s)\n", app.Version)
+	} else {
+		fmt.Println("1. ChatGPT.app detected: no (setup still proceeds — this also covers Codex CLI/IDE)")
+	}
+	if _, err := exec.LookPath("codex"); err == nil {
+		fmt.Println("2. codex CLI detected:   yes")
+	} else {
+		fmt.Println("2. codex CLI detected:   no")
+	}
+	plugin := codexhook.DetectLocalPluginInstall()
+	fmt.Printf("3. XiT Plugin detected:  %s\n", boolToYesNo(plugin.PluginFound))
+
+	// Refuse to proceed automatically if a duplicate would result — never
+	// silently create a double-firing hook.
+	dup, err := codexhook.CheckDuplicateHook(projectPath)
+	if err != nil {
+		return fmt.Errorf("checking for duplicate hook: %w", err)
+	}
+	if dup.Duplicate() {
+		fmt.Println()
+		fmt.Println("BLOCKED: XiT's hook is already registered in BOTH this project's .codex/hooks.json")
+		fmt.Printf("AND the Codex user-level layer (%s).\n", dup.UserLevelPath)
+		fmt.Println("Codex loads and fires every matching hook layer concurrently — leaving both in")
+		fmt.Println("place would double-process every command. Refusing to change anything automatically.")
+		fmt.Println("Manually remove one (recommended: keep the project-level one) and re-run this command.")
+		return fmt.Errorf("duplicate hook detected — refusing to proceed automatically")
+	}
+
+	// Back up any existing hooks.json before Install() touches it, even
+	// though Install() only merges/preserves other hooks — an explicit,
+	// timestamped, human-readable backup is cheap insurance.
+	hooksPath := filepath.Join(projectPath, ".codex", "hooks.json")
+	if data, statErr := os.ReadFile(hooksPath); statErr == nil {
+		backupPath := hooksPath + ".xit-setup-backup-" + time.Now().Format("20060102-150405")
+		if err := os.WriteFile(backupPath, data, 0644); err != nil {
+			return fmt.Errorf("backing up existing hooks.json: %w", err)
+		}
+		fmt.Printf("4. Backed up existing hooks.json -> %s\n", backupPath)
+	} else {
+		fmt.Println("4. No existing hooks.json to back up (fresh install)")
+	}
+
+	res, err := codexhook.Install(projectPath, home, false)
+	if err != nil {
+		return fmt.Errorf("installing hook: %w", err)
+	}
+	if res.AlreadyInstalled {
+		fmt.Println("5. Hook already installed and complete — repaired/left unchanged (idempotent).")
+	} else {
+		fmt.Println("5. Hook installed (all 4 lifecycle events).")
+	}
+
+	status, err := codexhook.Status(projectPath, home)
+	if err != nil {
+		return fmt.Errorf("verifying installed hook: %w", err)
+	}
+	if !status.Installed {
+		return fmt.Errorf("setup ran but verification failed — hook is not fully installed; see %s", status.HooksPath)
+	}
+	for _, ev := range status.Events {
+		if st, statErr := os.Stat(strings.TrimSpace(ev.ScriptPath)); statErr != nil || st.Mode()&0111 == 0 {
+			fmt.Printf("   WARNING: %s script missing or not executable: %s\n", ev.Event, ev.ScriptPath)
+		}
+	}
+	fmt.Println("6. Verified: all 4 hook scripts present and referenced correctly.")
+	fmt.Println()
+	printChatGPTAutomaticModeStatus(projectPath, home, app)
+	return nil
+}
+
 // cmdUpgrade implements: xit upgrade — shows upgrade guidance. It NEVER runs
 // npm/vsce itself; it only prints the exact commands for the user to run.
 func cmdUpgrade(args []string) {
@@ -2288,7 +2618,11 @@ func cmdUpgrade(args []string) {
 		fmt.Printf("latest VS Code:  %s\n", res.Info.LatestVSCode)
 	}
 	fmt.Printf("severity:        %s\n", res.Severity)
-	if res.Info.Message != "" {
+	// Only surface the server's message when there is actually something
+	// actionable (severity != info) — current >= latest_cli must never keep
+	// showing a stale/unrelated "critical update" message alongside an
+	// effective "info" severity.
+	if res.Severity != updatecheck.SeverityInfo && res.Info.Message != "" {
 		fmt.Printf("message:         %s\n", res.Info.Message)
 	}
 	fmt.Println()
@@ -5260,6 +5594,90 @@ func cmdHook(args []string) error {
 			return nil
 		default:
 			return fmt.Errorf("unknown hook command for codex: %s", sub)
+		}
+	case "chatgpt":
+		// ChatGPT Desktop's Codex mode shares the EXACT SAME canonical Codex
+		// hook as `codex` above — same .codex/hooks.json, same project scope,
+		// same scripts. This branch never registers a second hook; it only
+		// adds ChatGPT-Desktop-specific framing on top of codexhook.Status/
+		// Install/Uninstall (see docs/releases/RELEASE_NOTES_V0.2.51.md).
+		scope, restArgs := extractScopeFlag(args[2:])
+		if scope != "project" {
+			return fmt.Errorf("chatgpt hooks share Codex's project-scoped hook — only project scope is supported (got %q)", scope)
+		}
+		projectPath, _ := os.Getwd()
+		app := codexhook.DetectChatGPTApp()
+		switch sub {
+		case "status":
+			status, err := codexhook.Status(projectPath, home)
+			if err != nil {
+				return err
+			}
+			fmt.Println("XiT ChatGPT Desktop (Codex mode) Hook Status")
+			fmt.Println()
+			fmt.Println("ChatGPT Desktop Codex mode: supported")
+			if app.Installed {
+				if app.IsChatGPTCodexApp() {
+					fmt.Printf("ChatGPT.app detected:       yes (version %s, bundle %s)\n", app.Version, app.BundleID)
+				} else {
+					fmt.Printf("ChatGPT.app detected:       yes, but bundle id %q does not match the known ChatGPT Desktop Codex build — treating as unconfirmed\n", app.BundleID)
+				}
+			} else {
+				fmt.Println("ChatGPT.app detected:       no (not found at /Applications/ChatGPT.app)")
+			}
+			fmt.Printf("Shared Codex config:        %s\n", status.HooksPath)
+			fmt.Printf("Hook installed:             %s\n", boolToYesNo(status.Installed))
+			fmt.Println("Duplicate hook:             no (chatgpt and codex always resolve to this one shared hook)")
+			fmt.Println("Surface detection:          available (ambient VSCODE_PID / __CFBundleIdentifier signals; see internal/codexhook.DetectSurface)")
+			fmt.Println()
+			fmt.Println("events:")
+			for _, ev := range status.Events {
+				fmt.Printf("  %-17s %s  matcher=%q  script=%s\n", ev.Event+":", boolToYesNo(ev.Installed), ev.Matcher, ev.ScriptPath)
+			}
+			if status.HasEvents {
+				fmt.Printf("event_log:                  %s\n", filepath.Join(home, "codex-hooks", "events.jsonl"))
+			}
+			return nil
+		case "install":
+			if !hasYesFlag(restArgs) {
+				return fmt.Errorf("install requires --yes to confirm")
+			}
+			res, err := codexhook.Install(projectPath, home, false)
+			if err != nil {
+				return err
+			}
+			if res.AlreadyInstalled {
+				fmt.Println("Codex hooks are already installed and compatible with ChatGPT Desktop's Codex mode.")
+				fmt.Println("No second hook was added — Codex CLI, Codex IDE, and ChatGPT Desktop's Codex mode all share this one hook.")
+			} else {
+				fmt.Println("XiT Codex hooks installed (shared by Codex CLI, Codex IDE, and ChatGPT Desktop's Codex mode).")
+			}
+			fmt.Printf("hooks:   %s\n", res.HooksPath)
+			for _, ev := range res.Events {
+				fmt.Printf("  %-17s %s\n", ev.Event+":", ev.ScriptPath)
+			}
+			fmt.Println()
+			fmt.Println("IMPORTANT — Codex (and ChatGPT Desktop's Codex mode) will require re-review/trust of hooks:")
+			fmt.Println("  1. Open Codex (CLI, IDE, or ChatGPT Desktop) in this project.")
+			fmt.Println("  2. Run /hooks (or the equivalent trust prompt).")
+			fmt.Println("  3. Review and TRUST the new/changed hooks listed there.")
+			fmt.Println()
+			fmt.Println("Then verify: xit hook status chatgpt")
+			return nil
+		case "uninstall":
+			if !hasYesFlag(restArgs) {
+				return fmt.Errorf("uninstall requires --yes to confirm")
+			}
+			fmt.Println("WARNING: this removes the SHARED Codex hook for this project.")
+			fmt.Println("It is used by Codex CLI, Codex IDE, AND ChatGPT Desktop's Codex mode alike —")
+			fmt.Println("uninstalling here disables XiT observation for all three, not just ChatGPT Desktop.")
+			if err := codexhook.Uninstall(projectPath); err != nil {
+				return err
+			}
+			fmt.Println("XiT Codex hook uninstalled (was shared with ChatGPT Desktop's Codex mode).")
+			return nil
+		default:
+			return fmt.Errorf("unknown hook command for chatgpt: %s", sub)
 		}
 	case "cursor":
 		rawArgs := args[2:]

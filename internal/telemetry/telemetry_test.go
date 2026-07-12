@@ -122,6 +122,23 @@ func TestAdapterAndSurfaceNormalization(t *testing.T) {
 	}
 }
 
+// TestCodexSurfaceValuesPassThrough locks in backward-compatible support for
+// the finer-grained Codex front-end breakdown (0.2.51): adapter stays
+// "codex" for all of them, and each of the new surface values normalizes to
+// itself rather than collapsing to the generic "cli" fallback.
+func TestCodexSurfaceValuesPassThrough(t *testing.T) {
+	c := newTestClient(t)
+	for _, surface := range []string{"codex_cli", "codex_ide", "chatgpt_desktop_codex", "codex_shared"} {
+		ev := c.Build(Metrics{Adapter: "codex", Surface: surface})
+		if ev.Adapter != "codex" {
+			t.Fatalf("surface=%s: adapter should stay codex, got %q", surface, ev.Adapter)
+		}
+		if ev.Surface != surface {
+			t.Fatalf("surface=%s: expected pass-through, got %q", surface, ev.Surface)
+		}
+	}
+}
+
 func TestEnabledEnvOverrideHighestPriority(t *testing.T) {
 	home := t.TempDir()
 	// Persist enabled=true in the file, then force off via env.

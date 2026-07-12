@@ -2,7 +2,7 @@
   "name": "xit-vscode",
   "displayName": "吸T神功（XiT）",
   "description": "压缩高噪音终端输出，在 VS Code 状态栏和 Dashboard 中展示 AI 编程工作流的 Token 节省效果。",
-  "version": "0.0.35",
+  "version": "0.0.36",
   "publisher": "XiT",
   "license": "MIT",
   "icon": "media/icon.png",

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/stephenywilson/xit/internal/opencodehook"
+	"github.com/stephenywilson/xit/internal/output"
 	"github.com/stephenywilson/xit/internal/shim"
 	"github.com/stephenywilson/xit/internal/vscodebridge"
 )
@@ -4133,8 +4134,12 @@ func TestCodexAutoNoLowQualityBullets(t *testing.T) {
 	}
 	s := string(out)
 	codexAssertNoFooterOrMachineFields(t, s)
-	if strings.TrimSpace(s) != "命令执行成功，无需展开重复输出。" {
-		t.Errorf("low-confidence fallback with no diagnostics must yield only the minimal acknowledgement, got:\n%s", s)
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if len(lines) != 2 || lines[0] != "命令执行成功，无需展开重复输出。" {
+		t.Errorf("low-confidence fallback with no diagnostics must yield only the minimal acknowledgement plus the per-command status line, got:\n%s", s)
+	}
+	if len(lines) == 2 && !strings.HasPrefix(lines[1], "XiT · auto · ") {
+		t.Errorf("expected the per-command status line as the second line, got:\n%s", s)
 	}
 }
 
@@ -4154,8 +4159,12 @@ func TestCodexAutoWithInjectedTurnIdentityNoPerToolFooter(t *testing.T) {
 	}
 	s := string(out)
 	codexAssertNoFooterOrMachineFields(t, s)
-	if strings.TrimSpace(s) != "命令执行成功，无需展开重复输出。" {
-		t.Fatalf("expected minimal Codex per-tool output, got:\n%s", s)
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if len(lines) != 2 || lines[0] != "命令执行成功，无需展开重复输出。" {
+		t.Fatalf("expected minimal Codex per-tool output plus the per-command status line, got:\n%s", s)
+	}
+	if len(lines) == 2 && !strings.HasPrefix(lines[1], "XiT · auto · ") {
+		t.Fatalf("expected the per-command status line as the second line, got:\n%s", s)
 	}
 }
 
@@ -4899,5 +4908,159 @@ func TestAutoOpencodeEnvNotLeakedToChild(t *testing.T) {
 	}
 	if strings.Contains(outStr, "session-leak") || strings.Contains(outStr, "message-leak") {
 		t.Errorf("OpenCode turn env leaked into child process env, got:\n%s", outStr)
+	}
+}
+
+// TestFormatCodexAutoStatusLine locks in the 0.2.51 follow-up per-command
+// visible-feedback line shown in Codex tool output: format, and that it
+// carries only aggregate byte/token counts and the exit code — never a
+// command, path, repo name, prompt, reply, install id, or secret.
+func TestFormatCodexAutoStatusLine(t *testing.T) {
+	line := formatCodexAutoStatusLine(49356, 4813, 44543, 0)
+	if !strings.HasPrefix(line, "XiT · auto · ") {
+		t.Fatalf("expected line to start with %q, got: %s", "XiT · auto · ", line)
+	}
+	if !strings.Contains(line, "KB") {
+		t.Errorf("expected KB units in line, got: %s", line)
+	}
+	if !strings.Contains(line, "saved ~") {
+		t.Errorf("expected a saved-tokens figure, got: %s", line)
+	}
+	if !strings.Contains(line, "exit 0") {
+		t.Errorf("expected exit code in line, got: %s", line)
+	}
+	forbidden := []string{"/Users/", "/home/", "prompt", "reply", "install", "token=", "api_key", "secret"}
+	lower := strings.ToLower(line)
+	for _, f := range forbidden {
+		if strings.Contains(lower, strings.ToLower(f)) {
+			t.Errorf("status line must never contain %q, got: %s", f, line)
+		}
+	}
+}
+
+// TestFormatCodexAutoStatusLineLargeSavings checks the k-token formatting
+// threshold matches the user-specified example ("saved ~10.9k tokens").
+func TestFormatCodexAutoStatusLineLargeSavings(t *testing.T) {
+	// savedBytes/4 = 10900 tokens -> "10.9k"
+	line := formatCodexAutoStatusLine(49356, 4813, 43600, 0)
+	if !strings.Contains(line, "10.9k tokens") {
+		t.Errorf("expected %q in line, got: %s", "10.9k tokens", line)
+	}
+}
+
+// TestBuildCodexToolOutputAppendsStatusLine ensures the per-command status
+// line is present alongside the existing real result content, never
+// replacing it, and never leaking the underlying command text (which
+// buildCodexToolOutput never receives in the first place).
+func TestBuildCodexToolOutputAppendsStatusLine(t *testing.T) {
+	summary := &output.Summary{
+		BodyLines:  []string{"FAIL  ./pkg  (0.01s)"},
+		ExitCode:   1,
+		Confidence: "high",
+	}
+	out := buildCodexToolOutput(summary, 49356, 4813, 44543, 1)
+	if !strings.Contains(out, "FAIL  ./pkg  (0.01s)") {
+		t.Errorf("expected real diagnostic content preserved, got:\n%s", out)
+	}
+	if !strings.Contains(out, "XiT · auto ·") {
+		t.Errorf("expected the per-command status line appended, got:\n%s", out)
+	}
+	if !strings.Contains(out, "exit 1") {
+		t.Errorf("expected the real exit code surfaced in the status line, got:\n%s", out)
+	}
+}
+
+// TestChatGPTSetupAutoInstallsAndIsIdempotent runs `xit chatgpt setup --auto`
+// as a real subprocess against a throwaway project dir and fake HOME,
+// verifying: first run installs the hook, backs up (skips backup when there
+// was nothing to back up), and a second run is idempotent (no duplicate
+// entries, same success path).
+func TestChatGPTSetupAutoInstallsAndIsIdempotent(t *testing.T) {
+	bin := buildXit(t)
+	projectDir := t.TempDir()
+	fakeHome := t.TempDir()
+
+	run := func() (string, int) {
+		cmd := exec.Command(bin, "chatgpt", "setup", "--auto")
+		cmd.Dir = projectDir
+		cleanEnv(cmd)
+		cmd.Env = append(cmd.Env, "HOME="+fakeHome, "XIT_TELEMETRY=off")
+		out, _ := cmd.CombinedOutput()
+		return string(out), cmd.ProcessState.ExitCode()
+	}
+
+	out1, code1 := run()
+	if code1 != 0 {
+		t.Fatalf("first setup run failed (exit %d):\n%s", code1, out1)
+	}
+	if !strings.Contains(out1, "Hook installed (all 4 lifecycle events)") {
+		t.Errorf("expected a fresh install message, got:\n%s", out1)
+	}
+	if !strings.Contains(out1, "Automatic mode:             enabled") {
+		t.Errorf("expected automatic mode enabled in final status, got:\n%s", out1)
+	}
+
+	hooksPath := filepath.Join(projectDir, ".codex", "hooks.json")
+	firstContent, err := os.ReadFile(hooksPath)
+	if err != nil {
+		t.Fatalf("expected hooks.json to exist after setup: %v", err)
+	}
+
+	out2, code2 := run()
+	if code2 != 0 {
+		t.Fatalf("second (idempotent) setup run failed (exit %d):\n%s", code2, out2)
+	}
+	if !strings.Contains(out2, "already installed and complete") {
+		t.Errorf("expected idempotent re-run message, got:\n%s", out2)
+	}
+	secondContent, err := os.ReadFile(hooksPath)
+	if err != nil {
+		t.Fatalf("expected hooks.json to still exist: %v", err)
+	}
+	if string(firstContent) != string(secondContent) {
+		t.Error("re-running setup must not change hooks.json content when already installed")
+	}
+}
+
+// TestChatGPTSetupAutoRefusesWhenDuplicateExists proves setup never silently
+// creates a double-firing configuration: if a hook is already present in
+// BOTH the project layer and the Codex user-level layer, it must refuse.
+func TestChatGPTSetupAutoRefusesWhenDuplicateExists(t *testing.T) {
+	bin := buildXit(t)
+	projectDir := t.TempDir()
+	fakeHome := t.TempDir()
+
+	// Seed a duplicate: install the hook at the project layer directly on
+	// disk, AND at the Codex user-level layer (fakeHome/.codex/hooks.json),
+	// simulating a pre-existing broad install before setup ever runs.
+	install := exec.Command(bin, "hook", "install", "codex", "--scope", "project", "--yes")
+	install.Dir = projectDir
+	cleanEnv(install)
+	install.Env = append(install.Env, "HOME="+fakeHome, "XIT_TELEMETRY=off")
+	if out, err := install.CombinedOutput(); err != nil {
+		t.Fatalf("seeding project-level install failed: %v\n%s", err, out)
+	}
+	userHooksPath := filepath.Join(fakeHome, ".codex", "hooks.json")
+	projectHooksData, err := os.ReadFile(filepath.Join(projectDir, ".codex", "hooks.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(userHooksPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(userHooksPath, projectHooksData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(bin, "chatgpt", "setup", "--auto")
+	cmd.Dir = projectDir
+	cleanEnv(cmd)
+	cmd.Env = append(cmd.Env, "HOME="+fakeHome, "XIT_TELEMETRY=off")
+	out, _ := cmd.CombinedOutput()
+	if cmd.ProcessState.ExitCode() == 0 {
+		t.Fatalf("expected setup to refuse (non-zero exit) when a duplicate hook exists, got exit 0:\n%s", out)
+	}
+	if !strings.Contains(string(out), "BLOCKED") {
+		t.Errorf("expected a BLOCKED message, got:\n%s", out)
 	}
 }

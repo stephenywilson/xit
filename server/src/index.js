@@ -18,7 +18,7 @@
 
 import { validateMetrics, MAX_BODY_BYTES } from "./validate.js";
 import { computeStats } from "./stats.js";
-import { computeDashboard, isValidRange } from "./dashboard.js";
+import { computeDashboard, computeCoverage, isValidRange, resolvePublicStart } from "./dashboard.js";
 import { readExternal, runScheduled } from "./external.js";
 import { DASHBOARD_HTML } from "./page.js";
 
@@ -91,6 +91,13 @@ export default {
       return handleDashboard(url, env);
     }
 
+    // Aggregate-only coverage diagnostics (first/last event, event days, total
+    // vs. post-cutover event counts). Helps explain why short ranges look
+    // identical. Never returns any per-event / per-install identifier.
+    if (request.method === "GET" && pathname === "/api/dashboard/coverage") {
+      return handleCoverage(env);
+    }
+
     return json({ error: "not found" }, 404);
   },
 
@@ -132,8 +139,14 @@ async function handleStats(env) {
       note: "METRICS_DB not bound (local dev)",
     });
   }
+  const ps = resolvePublicStart(env.METRICS_PUBLIC_START_AT);
+  if (ps.mode === "error") {
+    // Fail-closed: a misconfigured cutover must not silently expose pre-cutover
+    // internal test data. Surface it loudly instead.
+    return json({ error: "invalid METRICS_PUBLIC_START_AT configuration" }, 500);
+  }
   try {
-    return json(await computeStats(env.METRICS_DB));
+    return json(await computeStats(env.METRICS_DB, ps.value));
   } catch {
     return json({ error: "stats unavailable" }, 503);
   }
@@ -148,14 +161,45 @@ async function handleDashboard(url, env) {
       { "access-control-allow-origin": "*" },
     );
   }
+  const ps = resolvePublicStart(env && env.METRICS_PUBLIC_START_AT);
+  if (ps.mode === "error") {
+    // Fail-closed: a misconfigured cutover must not silently expose pre-cutover
+    // internal test data. Surface it loudly instead of leaking.
+    return json(
+      { error: "invalid METRICS_PUBLIC_START_AT configuration" },
+      500,
+      { "access-control-allow-origin": "*" },
+    );
+  }
   const db = env && env.METRICS_DB ? env.METRICS_DB : null;
   try {
+    // external (npm downloads) is public data and is NOT affected by the cutover.
     const external = await readExternal(db, env);
-    const payload = await computeDashboard(db, range, external);
+    const payload = await computeDashboard(db, range, external, ps.value);
     // Read-only aggregate; safe to expose to any origin for the dashboard page.
     return json(payload, 200, { "access-control-allow-origin": "*" });
   } catch {
     return json({ error: "dashboard unavailable" }, 503, {
+      "access-control-allow-origin": "*",
+    });
+  }
+}
+
+async function handleCoverage(env) {
+  const ps = resolvePublicStart(env && env.METRICS_PUBLIC_START_AT);
+  if (ps.mode === "error") {
+    return json(
+      { error: "invalid METRICS_PUBLIC_START_AT configuration" },
+      500,
+      { "access-control-allow-origin": "*" },
+    );
+  }
+  const db = env && env.METRICS_DB ? env.METRICS_DB : null;
+  try {
+    const payload = await computeCoverage(db, ps.value);
+    return json(payload, 200, { "access-control-allow-origin": "*" });
+  } catch {
+    return json({ error: "coverage unavailable" }, 503, {
       "access-control-allow-origin": "*",
     });
   }

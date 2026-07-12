@@ -8,7 +8,7 @@
 
 XiT 会把 `go test`、`grep`、`git diff`、`docker logs` 这类高噪音命令输出，吸成 AI 能读懂的短摘要；完整 raw_log 留在本地，随时可查。
 
-XiT / 吸T神功 是面向 AI Coding 工作流的本地终端输出压缩层：把高噪音命令交给 `xit auto`，将长输出压缩成 AI 可读摘要，同时把 raw log 留在本地，减少上下文消耗。已验证适配 Kimi CLI、Claude Code、Codex CLI、OpenCode、Cursor（详见下方[适配图谱](#江湖适配图谱)，不同 CLI 的支持深度不同）。
+XiT / 吸T神功 是面向 AI Coding 工作流的本地终端输出压缩层：把高噪音命令交给 `xit auto`，将长输出压缩成 AI 可读摘要，同时把 raw log 留在本地，减少上下文消耗。已验证适配 Kimi CLI、Claude Code、Codex CLI、ChatGPT 桌面应用（Codex mode，通过共享的 Codex 配置与 Hook 体系）、OpenCode、Cursor（详见下方[适配图谱](#江湖适配图谱)，不同 CLI 的支持深度不同）。
 
 XiT / 吸T神功 is a local output-compression layer for AI coding workflows. It routes noisy terminal output through `xit auto`, keeps raw logs locally, and shows estimated Token savings in supported CLI / IDE surfaces.
 
@@ -19,19 +19,21 @@ XiT / 吸T神功 is a local output-compression layer for AI coding workflows. It
 [![License](https://img.shields.io/badge/license-MIT-b8860b?style=flat-square)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-6b7280?style=flat-square)](#npm-包说明)
 
-**当前版本 / Current release** — CLI / npm `xitsg@0.2.48` · VS Code Extension `0.0.34` · GitHub Release `v0.2.48`
+**当前版本 / Current release** — CLI / npm `xitsg@0.2.51` · VS Code Extension `0.0.36` · GitHub Release `v0.2.51`
 
 </div>
 
 ---
 
-## 最新版 / Latest: 0.2.48 · VS Code 0.0.34
+## 最新版 / Latest: 0.2.51 · VS Code 0.0.36
 
-0.2.48 / VS Code 0.0.34 is a reliability hotfix for the VS Code extension.
+0.2.51 fixes a version-gate bug where a CLI exactly at the server's declared minimum version (`current == min_cli`) could be incorrectly refused by `xit auto` if the server conservatively sent `severity=blocked`. Equality (and anything above the minimum) is now always allowed; only `current < min_cli` blocks. The same equality-safe fix ships for the VS Code extension's `min_vscode` check.
 
-It improves Dashboard and Status Bar updates across repeated AI workflow runs, including cases where an AI agent changes directories during a session. Users should upgrade both the CLI package and the VS Code extension for the fix to take effect.
+This release also adds support for **Codex mode inside the ChatGPT desktop app**, through the shared Codex configuration and hook system — Codex CLI, the Codex VS Code extension, and ChatGPT Desktop's Codex mode all resolve to the exact same project-scoped hook, never a duplicate. See `xit chatgpt status` / `xit chatgpt diagnose`. XiT does not collect or claim to support the ChatGPT app's general Chat or Work modes. The Dashboard also gained a "By Surface" breakdown (Codex CLI / Codex IDE / ChatGPT Desktop · Codex / etc.) alongside the existing "By AI Adapter" view.
 
-0.2.48 / VS Code 0.0.34 是 VS Code 扩展稳定性 hotfix，提升了 Dashboard / 状态栏在多轮 AI 工作流中的更新可靠性，尤其是 AI agent 在会话中切换目录执行命令的场景。请同时升级 CLI 与 VS Code 扩展。
+0.2.51 修复了一个版本门控 bug：当 CLI 版本恰好等于服务端声明的最低版本（`current == min_cli`）时，如果服务端保守地返回 `severity=blocked`，`xit auto` 可能被错误拒绝。现在等于或高于最低版本永远放行，只有 `current < min_cli` 才会阻断；VS Code 扩展的 `min_vscode` 判断同样修复。
+
+本轮同时新增对 **ChatGPT 桌面应用中 Codex mode** 的支持：通过共享的 Codex 配置与 Hook 体系，Codex CLI、Codex VS Code 扩展、ChatGPT 桌面应用的 Codex mode 都指向同一个项目级 hook，不会重复安装。详见 `xit chatgpt status` / `xit chatgpt diagnose`。XiT 不收集、也不声称支持 ChatGPT 应用的普通 Chat 或 Work 模式。Dashboard 新增「By Surface」细分视图（Codex CLI / Codex IDE / ChatGPT Desktop · Codex 等），与现有的「By AI Adapter」视图并列。
 
 > 隐私边界不变：无 raw-log 遥测，仅匿名使用统计，且可关闭。raw log 始终留在本地。XiT 永不上传终端原始输出、prompt、AI 回复、命令文本、文件路径、用户名、邮箱、API key 或完整 session id。`xit telemetry off` 或 `XIT_TELEMETRY=off` 可关闭统计。
 > No raw-log telemetry. Anonymous usage metrics only, and can be disabled. Raw logs stay local. XiT never uploads raw terminal output, prompts, AI replies, command text, file paths, usernames, emails, API keys, or full session ids. Disable with `xit telemetry off` or `XIT_TELEMETRY=off`.
@@ -185,10 +187,11 @@ XiT 不替你写代码，也不上传日志。它只做一件事：把终端噪�
 | **Claude Code** | ✅ done | observe hook + hitrate + command-backed statusLine |
 | **Antigravity CLI** | ✅ done | rules + command-backed statusLine + autostate |
 | **Codex CLI** | ✅ done | AGENTS.md rules + PreToolUse hook observe + hitrate；bottom statusLine unsupported by current Codex CLI |
+| **ChatGPT Desktop App（Codex mode）** | ✅ done（共享 Codex hook） | 通过共享的 Codex 配置与 Hook 体系，支持 ChatGPT 桌面应用中的 Codex mode；不声称支持 Chat / Work 模式；`xit chatgpt status`/`xit hook status chatgpt` |
 | **Aider** | ✅ rules adapter | `.aider.conf.yml` + `XIT_AIDER.md`；hooks/statusLine not available |
 | **OpenCode** | ✅ hook/reroute | `tool.execute.before` hook reroute + AI 直接写 `xit auto` 时自动注入 OpenCode 上下文 + 工具输出显示中文吸T神功摘要；暂不支持 OpenCode 主界面常驻 statusline/footer |
 | **Cursor** | 🧪 Experimental / Observe | `beforeShellExecution` observe + strict mode GUI ask + hitrate；reroute/statusLine not enabled，不做完整支持承诺 |
-| **VS Code Extension** | ✅ Supported（`0.0.34`） | Status Bar + Dashboard（本轮发功/今日功力/功力累计）+ Codex Chat Bridge + Claude Code panel bridge（deny + 推荐 retry + fallback finalization） |
+| **VS Code Extension** | ✅ Supported（`0.0.36`） | Status Bar + Dashboard（本轮发功/今日功力/功力累计）+ Codex Chat Bridge + Claude Code panel bridge（deny + 推荐 retry + fallback finalization） |
 | **DeepSeek 系 CLI** | 📋 planned | 调研中 |
 | **Gemini** | 📋 not yet supported / planned | 暂未实现，不做未验证承诺 |
 
@@ -292,10 +295,11 @@ xit auto --help     # 查看帮助
 - Claude Code 适配（observe hook + hitrate + command-backed statusLine）
 - Antigravity CLI 适配（rules + statusLine + autostate）
 - Codex CLI 适配（AGENTS.md rules + PreToolUse hook observe + hitrate）
+- ChatGPT 桌面应用 Codex mode 适配（通过共享的 Codex 配置与 Hook 体系，见 `xit chatgpt status`；不声称支持 Chat / Work 模式）
 - Cursor 适配（beforeShellExecution observe + strict mode GUI ask + hitrate）
 - OpenCode 适配（`tool.execute.before` hook reroute + 工具输出中文摘要；主界面 statusline/footer 暂不支持）
 - npm 全平台分发（macOS / Linux / Windows）
-- VS Code extension `0.0.34` 已发布到 Visual Studio Marketplace（Status Bar + Dashboard + Codex Chat Bridge + Claude Code panel bridge）
+- VS Code extension `0.0.36` 已发布到 Visual Studio Marketplace（Status Bar + Dashboard + Codex Chat Bridge + Claude Code panel bridge）
 
 **近期**
 

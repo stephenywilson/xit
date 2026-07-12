@@ -1,0 +1,37 @@
+{
+  "name": "xit",
+  "version": "0.2.51",
+  "description": "Compress noisy terminal output before it reaches Codex.",
+  "author": {
+    "name": "XiT",
+    "url": "https://github.com/stephenywilson/xit"
+  },
+  "homepage": "https://github.com/stephenywilson/xit",
+  "repository": "https://github.com/stephenywilson/xit",
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "terminal",
+    "compression",
+    "tokens",
+    "developer-tools"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "吸T神功（XiT）",
+    "shortDescription": "Compress terminal noise and save Codex context.",
+    "longDescription": "XiT detects high-output terminal commands, compresses noisy output, preserves errors and key evidence, and reduces the context sent to Codex. Supports Codex mode inside the ChatGPT desktop app, Codex CLI, and Codex IDE through the shared Codex configuration and hook system — no separate installation needed for any of them. Once automatic mode is set up for a project (`xit chatgpt setup --auto`), high-output commands are rerouted through XiT by a deterministic hook — no need to select this plugin or mention XiT every time.",
+    "developerName": "XiT",
+    "category": "Productivity",
+    "websiteURL": "https://github.com/stephenywilson/xit",
+    "privacyPolicyURL": "https://github.com/stephenywilson/xit/blob/main/docs/privacy.md",
+    "defaultPrompt": [
+      "检查 XiT 自动模式是否已启用 / Check whether XiT automatic mode is enabled",
+      "诊断 ChatGPT/Codex 集成 / Diagnose the ChatGPT/Codex integration",
+      "查看 XiT 节省了多少 Token / See how many tokens XiT has saved"
+    ],
+    "brandColor": "#111111",
+    "composerIcon": "./assets/icon.png",
+    "logo": "./assets/logo.png"
+  }
+}

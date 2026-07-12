@@ -77,6 +77,8 @@ export const DASHBOARD_HTML = `<!doctype html>
     <div class="meta" id="meta">loading…</div>
   </header>
 
+  <div class="meta" id="cutover" style="margin-top:2px"></div>
+
   <div class="ranges" id="ranges">
     <button data-range="1d">Today</button>
     <button data-range="7d">7D</button>
@@ -92,6 +94,9 @@ export const DASHBOARD_HTML = `<!doctype html>
   <h2>By AI Adapter</h2>
   <div class="panel"><div id="adapters"></div></div>
 
+  <h2>By Surface</h2>
+  <div class="panel"><div id="surfaces"></div></div>
+
   <h2>Trends</h2>
   <div class="grid2">
     <div class="panel"><div class="k" style="color:var(--faint);font-size:11px;text-transform:uppercase;letter-spacing:.07em">Daily runs</div><svg class="chart" id="chart-runs"></svg></div>
@@ -101,6 +106,11 @@ export const DASHBOARD_HTML = `<!doctype html>
     <div class="k" style="color:var(--faint);font-size:11px;text-transform:uppercase;letter-spacing:.07em">Runs by adapter over time</div>
     <svg class="chart" id="chart-adapters" style="height:200px"></svg>
     <div class="legend" id="legend-adapters"></div>
+  </div>
+  <div class="panel" style="margin-top:16px">
+    <div class="k" style="color:var(--faint);font-size:11px;text-transform:uppercase;letter-spacing:.07em">Runs by surface over time</div>
+    <svg class="chart" id="chart-surfaces" style="height:200px"></svg>
+    <div class="legend" id="legend-surfaces"></div>
   </div>
 
   <h2>Versions</h2>
@@ -128,6 +138,15 @@ const ADAPTER_LABELS = {
   kimi:"Kimi", cursor:"Cursor", vscode:"VS Code", unknown:"Unknown",
 };
 const ADAPTER_COLORS = ["#f4f4f5","#b9b9c2","#86868f","#5d5d66","#3f3f47","#2a2a30","#71717a"];
+// codex_cli/codex_ide/chatgpt_desktop_codex/codex_shared are the finer-grained
+// Codex front-end breakdown added in 0.2.51; cli/hook/vscode/bridge are the
+// original generic surfaces used by every other adapter.
+const SURFACE_LABELS = {
+  chatgpt_desktop_codex:"ChatGPT Desktop · Codex", codex_cli:"Codex CLI", codex_ide:"Codex IDE",
+  codex_shared:"Codex (unspecified)", vscode:"VS Code", cli:"CLI", hook:"Hook", bridge:"Bridge",
+  unknown:"Unknown",
+};
+const SURFACE_COLORS = ["#f4f4f5","#b9b9c2","#86868f","#5d5d66","#3f3f47","#2a2a30","#71717a","#9a9aa2"];
 
 const nf = new Intl.NumberFormat("en-US");
 function fmt(n){ return nf.format(Math.round(Number(n)||0)); }
@@ -169,6 +188,18 @@ function render(d){
   document.getElementById("meta").textContent =
     "range " + (d.range||current) + " · updated " + new Date(d.generated_at||Date.now()).toLocaleString();
 
+  // Public-metrics cutover line.
+  const cut = document.getElementById("cutover");
+  if(d.public_start_at){
+    const t = new Date(d.public_start_at);
+    const p = n => String(n).padStart(2,"0");
+    cut.textContent = "Public metrics since "
+      + t.getUTCFullYear()+"-"+p(t.getUTCMonth()+1)+"-"+p(t.getUTCDate())
+      +" "+p(t.getUTCHours())+":"+p(t.getUTCMinutes())+" UTC";
+  }else{
+    cut.textContent = "Public metrics since configured cutover — showing all recorded events";
+  }
+
   // cards
   const installs = (s.active_installs==null) ? "N/A" : fmt(s.active_installs);
   const cards = [
@@ -187,11 +218,15 @@ function render(d){
   // adapters table
   renderAdapters(d.by_adapter||[]);
 
+  // surfaces table
+  renderSurfaces(d.by_surface||[]);
+
   // trends
   const trend = d.daily_trend||[];
   lineChart("chart-runs", trend.map(r=>({x:r.day,y:Number(r.runs)||0})));
   lineChart("chart-tokens", trend.map(r=>({x:r.day,y:Number(r.saved_tokens)||0})));
   multiAdapterChart(d.adapter_daily_trend||[]);
+  multiSurfaceChart(d.surface_daily_trend||[]);
 
   // versions
   renderVersions("cli-versions","CLI version","cli_version", d.by_cli_version||[]);
@@ -212,6 +247,25 @@ function renderAdapters(rows){
     const share = runs/totalRuns*100;
     const sr = runs ? (succ/runs*100) : 0;
     const name = ADAPTER_LABELS[r.adapter] || r.adapter || "Unknown";
+    html += '<tr><td class="name">'+name+'</td><td>'+fmt(runs)+'</td><td>'+fmt(r.saved_tokens)
+      +'</td><td>'+bytes(r.saved_bytes)+'</td><td>'+pct(sr)+'</td><td>'+share.toFixed(1)
+      +'%<div class="bar"><i style="width:'+share.toFixed(1)+'%"></i></div></td></tr>';
+  }
+  html += '</tbody></table>';
+  host.innerHTML = html;
+}
+
+function renderSurfaces(rows){
+  const host = document.getElementById("surfaces");
+  if(!rows.length){ host.innerHTML='<div class="empty">No data for this range.</div>'; return; }
+  const totalRuns = rows.reduce((a,r)=>a+(Number(r.runs)||0),0) || 1;
+  let html = '<table><thead><tr><th>Surface</th><th>Runs</th><th>Saved tokens</th><th>Saved bytes</th><th>Success</th><th>Share</th></tr></thead><tbody>';
+  for(const r of rows){
+    const runs = Number(r.runs)||0;
+    const succ = Number(r.success_runs)||0;
+    const share = runs/totalRuns*100;
+    const sr = runs ? (succ/runs*100) : 0;
+    const name = SURFACE_LABELS[r.surface] || r.surface || "Unknown";
     html += '<tr><td class="name">'+name+'</td><td>'+fmt(runs)+'</td><td>'+fmt(r.saved_tokens)
       +'</td><td>'+bytes(r.saved_bytes)+'</td><td>'+pct(sr)+'</td><td>'+share.toFixed(1)
       +'%<div class="bar"><i style="width:'+share.toFixed(1)+'%"></i></div></td></tr>';
@@ -305,6 +359,34 @@ function multiAdapterChart(rows){
     if(days.length<2){ line="M "+sx(0)+" "+sy(series[a][0]); }
     svgInner+='<path d="'+line+'" fill="none" stroke="'+c+'" stroke-width="1.6"/>';
     legend.appendChild(el("span",null,'<i style="background:'+c+'"></i>'+(ADAPTER_LABELS[a]||a)));
+  });
+  svg.innerHTML=svgInner;
+}
+
+function multiSurfaceChart(rows){
+  const svg = document.getElementById("chart-surfaces");
+  const legend = document.getElementById("legend-surfaces");
+  legend.innerHTML="";
+  const W=svg.clientWidth||1040, H=svg.clientHeight||200, P=10;
+  svg.setAttribute("viewBox","0 0 "+W+" "+H);
+  if(!rows.length){ svg.innerHTML='<text x="'+(W/2)+'" y="'+(H/2)+'" fill="#6c6c75" font-size="12" text-anchor="middle">not enough data</text>'; return; }
+  const days=[...new Set(rows.map(r=>r.day))].sort();
+  const surfaces=[...new Set(rows.map(r=>r.surface))];
+  const idx=Object.fromEntries(days.map((d,i)=>[d,i]));
+  const series={};
+  surfaces.forEach(s=> series[s]=days.map(()=>0));
+  rows.forEach(r=>{ series[r.surface][idx[r.day]] = Number(r.runs)||0; });
+  let max=1; days.forEach((d,i)=> surfaces.forEach(s=> max=Math.max(max, series[s][i])));
+  const sx=i=> P + (days.length<2?0:i*(W-2*P)/(days.length-1));
+  const sy=v=> H-P - (v/max)*(H-2*P);
+  let svgInner='<line class="axis" x1="'+P+'" y1="'+(H-P)+'" x2="'+(W-P)+'" y2="'+(H-P)+'"/>';
+  surfaces.forEach((s,si)=>{
+    const c=SURFACE_COLORS[si%SURFACE_COLORS.length];
+    let line="";
+    series[s].forEach((v,i)=>{ line+=(i?" L ":"M ")+sx(i)+" "+sy(v); });
+    if(days.length<2){ line="M "+sx(0)+" "+sy(series[s][0]); }
+    svgInner+='<path d="'+line+'" fill="none" stroke="'+c+'" stroke-width="1.6"/>';
+    legend.appendChild(el("span",null,'<i style="background:'+c+'"></i>'+(SURFACE_LABELS[s]||s)));
   });
   svg.innerHTML=svgInner;
 }

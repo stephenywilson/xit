@@ -66,8 +66,13 @@ var allowedAdapters = map[string]bool{
 	"opencode": true, "cursor": true, "vscode": true, "unknown": true,
 }
 
+// codex_cli / codex_ide / chatgpt_desktop_codex / codex_shared are the
+// finer-grained Codex front-end breakdown (see internal/codexhook.DetectSurface).
+// adapter stays "codex" for all of them; only surface distinguishes the
+// front-end, so historical Codex data stays continuous under one adapter.
 var allowedSurfaces = map[string]bool{
 	"cli": true, "hook": true, "vscode": true, "bridge": true,
+	"codex_cli": true, "codex_ide": true, "chatgpt_desktop_codex": true, "codex_shared": true,
 }
 
 // Metrics is the privacy-safe input a caller assembles. Note there is no command,

@@ -84,6 +84,22 @@ func RunHookCommand(home string) error {
 	shouldReroute, recommended := ShouldReroute(bash.Command)
 
 	if cfg.Mode == "reroute" && shouldReroute {
+		// fail_open=true means "only deny if xit auto would actually run":
+		// if it's missing, version-gate blocked, or the probe itself times
+		// out/errors, let the original command through rather than steer
+		// the AI toward a recommended replacement that can't execute
+		// either — this is exactly the deadlock a stale/misconfigured
+		// reroute config previously caused (deny -> "run xit auto" -> xit
+		// auto also blocked -> no path forward).
+		if cfg.FailOpen {
+			if avail := checkXitAutoAvailable(); !avail.Available {
+				reason := "reroute policy matched but xit auto is unavailable (" + avail.Reason + "); fail-open, allowing original command"
+				logEventWithDisplay(f, ts, cfg.Mode, bash.Command, recommended, "fail_open_allow:"+avail.Reason, reason, "", cwd, sessionID)
+				fmt.Println("{}")
+				return nil
+			}
+		}
+
 		reason := BuildRerouteReason(bash.Command, recommended, cfg.StatusStyle)
 		displayMsg := reason
 		logEventWithDisplay(f, ts, cfg.Mode, bash.Command, recommended, "reroute", reason, displayMsg, cwd, sessionID)

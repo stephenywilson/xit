@@ -4,6 +4,7 @@ import {
   isTelemetryEnabled,
   buildMetricsEvent,
   compareVersions,
+  evaluateVersionGate,
 } from "../telemetry";
 
 const FORBIDDEN_KEYS = [
@@ -99,4 +100,66 @@ test("compareVersions handles upgrade detection", () => {
   assert.equal(compareVersions("0.0.34", "0.0.35"), -1);
   assert.equal(compareVersions("0.0.35", "0.0.35"), 0);
   assert.equal(compareVersions("v0.0.36", "0.0.35"), 1);
+});
+
+// evaluateVersionGate: the 0.2.51 fix's VS Code-side parity. current==minimum
+// must never be "blocked", even when the server declares severity="blocked" —
+// the same equality bug class fixed in internal/updatecheck on the CLI. The
+// 0.2.51 follow-up also mirrors the CLI's current>=latest rule: nothing to
+// upgrade to always evaluates to "info", regardless of server severity.
+test("below minimum is blocked", () => {
+  const r = evaluateVersionGate("0.0.34", "0.0.35", "0.0.36", "info");
+  assert.equal(r.belowMinimum, true);
+  assert.equal(r.severity, "blocked");
+});
+
+test("0.0.35 < min 0.0.36 -> blocked (spec case)", () => {
+  const r = evaluateVersionGate("0.0.35", "0.0.36", "0.0.36", "required");
+  assert.equal(r.belowMinimum, true);
+  assert.equal(r.severity, "blocked");
+});
+
+test("0.0.36 == min == latest -> allowed (spec case)", () => {
+  const r = evaluateVersionGate("0.0.36", "0.0.36", "0.0.36", "blocked");
+  assert.equal(r.belowMinimum, false);
+  assert.equal(r.upgradeNeeded, false);
+  assert.equal(r.severity, "info");
+});
+
+test("0.0.37 > latest 0.0.36 -> allowed, no update required (spec case)", () => {
+  const r = evaluateVersionGate("0.0.37", "0.0.36", "0.0.36", "required");
+  assert.equal(r.belowMinimum, false);
+  assert.equal(r.upgradeNeeded, false);
+  assert.equal(r.severity, "info");
+});
+
+test("equal to minimum is allowed, even if server says blocked", () => {
+  const r = evaluateVersionGate("0.0.35", "0.0.35", "0.0.36", "blocked");
+  assert.equal(r.belowMinimum, false);
+  assert.equal(r.severity, "required"); // downgraded from the server's "blocked"
+});
+
+test("above minimum is allowed, even if server says blocked", () => {
+  const r = evaluateVersionGate("0.0.36", "0.0.35", "0.0.37", "blocked");
+  assert.equal(r.belowMinimum, false);
+  assert.equal(r.severity, "required");
+});
+
+test("server severity below blocked passes through unchanged when not below minimum", () => {
+  const r = evaluateVersionGate("0.0.36", "0.0.35", "0.0.37", "recommended");
+  assert.equal(r.belowMinimum, false);
+  assert.equal(r.severity, "recommended");
+});
+
+test("no minimum configured is never below minimum", () => {
+  const r = evaluateVersionGate("0.0.30", undefined, "0.0.37", "blocked");
+  assert.equal(r.belowMinimum, false);
+  assert.equal(r.severity, "required");
+});
+
+test("current ahead of latest is always info, even if server says blocked", () => {
+  const r = evaluateVersionGate("0.0.38", "0.0.35", "0.0.36", "blocked");
+  assert.equal(r.belowMinimum, false);
+  assert.equal(r.upgradeNeeded, false);
+  assert.equal(r.severity, "info");
 });

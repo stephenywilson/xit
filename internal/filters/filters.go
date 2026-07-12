@@ -250,23 +250,23 @@ func ClassifyPolicy(args []string) string {
 	}
 	tk := tupleKey(args)
 	switch tk {
-	case "go test", "cargo test", "npm test", "pnpm test", "pytest test":
+	case "go test", "cargo test", "npm test", "pnpm test", "yarn test", "pytest test":
 		return "should_compress"
 	case "git diff", "git log":
 		return "should_compress"
 	case "git status", "git branch":
 		return "should_passthrough"
-	case "docker logs":
+	case "docker logs", "kubectl logs":
 		return "should_compress"
-	case "docker ps":
+	case "docker ps", "kubectl get":
 		return "should_passthrough"
 	}
 	switch args[0] {
-	case "rg", "grep", "find", "cat", "head", "tail", "tsc", "eslint", "jq":
+	case "rg", "grep", "find", "cat", "head", "tail", "tsc", "eslint", "ruff", "jq":
 		return "should_compress"
 	case "ls":
 		return "should_passthrough"
-	case "go", "npm", "pnpm", "cargo", "docker":
+	case "go", "npm", "pnpm", "yarn", "cargo", "docker", "kubectl":
 		return "needs_review"
 	default:
 		return "needs_review"

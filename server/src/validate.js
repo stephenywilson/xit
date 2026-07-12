@@ -18,7 +18,15 @@ export const ALLOWED_ADAPTERS = new Set([
   "codex", "claude", "kimi", "opencode", "cursor", "vscode", "unknown",
 ]);
 
-export const ALLOWED_SURFACES = new Set(["cli", "hook", "vscode", "bridge"]);
+// codex_cli / codex_ide / chatgpt_desktop_codex / codex_shared are the
+// finer-grained Codex front-end breakdown added in XiT 0.2.51 (adapter stays
+// "codex" for all of them; only surface distinguishes CLI / IDE / ChatGPT
+// Desktop). Adding new surface values here is backward-compatible: existing
+// clients that only ever send the original four keep working unchanged.
+export const ALLOWED_SURFACES = new Set([
+  "cli", "hook", "vscode", "bridge",
+  "codex_cli", "codex_ide", "chatgpt_desktop_codex", "codex_shared",
+]);
 
 export const ALLOWED_STATUS = new Set(["success", "error"]);
 

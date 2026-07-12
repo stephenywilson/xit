@@ -56,10 +56,10 @@ A single event, schema `xit.metrics.v1`:
   "event": "run.finished",
   "anonymous_install_id": "random-local-id",
   "timestamp": "2026-06-29T00:00:00Z",
-  "cli_version": "0.2.49",
-  "vscode_extension_version": "0.0.35",
+  "cli_version": "0.2.51",
+  "vscode_extension_version": "0.0.36",
   "adapter": "codex | claude | kimi | opencode | cursor | vscode | unknown",
-  "surface": "cli | hook | vscode | bridge",
+  "surface": "cli | hook | vscode | bridge | codex_cli | codex_ide | chatgpt_desktop_codex | codex_shared",
   "os": "darwin | linux | windows",
   "arch": "arm64 | amd64",
   "input_bytes": 123456,
@@ -107,10 +107,10 @@ The CLI / extension fetch `GET {XIT_API_BASE}/v1/version`:
 
 ```json
 {
-  "latest_cli": "0.2.49",
-  "min_cli": "0.2.48",
-  "latest_vscode": "0.0.35",
-  "min_vscode": "0.0.34",
+  "latest_cli": "0.2.51",
+  "min_cli": "0.2.50",
+  "latest_vscode": "0.0.36",
+  "min_vscode": "0.0.35",
   "severity": "info | recommended | required | blocked",
   "message": "Please upgrade XiT.",
   "npm_command": "npm install -g xitsg@latest",
@@ -133,10 +133,16 @@ The CLI / extension fetch `GET {XIT_API_BASE}/v1/version`:
 | `info`        | No action; a newer version merely exists. |
 | `recommended` | Suggest upgrading. |
 | `required`    | Strongly urge upgrade; high-risk paths (hooks / VS Code bridge) may refuse. |
-| `blocked`     | Below `min_cli` / `min_vscode`; high-risk paths refuse. |
+| `blocked`     | Strictly below `min_cli` / `min_vscode` (current < minimum); also blocks the core path (`xit auto`). |
 
-When running below the declared minimum, XiT escalates locally to `blocked`
-even if the server was conservative.
+`blocked` means `current < minimum` and nothing else — **equality is never
+"below"**. When running below the declared minimum, XiT escalates locally to
+`blocked` even if the server was conservative. Conversely, when
+`current >= min_cli` (including exact equality), a server-declared
+`severity: "blocked"` is downgraded to `required` — a stale or overly broad
+server flag can never lock out a version that already satisfies the minimum.
+(This is the fix shipped in 0.2.51 / 0.0.36; see
+`docs/releases/RELEASE_NOTES_V0.2.51.md`.)
 
 ### What is never blocked
 

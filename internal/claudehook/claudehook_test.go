@@ -707,6 +707,9 @@ func TestResolveClaudeHomeXITHomeEnvWins(t *testing.T) {
 // read (and acted on) when the hook payload's cwd points at that project —
 // even though fallbackHome (simulating the global ~/.xit) has "observe".
 func TestRunHookCommandUsesProjectLocalConfigViaPayloadCwd(t *testing.T) {
+	// fail_open=true only denies when xit auto is confirmed available; stub
+	// that explicitly (this test is about home resolution, not availability).
+	withFakeAvailability(t, xitAvailability{Available: true, Reason: "available"})
 	globalHome := filepath.Join(t.TempDir(), "global-xit")
 	if err := WriteHookConfig(globalHome, &HookConfig{Mode: "observe", FailOpen: true}); err != nil {
 		t.Fatal(err)
@@ -870,6 +873,10 @@ func TestHandleStopNoBridgeOutsideVSCode(t *testing.T) {
 // recommended-command behavior (PreToolUse, "reroute" mode) must not
 // regress now that HandleUserPromptSubmit/HandleStop also exist.
 func TestPreToolUseRerouteDenyUnaffectedByTurnHooks(t *testing.T) {
+	// fail_open=true only denies when xit auto is confirmed available; stub
+	// that explicitly so this test doesn't depend on whether this machine's
+	// PATH/version-check cache happens to report xit auto as usable.
+	withFakeAvailability(t, xitAvailability{Available: true, Reason: "available"})
 	home := filepath.Join(t.TempDir(), ".xit")
 	if err := WriteHookConfig(home, &HookConfig{Mode: "reroute", FailOpen: true}); err != nil {
 		t.Fatal(err)

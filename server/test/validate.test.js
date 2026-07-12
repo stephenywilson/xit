@@ -90,6 +90,17 @@ test("rejects invalid surface", () => {
   assert.equal(r.ok, false);
 });
 
+// 0.2.51: finer-grained Codex front-end surfaces must be accepted
+// backward-compatibly (adapter stays "codex"; only surface differs).
+test("accepts the 0.2.51 Codex front-end surface values", () => {
+  for (const surface of ["codex_cli", "codex_ide", "chatgpt_desktop_codex", "codex_shared"]) {
+    const r = validateMetrics(goodEvent({ adapter: "codex", surface }));
+    assert.equal(r.ok, true, `surface=${surface} should be accepted`);
+    assert.equal(r.event.surface, surface);
+    assert.equal(r.event.adapter, "codex");
+  }
+});
+
 test("rejects invalid status / error_kind", () => {
   assert.equal(validateMetrics(goodEvent({ status: "maybe" })).ok, false);
   assert.equal(validateMetrics(goodEvent({ error_kind: "explosion" })).ok, false);

@@ -99,7 +99,14 @@ export interface BuildEventInput {
 const ALLOWED_ADAPTERS = new Set([
   "codex", "claude", "kimi", "opencode", "cursor", "vscode", "unknown",
 ]);
-const ALLOWED_SURFACES = new Set(["cli", "hook", "vscode", "bridge"]);
+// codex_cli / codex_ide / chatgpt_desktop_codex / codex_shared are the
+// finer-grained Codex front-end breakdown (0.2.51) — see
+// internal/codexhook.DetectSurface on the CLI side. adapter stays "codex"
+// for all of them; only surface distinguishes the front-end.
+const ALLOWED_SURFACES = new Set([
+  "cli", "hook", "vscode", "bridge",
+  "codex_cli", "codex_ide", "chatgpt_desktop_codex", "codex_shared",
+]);
 
 function normOsLabel(): string {
   switch (process.platform) {
@@ -304,4 +311,70 @@ function parseVersion(v: string): number[] {
     .replace(/^v/, "")
     .split(".")
     .map((p) => parseInt(p.replace(/[-+].*$/, ""), 10) || 0);
+}
+
+export type VersionSeverity = "info" | "recommended" | "required" | "blocked";
+
+export interface VersionGateResult {
+  /** current < minimum (strictly). Equality is never "below". */
+  belowMinimum: boolean;
+  /** current < latest (strictly). false when current is at or ahead of latest. */
+  upgradeNeeded: boolean;
+  /** effective severity after applying the rules below. */
+  severity: VersionSeverity;
+}
+
+function normalizeSeverity(s?: string): VersionSeverity {
+  switch ((s || "").toLowerCase().trim()) {
+    case "recommended":
+      return "recommended";
+    case "required":
+      return "required";
+    case "blocked":
+      return "blocked";
+    default:
+      return "info";
+  }
+}
+
+/**
+ * Evaluate the effective version-gate severity for `current` against a
+ * server-declared `minimum`, `latest`, and `serverSeverity`. Mirrors the
+ * CLI's internal/updatecheck.evaluate() exactly, so both surfaces agree:
+ *
+ *  - current < minimum            -> "blocked" (the only tier that disables
+ *    anything; escalated locally even if the server was conservative).
+ *  - current >= latest (at or     -> "info", regardless of what the server
+ *    ahead of the published version) said — nothing to upgrade to, so a
+ *                                     stale "required"/"blocked" server flag
+ *                                     can never linger for an up-to-date (or
+ *                                     newer-than-known) install.
+ *  - minimum <= current < latest, -> downgraded to "required" — never
+ *    server said "blocked"           actually blocked when current >= min.
+ *  - minimum <= current < latest, -> passed through unchanged
+ *    server said info/recommended/
+ *    required
+ *
+ * "blocked"/"required" are otherwise purely advisory here: only
+ * `severity === "blocked"` should ever be treated as disabling something,
+ * and current == minimum (or above) is never "blocked" — equality is never
+ * "below".
+ */
+export function evaluateVersionGate(
+  current: string,
+  minimum: string | undefined,
+  latest: string | undefined,
+  serverSeverity: string | undefined,
+): VersionGateResult {
+  const belowMinimum = !!minimum && compareVersions(current, minimum) < 0;
+  const upgradeNeeded = !!latest && compareVersions(current, latest) < 0;
+  let severity = normalizeSeverity(serverSeverity);
+  if (belowMinimum) {
+    severity = "blocked";
+  } else if (!upgradeNeeded) {
+    severity = "info";
+  } else if (severity === "blocked") {
+    severity = "required";
+  }
+  return { belowMinimum, upgradeNeeded, severity };
 }

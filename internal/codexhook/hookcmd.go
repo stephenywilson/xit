@@ -125,8 +125,10 @@ func logEventFull(f *os.File, ts, original, recommended, action, reason, cwd str
 //
 // One user prompt = one turn (session_id + turn_id). `xit auto` calls within
 // the same turn accumulate into one turn-state file under
-// state/codex-turns/<session>/<turn>.json; the two-line XiT footer is appended
-// ONCE to the turn's final assistant answer, never to individual tool output.
+// state/codex-turns/<session>/<turn>.json. ChatGPT Desktop's Codex mode does
+// not currently expose a verified Stop-only user-visible field that is hidden
+// from the model, so the default Stop path does not emit a footer; each
+// compressed tool call still carries its own low-noise XiT status line.
 
 // HookInput is the unified Codex hook payload (a superset of all event
 // shapes; unused fields are simply absent/zero per the actual event).
@@ -306,14 +308,14 @@ func HandlePostToolUse(fallbackHome string) error {
 	return nil
 }
 
-// HandleStop guarantees the turn's final answer contains the footer exactly
-// once when the turn had real `xit auto` activity:
+// HandleStop closes the Codex turn when it had real `xit auto` activity:
 //   - run_count==0                          -> allow, no footer.
-//   - footer already in last_assistant_message -> allow, cleanup turn state.
-//   - footer missing, first attempt (not stop_hook_active, not yet requested)
-//     -> block once with a continuation reason carrying the exact footer text.
-//   - otherwise (stop_hook_active==true, or footer already requested once)
-//     -> NEVER block again (loop prevention); fail-open allow + cleanup, and
+//   - footer already in last_assistant_message -> allow, cleanup turn state
+//     (compatibility with older hook prompts that asked the model to append it).
+//   - footer missing, first attempt (not stop_hook_active, not legacy-requested)
+//     -> allow, cleanup turn state; do not emit an unverified Stop footer.
+//   - otherwise (stop_hook_active==true, or legacy footer continuation used)
+//     -> NEVER request another continuation; fail-open allow + cleanup, and
 //     log a diagnostic note if the footer still never appeared.
 func HandleStop(fallbackHome string) error {
 	in, _ := readHookInput()
@@ -341,37 +343,26 @@ func HandleStop(fallbackHome string) error {
 		return nil
 	}
 	if in.StopHookActive || st.FooterContinuationUsed {
-		// Loop prevention: never block a second time. If the footer still
-		// never showed up, fail open and record a diagnostic note instead of
-		// looping forever. From the VS Code Bridge's perspective this also
-		// ends the turn — otherwise "收工中" would be stuck forever.
+		// Loop prevention for state left behind by the previous decision:block
+		// implementation: never request another continuation. If the footer
+		// still never showed up, fail open and record a diagnostic note. From
+		// the VS Code Bridge's perspective this also ends the turn — otherwise
+		// "收工中" would be stuck forever.
 		logTurnEvent(home, "Stop", in.SessionID, in.TurnID, "footer_missing_after_continuation_fail_open")
 		_ = CleanupTurnState(home, in.SessionID, st.TurnID)
 		finishVSCodeTurn(home, in.Cwd)
 		writeJSON(map[string]interface{}{})
 		return nil
 	}
-	line1, line2 := BuildFooterLines(st)
-	_ = MarkFooterContinuationUsed(home, in.SessionID, st.TurnID)
-	// FooterContinuationMarker is zero-width (invisible). The remaining text
-	// is framed as a short passive note ("XiT 已追加...") rather than an
-	// imperative internal instruction, so if a user glances at the transient
-	// continuation step it reads like a normal status line, not a leaked
-	// system prompt. The trailing parenthetical is the minimum signal Codex
-	// still needs to append the footer exactly once and avoid another tool
-	// call.
-	reason := FooterContinuationMarker + "XiT 已追加本轮 Token 节省摘要：\n\n" + line1 + "\n" + line2 + "\n\n（仅追加一次，不要再调用工具）"
-	writeJSON(map[string]interface{}{
-		"decision": "block",
-		"reason":   reason,
-	})
+	_ = CleanupTurnState(home, in.SessionID, st.TurnID)
+	finishVSCodeTurn(home, in.Cwd)
+	writeJSON(map[string]interface{}{})
 	return nil
 }
 
-// finishVSCodeTurn emits turn.finished when this Stop call genuinely ends
-// the turn (footer confirmed, no real activity, or loop-prevention
-// fail-open) — never on the "block, continue" path, where the turn is not
-// actually over yet.
+// finishVSCodeTurn emits turn.finished when this Stop call genuinely ends the
+// turn (default close, footer confirmed from a legacy turn, no real activity,
+// or legacy fail-open).
 func finishVSCodeTurn(home, cwd string) {
 	if vscodebridge.IsVSCodeHost(vscodebridge.CurrentEnv()) {
 		_ = vscodebridge.FinishTurnIfVSCode(home, cwd, vscodebridge.Adapter, vscodebridge.Surface, time.Now())

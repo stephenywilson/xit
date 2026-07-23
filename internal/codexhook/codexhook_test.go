@@ -1003,34 +1003,72 @@ func TestHandleStopAllowsWhenFooterAlreadyPresent(t *testing.T) {
 	}
 }
 
-func TestHandleStopBlocksOnceWhenFooterMissing(t *testing.T) {
+func TestHandleStopAllowsAndCleansWhenFooterMissing(t *testing.T) {
 	home := filepath.Join(t.TempDir(), ".xit")
 	_, _ = ResetTurnForPrompt(home, "s1", "t1", "hello")
 	_, _ = IncrementTurnState(home, "s1", "t1", 18532)
 
 	payload := `{"session_id":"s1","turn_id":"t1","stop_hook_active":false,"last_assistant_message":"All done, no footer here."}`
 	out := runHandler(t, home, payload, HandleStop)
-	var resp map[string]interface{}
-	if err := json.Unmarshal([]byte(out), &resp); err != nil {
-		t.Fatalf("invalid JSON: %v\n%s", err, out)
+	resp := parseHookJSON(t, out)
+	if len(resp) != 0 {
+		t.Fatalf("default Stop must not emit an unverified UI field, got: %s", out)
 	}
-	if resp["decision"] != "block" {
-		t.Fatalf("expected decision=block on first missing-footer Stop, got: %s", out)
+	if ReadTurnState(home, "s1", "t1") != nil {
+		t.Fatal("expected turn state cleaned after default Stop closes the turn")
 	}
-	reason, _ := resp["reason"].(string)
-	if !strings.Contains(reason, FooterContinuationMarker) {
-		t.Errorf("expected continuation marker in reason, got: %q", reason)
+}
+
+func TestHandleStopDefaultDoesNotDoubleRunCount(t *testing.T) {
+	home := filepath.Join(t.TempDir(), ".xit")
+	_, _ = ResetTurnForPrompt(home, "s1", "t1", "hello")
+	for _, saved := range []int{1200, 2300, 3400, 60} {
+		_, _ = IncrementTurnState(home, "s1", "t1", saved)
 	}
-	if !strings.Contains(reason, "吸T神功 · Codex · 守护你的T") || !strings.Contains(reason, "本轮共吸 1次") {
-		t.Errorf("expected exact footer text in reason, got: %q", reason)
+	before := ReadTurnState(home, "s1", "t1")
+	if before == nil || before.RunCount != 4 || before.SavedTokensTotal != 6960 {
+		t.Fatalf("test setup should have exactly 4 real runs before Stop, got %+v", before)
+	}
+
+	out := runHandler(t, home, `{"session_id":"s1","turn_id":"t1","stop_hook_active":false,"last_assistant_message":"done"}`, HandleStop)
+	resp := parseHookJSON(t, out)
+	if len(resp) != 0 {
+		t.Fatalf("default Stop must not emit a swallowed summary, got %#v", resp)
+	}
+	st := ReadTurnState(home, "s1", "t1")
+	if st != nil {
+		t.Fatalf("expected turn state cleaned after Stop without double-counting, got %+v", st)
+	}
+}
+
+func TestHandleStopDefaultDoesNotCreateContinuationPrompt(t *testing.T) {
+	home := filepath.Join(t.TempDir(), ".xit")
+	_, _ = ResetTurnForPrompt(home, "s1", "t1", "hello")
+	_, _ = IncrementTurnState(home, "s1", "t1", 6960)
+
+	out := runHandler(t, home, `{"session_id":"s1","turn_id":"t1","stop_hook_active":false,"last_assistant_message":"done"}`, HandleStop)
+	resp := parseHookJSON(t, out)
+
+	if _, ok := resp["decision"]; ok {
+		t.Fatalf("Stop feedback must not force a continuation, got %#v", resp)
+	}
+	if _, ok := resp["reason"]; ok {
+		t.Fatalf("Stop feedback must not provide a continuation prompt, got %#v", resp)
+	}
+	if _, ok := resp["systemMessage"]; ok {
+		t.Fatalf("default Stop must not emit an unverified systemMessage, got %#v", resp)
+	}
+
+	out2 := runHandler(t, home, `{"session_id":"s1","turn_id":"t1","stop_hook_active":true,"last_assistant_message":"Final answer without duplicated XiT footer."}`, HandleStop)
+	if strings.TrimSpace(out2) != "{}" {
+		t.Fatalf("expected stale continuation Stop to allow without blocking or requesting another tool call, got %q", out2)
 	}
 }
 
 // ──────────────────────────────────────────────────────────────────
-// turn.finished VS Code Bridge wiring: must fire on every path that
-// genuinely ENDS the turn (no real activity, footer confirmed, or
-// loop-prevention fail-open) — but never on the "block, continue" path,
-// where Codex hasn't actually finished its final answer yet.
+// turn.finished VS Code Bridge wiring: must fire on every path that genuinely
+// ENDS the turn (no real activity, footer confirmed, default close, or legacy
+// loop-prevention fail-open).
 // ──────────────────────────────────────────────────────────────────
 
 func TestHandleStopEmitsTurnFinishedWhenNoRealActivity(t *testing.T) {
@@ -1059,43 +1097,31 @@ func TestHandleStopEmitsTurnFinishedWhenFooterConfirmed(t *testing.T) {
 	}
 }
 
-func TestHandleStopDoesNotEmitTurnFinishedOnFirstBlock(t *testing.T) {
+func TestHandleStopEmitsTurnFinishedWhenDefaultClosesTurn(t *testing.T) {
 	home := filepath.Join(t.TempDir(), ".xit")
 	t.Setenv("VSCODE_PID", "4242")
 	_, _ = ResetTurnForPrompt(home, "s1", "t1", "hello")
 	_, _ = IncrementTurnState(home, "s1", "t1", 18532)
 	payload := `{"session_id":"s1","turn_id":"t1","stop_hook_active":false,"last_assistant_message":"All done, no footer here."}`
 	runHandler(t, home, payload, HandleStop)
-	// The turn is NOT over yet — Codex is being asked to append the footer
-	// and will call Stop again. Promoting "收工中" to a final result here
-	// would be premature.
-	if types := bridgeEventTypes(t, home); types != nil {
-		t.Fatalf("expected no turn.finished on the first block-and-continue Stop call, got: %v", types)
+	types := bridgeEventTypes(t, home)
+	if len(types) != 1 || types[0] != "turn.finished" {
+		t.Fatalf("expected exactly one turn.finished bridge event (default close = real final answer done), got: %v", types)
 	}
 }
 
-func TestHandleStopEmitsTurnFinishedOnFailOpenExhausted(t *testing.T) {
+func TestHandleStopEmitsTurnFinishedOnLegacyFailOpenExhausted(t *testing.T) {
 	home := filepath.Join(t.TempDir(), ".xit")
 	t.Setenv("VSCODE_PID", "4242")
 	_, _ = ResetTurnForPrompt(home, "s1", "t1", "hello")
 	_, _ = IncrementTurnState(home, "s1", "t1", 18532)
+	_ = MarkFooterContinuationUsed(home, "s1", "t1")
 
-	// First Stop: blocks once (footer missing).
-	payload1 := `{"session_id":"s1","turn_id":"t1","stop_hook_active":false,"last_assistant_message":"All done, no footer."}`
-	runHandler(t, home, payload1, HandleStop)
-	if types := bridgeEventTypes(t, home); types != nil {
-		t.Fatalf("expected no turn.finished yet after the first block, got: %v", types)
-	}
-
-	// Second Stop: stop_hook_active=true (Codex's continuation retry) and the
-	// footer STILL never showed up — loop-prevention fail-open. The turn is
-	// genuinely over now (XiT gives up), so turn.finished must fire so
-	// "收工中" doesn't get stuck forever.
-	payload2 := `{"session_id":"s1","turn_id":"t1","stop_hook_active":true,"last_assistant_message":"Still no footer."}`
-	runHandler(t, home, payload2, HandleStop)
+	payload := `{"session_id":"s1","turn_id":"t1","stop_hook_active":true,"last_assistant_message":"Still no footer."}`
+	runHandler(t, home, payload, HandleStop)
 	types := bridgeEventTypes(t, home)
 	if len(types) != 1 || types[0] != "turn.finished" {
-		t.Fatalf("expected exactly one turn.finished bridge event after fail-open exhausted, got: %v", types)
+		t.Fatalf("expected exactly one turn.finished bridge event after legacy fail-open exhausted, got: %v", types)
 	}
 }
 
@@ -1112,13 +1138,11 @@ func TestHandleStopDoesNotEmitTurnFinishedOutsideVSCode(t *testing.T) {
 	}
 }
 
-// TestHandleStopReasonDoesNotLeakVisibleInternalMarker guards against a real
-// Codex screenshot bug: Codex echoes the Stop "block" reason text back into
-// the chat transcript while the continuation is in flight, so anything
-// visible there is visible to the user. The bracketed continuation marker
-// and the verbose internal instruction text must never appear as literal,
-// human-readable content.
-func TestHandleStopReasonDoesNotLeakVisibleInternalMarker(t *testing.T) {
+// TestHandleStopDefaultDoesNotLeakInternalControlText guards the default Stop
+// output. Until a real App-visible, model-hidden channel is verified, Stop must
+// not emit hidden control text, command text, paths, prompt text, identifiers,
+// or a summary that the client will silently swallow.
+func TestHandleStopDefaultDoesNotLeakInternalControlText(t *testing.T) {
 	home := filepath.Join(t.TempDir(), ".xit")
 	_, _ = ResetTurnForPrompt(home, "s1", "t1", "hello")
 	_, _ = IncrementTurnState(home, "s1", "t1", 20920)
@@ -1126,72 +1150,55 @@ func TestHandleStopReasonDoesNotLeakVisibleInternalMarker(t *testing.T) {
 	payload := `{"session_id":"s1","turn_id":"t1","stop_hook_active":false,"last_assistant_message":"All done, no footer here."}`
 	out := runHandler(t, home, payload, HandleStop)
 	resp := parseHookJSON(t, out)
-	reason, _ := resp["reason"].(string)
+	if len(resp) != 0 {
+		t.Fatalf("default Stop must emit {}, got %#v", resp)
+	}
 
-	if strings.Contains(reason, "[XIT_CODEX_FOOTER_CONTINUATION]") {
-		t.Errorf("reason must not contain the literal visible marker text, got: %q", reason)
+	if strings.Contains(out, FooterContinuationMarker) || strings.Contains(out, "[XIT_CODEX_FOOTER_CONTINUATION]") {
+		t.Errorf("Stop stdout must not contain a continuation marker, got: %q", out)
 	}
 	for _, leaked := range []string{
+		"仅追加一次",
+		"不要再调用工具",
+		"不要重复",
 		"不要解释 XiT",
 		"保持上一条最终回答正文完全不变",
 		"请在上一条回答末尾追加以下两行",
+		"no-repeat",
+		"Do not quote",
+		"Do not call tools",
+		"final answer",
+		"hook feedback",
+		"raw_log",
+		"/Users/",
+		"session_id",
+		"turn_id",
+		"install_id",
 	} {
-		if strings.Contains(reason, leaked) {
-			t.Errorf("reason must not leak internal instruction phrase %q, got: %q", leaked, reason)
-		}
-	}
-	if !strings.Contains(reason, "XiT 已追加本轮 Token 节省摘要") {
-		t.Errorf("expected the short, user-acceptable passive note, got: %q", reason)
-	}
-	// The marker constant itself must still be present (functionally required
-	// so UserPromptSubmit can recognize the continuation) but it must be
-	// built entirely from zero-width characters, i.e. invisible when rendered.
-	if !strings.Contains(reason, FooterContinuationMarker) {
-		t.Fatal("reason must still carry FooterContinuationMarker for turn-continuation detection")
-	}
-	for _, r := range FooterContinuationMarker {
-		if r > 0x2100 {
-			t.Fatalf("FooterContinuationMarker must only use zero-width characters, found visible rune %U", r)
+		if strings.Contains(out, leaked) {
+			t.Errorf("Stop stdout must not leak internal phrase or private field %q, got: %q", leaked, out)
 		}
 	}
 }
 
-// TestHandleStopFooterTextUnchanged locks the exact, already-accepted footer
-// shape so the marker/wording cleanup above can never regress it.
-func TestHandleStopFooterTextUnchanged(t *testing.T) {
-	home := filepath.Join(t.TempDir(), ".xit")
-	_, _ = ResetTurnForPrompt(home, "s1", "t1", "hello")
-	_, _ = IncrementTurnState(home, "s1", "t1", 20920)
-
-	payload := `{"session_id":"s1","turn_id":"t1","stop_hook_active":false,"last_assistant_message":"done"}`
-	out := runHandler(t, home, payload, HandleStop)
-	resp := parseHookJSON(t, out)
-	reason, _ := resp["reason"].(string)
-
-	if !strings.Contains(reason, "吸T神功 · Codex · 守护你的T") {
-		t.Errorf("footer line1 missing/changed, got: %q", reason)
-	}
-	if !strings.Contains(reason, "本次省 约 20.92k Token · 本轮共吸 1次") {
-		t.Errorf("footer line2 missing/changed, got: %q", reason)
-	}
-}
-
-func TestCodexStopContinuationShape(t *testing.T) {
+func TestCodexStopDefaultShape(t *testing.T) {
 	home := filepath.Join(t.TempDir(), ".xit")
 	_, _ = ResetTurnForPrompt(home, "s1", "t1", "hello")
 	_, _ = IncrementTurnState(home, "s1", "t1", 18532)
 	out := runHandler(t, home, `{"session_id":"s1","turn_id":"t1","stop_hook_active":false,"last_assistant_message":"done"}`, HandleStop)
 	resp := parseHookJSON(t, out)
-	if resp["decision"] != "block" {
-		t.Fatalf("expected decision=block, got %#v", resp)
+	if _, ok := resp["decision"]; ok {
+		t.Fatalf("expected no decision field, got %#v", resp)
 	}
-	reason, ok := resp["reason"].(string)
-	if !ok || !strings.Contains(reason, FooterContinuationMarker) {
-		t.Fatalf("expected continuation marker in reason, got %#v", resp["reason"])
+	if _, ok := resp["reason"]; ok {
+		t.Fatalf("expected no reason field, got %#v", resp)
+	}
+	if _, ok := resp["systemMessage"]; ok {
+		t.Fatalf("expected no systemMessage field until App UI channel is verified, got %#v", resp)
 	}
 }
 
-func TestCodexStopBlocksWithTwoRunFooterWithoutPostToolUse(t *testing.T) {
+func TestCodexStopClearsTwoRunStateWithoutPostToolUse(t *testing.T) {
 	home := filepath.Join(t.TempDir(), ".xit")
 	_, _ = ResetTurnForPrompt(home, "s1", "t1", "hello")
 	_, _ = IncrementTurnState(home, "s1", "t1", 4250)
@@ -1199,40 +1206,37 @@ func TestCodexStopBlocksWithTwoRunFooterWithoutPostToolUse(t *testing.T) {
 
 	out := runHandler(t, home, `{"session_id":"s1","turn_id":"t1","stop_hook_active":false,"last_assistant_message":"done"}`, HandleStop)
 	resp := parseHookJSON(t, out)
-	if resp["decision"] != "block" {
-		t.Fatalf("expected first Stop to block, got %#v", resp)
+	if _, ok := resp["decision"]; ok {
+		t.Fatalf("expected first Stop to close without block, got %#v", resp)
 	}
-	reason, _ := resp["reason"].(string)
-	if !strings.Contains(reason, "本次省 约 9.96k Token") || !strings.Contains(reason, "本轮共吸 2次") {
-		t.Fatalf("expected Stop reason to use real two-run totals, got %q", reason)
+	if len(resp) != 0 {
+		t.Fatalf("expected default Stop to emit {}, got %#v", resp)
 	}
-	if !strings.Contains(reason, FooterContinuationMarker) {
-		t.Fatalf("expected continuation marker in reason, got %q", reason)
+	if ReadTurnState(home, "s1", "t1") != nil {
+		t.Fatal("expected two-run state cleaned after Stop")
 	}
 }
 
-func TestHandleStopNeverBlocksTwice(t *testing.T) {
+func TestHandleStopDefaultClosesOnlyOnce(t *testing.T) {
 	home := filepath.Join(t.TempDir(), ".xit")
 	_, _ = ResetTurnForPrompt(home, "s1", "t1", "hello")
 	_, _ = IncrementTurnState(home, "s1", "t1", 18532)
 
 	payload1 := `{"session_id":"s1","turn_id":"t1","stop_hook_active":false,"last_assistant_message":"All done, no footer."}`
 	out1 := runHandler(t, home, payload1, HandleStop)
-	var resp1 map[string]interface{}
-	_ = json.Unmarshal([]byte(out1), &resp1)
-	if resp1["decision"] != "block" {
-		t.Fatalf("expected first Stop to block, got: %s", out1)
+	resp1 := parseHookJSON(t, out1)
+	if len(resp1) != 0 {
+		t.Fatalf("expected first Stop to emit {}, got: %s", out1)
 	}
 
-	// Second Stop call: Codex sets stop_hook_active=true on the continuation
-	// retry. Even if the footer STILL never showed up, must NOT block again.
+	// A stale duplicate Stop call must not show feedback or block.
 	payload2 := `{"session_id":"s1","turn_id":"t1","stop_hook_active":true,"last_assistant_message":"Still no footer."}`
 	out2 := runHandler(t, home, payload2, HandleStop)
 	if strings.TrimSpace(out2) != "{}" {
-		t.Errorf("expected {} (no second block — loop prevention), got: %q", out2)
+		t.Errorf("expected {} (no second Stop output), got: %q", out2)
 	}
 	if ReadTurnState(home, "s1", "t1") != nil {
-		t.Error("expected turn state cleaned up after fail-open (avoid leaking state)")
+		t.Error("expected turn state cleaned up after default Stop")
 	}
 }
 
@@ -1241,8 +1245,9 @@ func TestCodexStopNoLoop(t *testing.T) {
 	_, _ = ResetTurnForPrompt(home, "s1", "t1", "hello")
 	_, _ = IncrementTurnState(home, "s1", "t1", 18532)
 	out1 := runHandler(t, home, `{"session_id":"s1","turn_id":"t1","stop_hook_active":false,"last_assistant_message":"done"}`, HandleStop)
-	if parseHookJSON(t, out1)["decision"] != "block" {
-		t.Fatalf("expected first Stop to block, got %s", out1)
+	resp1 := parseHookJSON(t, out1)
+	if len(resp1) != 0 {
+		t.Fatalf("expected first Stop to emit {}, got %s", out1)
 	}
 	out2 := runHandler(t, home, `{"session_id":"s1","turn_id":"t1","stop_hook_active":true,"last_assistant_message":"done"}`, HandleStop)
 	resp2 := parseHookJSON(t, out2)

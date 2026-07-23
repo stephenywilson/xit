@@ -42,7 +42,7 @@ import (
 	"os/exec"
 )
 
-const version = "0.2.51"
+const version = "0.2.52"
 
 // vscodeExtensionVersion is the current VS Code extension version, surfaced in
 // upgrade guidance and the /v1/version comparison. Keep in sync with
@@ -1099,7 +1099,7 @@ func cmdInit(args []string) error {
 			fmt.Printf("- scope: project\n")
 			fmt.Printf("- hooks: %s\n", filepath.Join(projectPath, ".codex", "hooks.json"))
 			fmt.Println("- install UserPromptSubmit, PreToolUse(Bash), PostToolUse(Bash), Stop")
-			fmt.Println("- tool cards remain free of XiT footer; final assistant answer gets one footer")
+			fmt.Println("- final assistant answers remain free of XiT footer; compressed tool output keeps the XiT status line")
 			return nil
 		}
 		if !yes {
@@ -1281,11 +1281,8 @@ func buildNaturalLanguageSummary(summary *output.Summary) string {
 // (see internal/codexhook.RewriteCommandForTurn), so it never appears for a
 // passthrough command. It carries only byte counts, an estimated token
 // figure, and the exit code — never the command text, a path, or any other
-// identifying detail. This is IN ADDITION TO, not a replacement for, the
-// once-per-turn two-line footer appended to the turn's final assistant
-// answer by the UserPromptSubmit/PreToolUse/PostToolUse/Stop hook lifecycle
-// in internal/codexhook — that footer reports the whole turn's cumulative
-// savings, this line reports just this one command.
+// identifying detail. This per-command status line is the only user-visible
+// Codex savings feedback in Scheme B; Stop does not emit an aggregate footer.
 func buildCodexToolOutput(summary *output.Summary, rawBytes, summaryBytes, savedBytes, exitCode int) string {
 	var b strings.Builder
 	if summary != nil && summary.Confidence != "low" {
@@ -2095,10 +2092,9 @@ func cmdAuto(args []string) error {
 	// raw_log, since the bottom statusline already reports savings); Codex
 	// shows the real compressed result plus a single low-noise "XiT · auto ·
 	// ..." status line per compressed command (see buildCodexToolOutput), IN
-	// ADDITION to the once-per-turn two-line footer appended to the turn's
-	// FINAL answer by the UserPromptSubmit/PreToolUse/PostToolUse/Stop hook
-	// lifecycle in internal/codexhook; other adapters use the full
-	// auto-rendered summary.
+	// the per-command status line shown in Codex tool output; other adapters
+	// use the full auto-rendered summary. A Stop-only aggregate footer is not
+	// enabled by default until a model-hidden App-visible UI channel is verified.
 	switch xcAdapter {
 	case "opencode":
 		fmt.Print(buildOpenCodeToolOutput(summary, savedBytes, opencodeRunCount, opencodeHasTurn, opencodeDiagnostics))
@@ -5531,8 +5527,9 @@ func cmdHook(args []string) error {
 			}
 			fmt.Println()
 			fmt.Println("Note: Codex has no XiT-controllable dynamic statusline (official tui.status_line")
-			fmt.Println("      only supports fixed predefined items). The XiT footer is appended ONCE to")
-			fmt.Println("      the turn's final assistant answer via the Stop hook — never per tool card.")
+			fmt.Println("      only supports fixed predefined items). XiT shows per-compressed-command")
+			fmt.Println("      status in tool output; Stop aggregate footer is disabled until a")
+			fmt.Println("      model-hidden App-visible channel is verified.")
 			return nil
 		case "install":
 			if !hasYesFlag(restArgs) {
@@ -5561,7 +5558,8 @@ func cmdHook(args []string) error {
 			fmt.Println("Then verify: xit hook stats codex")
 			fmt.Println()
 			fmt.Println("Note: Codex does not support command-backed bottom statusLine.")
-			fmt.Println("      The XiT footer appears once, at the end of each turn's final answer.")
+			fmt.Println("      XiT shows per-compressed-command status in tool output; Stop aggregate")
+			fmt.Println("      footer is disabled until a model-hidden App-visible channel is verified.")
 			return nil
 		case "uninstall":
 			if !hasYesFlag(restArgs) {

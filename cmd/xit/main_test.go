@@ -4454,18 +4454,25 @@ func TestCodexFullChainPostToolUseAndStopSeeRealTurnState(t *testing.T) {
 	if err := json.Unmarshal([]byte(stopOut1), &stopResp1); err != nil {
 		t.Fatalf("Stop #1 stdout is not valid JSON: %v\n%s", err, stopOut1)
 	}
-	if stopResp1["decision"] != "block" {
-		t.Fatalf("expected Stop #1 decision=block (footer missing, real run_count>0), got: %s", stopOut1)
+	if _, ok := stopResp1["decision"]; ok {
+		t.Fatalf("expected Stop #1 to close without forcing continuation, got: %s", stopOut1)
 	}
-	reason, _ := stopResp1["reason"].(string)
-	if !strings.Contains(reason, "本轮共吸 2次") {
-		t.Errorf("expected Stop #1 reason to contain '本轮共吸 2次', got: %q", reason)
+	if _, ok := stopResp1["reason"]; ok {
+		t.Fatalf("expected Stop #1 not to provide a continuation reason, got: %s", stopOut1)
+	}
+	if _, ok := stopResp1["systemMessage"]; ok {
+		t.Fatalf("expected Stop #1 not to emit an unverified systemMessage, got: %s", stopOut1)
+	}
+	for _, leaked := range []string{"Do not quote", "Do not call tools", "no-repeat", "不要重复", "不要再调用工具", "仅追加一次"} {
+		if strings.Contains(stopOut1, leaked) {
+			t.Fatalf("Stop #1 stdout leaked internal control text %q: %q", leaked, stopOut1)
+		}
 	}
 
 	stopPayload2 := `{"session_id":"session-test-1","turn_id":"turn-test-1","hook_event_name":"Stop","cwd":"` + otherCwd + `","stop_hook_active":true,"last_assistant_message":"第一轮测试完成。"}`
 	stopOut2 := runHook("stop", stopPayload2)
 	if strings.TrimSpace(stopOut2) != "{}" {
-		t.Fatalf("expected Stop #2 (stop_hook_active=true) to allow with {} (loop prevention), got: %q", stopOut2)
+		t.Fatalf("expected Stop #2 (stale stop_hook_active=true) to allow with {} (no duplicate feedback), got: %q", stopOut2)
 	}
 }
 
@@ -4911,7 +4918,7 @@ func TestAutoOpencodeEnvNotLeakedToChild(t *testing.T) {
 	}
 }
 
-// TestFormatCodexAutoStatusLine locks in the 0.2.51 follow-up per-command
+// TestFormatCodexAutoStatusLine locks in the 0.2.52 Scheme B per-command
 // visible-feedback line shown in Codex tool output: format, and that it
 // carries only aggregate byte/token counts and the exit code — never a
 // command, path, repo name, prompt, reply, install id, or secret.
@@ -4929,7 +4936,11 @@ func TestFormatCodexAutoStatusLine(t *testing.T) {
 	if !strings.Contains(line, "exit 0") {
 		t.Errorf("expected exit code in line, got: %s", line)
 	}
-	forbidden := []string{"/Users/", "/home/", "prompt", "reply", "install", "token=", "api_key", "secret"}
+	forbidden := []string{
+		"/Users/", "/home/", "cwd", "projects/xit", "repo", "git status", "go test",
+		"prompt", "reply", "assistant", "session_id", "turn_id", "install_id",
+		"install", "token=", "api_key", "apikey", "secret", "sk-",
+	}
 	lower := strings.ToLower(line)
 	for _, f := range forbidden {
 		if strings.Contains(lower, strings.ToLower(f)) {

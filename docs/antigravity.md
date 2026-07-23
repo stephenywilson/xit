@@ -25,7 +25,7 @@ agy --help
 正确命中应为：
 
 ```text
-/Users/dongjiayang/.local/bin/agy
+~/.local/bin/agy
 1.0.3
 ```
 

@@ -1655,9 +1655,9 @@ function registerVscodeAiBridgeWatcher(context: vscode.ExtensionContext): void {
   });
 }
 
-// DEFAULT_API_BASE is the production API base shipped with a release build —
-// the VS Code counterpart of the CLI's apibase.Default.
-const DEFAULT_API_BASE = "https://xit-api.stephenwilson.dev";
+// DEFAULT_API_BASE is empty in the source tree to isolate development builds
+// from the production API. Release builds set the production API base here.
+const DEFAULT_API_BASE = "";
 
 // resolveApiBase resolves the XiT API base. Priority: xit.apiBase setting >
 // XIT_API_BASE env > built-in DEFAULT_API_BASE. So a normal user needs NO

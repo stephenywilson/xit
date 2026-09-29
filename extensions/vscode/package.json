@@ -141,7 +141,7 @@
         },
         "xit.apiBase": {
           "type": "string",
-          "default": "https://xit-api.stephenwilson.dev",
+          "default": "",
           "description": "Base URL of the XiT API used for version checks and anonymous metrics. Override for dev/test/self-hosted endpoints."
         }
       }

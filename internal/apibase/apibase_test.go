@@ -46,8 +46,12 @@ func TestResolveEmptyWhenUnprovisioned(t *testing.T) {
 	}
 }
 
-func TestSourceConstantIsProductionAPI(t *testing.T) {
-	if Default != "https://xit-api.stephenwilson.dev" {
-		t.Fatalf("apibase.Default = %q, want production API base", Default)
+func TestDefaultIsEmptyInDevSource(t *testing.T) {
+	t.Setenv("XIT_API_BASE", "")
+	if Default != "" {
+		t.Fatalf("apibase.Default in source tree must be empty for dev isolation, got %q", Default)
+	}
+	if got := Resolve(); got != "" {
+		t.Fatalf("Resolve() when XIT_API_BASE unset must be empty, got %q", got)
 	}
 }

@@ -17,8 +17,11 @@ import (
 	"strings"
 )
 
-// Default is the production API base for release builds.
-var Default = "https://xit-api.stephenwilson.dev"
+// Default is empty in the source tree to isolate development builds from the
+// production API. Release builds inject the production base via -ldflags:
+//
+//	-X github.com/stephenywilson/xit/internal/apibase.Default=https://...
+var Default = ""
 
 // Resolve returns the effective API base (no trailing slash), honoring the
 // XIT_API_BASE override before falling back to Default. Empty means "no

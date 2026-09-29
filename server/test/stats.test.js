@@ -69,3 +69,41 @@ test("empty DB yields zeroed aggregate with no division-by-zero", async () => {
   assert.equal(stats.error_rate, 0);
   assert.deepEqual(stats.by_adapter, []);
 });
+
+test("D1 insert throws -> endpoint returns 503, never 202", async () => {
+  const failingDb = {
+    prepare() {
+      return {
+        bind() {
+          return {
+            async run() {
+              throw new Error("D1 simulated storage failure");
+            },
+          };
+        },
+      };
+    },
+  };
+
+  const payload = {
+    schema: "xit.metrics.v1",
+    event: "run.finished",
+    anonymous_install_id: "test-install-id-1234567890",
+    adapter: "codex",
+    surface: "cli",
+    status: "success",
+  };
+
+  const req = new Request("https://xit-api.stephenwilson.dev/v1/metrics", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  const worker = (await import("../src/index.js")).default;
+  const res = await worker.fetch(req, { METRICS_DB: failingDb });
+  assert.equal(res.status, 503);
+  const data = await res.json();
+  assert.equal(data.error, "metrics storage unavailable");
+  assert.notEqual(res.status, 202);
+});

@@ -251,8 +251,7 @@ async function handleMetrics(request, env) {
     try {
       await storeEvent(env.METRICS_DB, result.event);
     } catch (e) {
-      // Don't leak storage errors to clients; accept the event and move on.
-      return json({ status: "accepted" }, 202);
+      return json({ error: "metrics storage unavailable" }, 503);
     }
   }
 

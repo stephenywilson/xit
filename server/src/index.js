@@ -275,13 +275,14 @@ async function allowRate(kv, installId, limit = 120, windowSec = 60) {
 async function storeEvent(db, e) {
   const stmt = db.prepare(
     `INSERT INTO metrics_events (
-        anonymous_install_id, ts, cli_version, vscode_extension_version,
+        event, anonymous_install_id, ts, cli_version, vscode_extension_version,
         adapter, surface, os, arch, input_bytes, summary_bytes, saved_bytes,
         estimated_saved_tokens, compression_ratio, run_count, status, error_kind
-     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   );
   await stmt
     .bind(
+      e.event,
       e.anonymous_install_id,
       e.timestamp,
       e.cli_version,

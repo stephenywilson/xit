@@ -4,6 +4,7 @@ import {
   validateMetrics,
   FORBIDDEN_KEYS,
   ALLOWED_KEYS,
+  ALLOWED_EVENTS,
   MAX_BODY_BYTES,
   SCHEMA,
 } from "../src/validate.js";
@@ -137,4 +138,15 @@ test("oversized-payload constant is small (defense for the Worker body check)", 
 test("install id length is bounded", () => {
   const r = validateMetrics(goodEvent({ anonymous_install_id: "x".repeat(200) }));
   assert.equal(r.ok, false);
+});
+
+test("validates event against ALLOWED_EVENTS", () => {
+  assert.equal(ALLOWED_EVENTS.has("run.finished"), true);
+  assert.equal(ALLOWED_EVENTS.has("extension.activated"), true);
+  assert.equal(validateMetrics(goodEvent({ event: "run.finished" })).ok, true);
+  assert.equal(validateMetrics(goodEvent({ event: "extension.activated" })).ok, true);
+  assert.equal(validateMetrics(goodEvent({ event: "extension.deactivated" })).ok, false);
+  assert.equal(validateMetrics(goodEvent({ event: "" })).ok, false);
+  assert.equal(validateMetrics(goodEvent({ event: 123 })).ok, false);
+  assert.equal(validateMetrics(goodEvent({ event: "some.random.event" })).ok, false);
 });

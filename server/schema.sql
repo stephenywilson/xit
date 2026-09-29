@@ -6,6 +6,7 @@
 
 CREATE TABLE IF NOT EXISTS metrics_events (
   id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+  event                    TEXT    NOT NULL,
   anonymous_install_id     TEXT    NOT NULL,
   ts                       TEXT    NOT NULL,           -- client RFC3339 timestamp
   received_at              TEXT    NOT NULL DEFAULT (datetime('now')),
@@ -25,6 +26,7 @@ CREATE TABLE IF NOT EXISTS metrics_events (
   error_kind               TEXT    NOT NULL DEFAULT 'none'
 );
 
+CREATE INDEX IF NOT EXISTS idx_metrics_event   ON metrics_events (event);
 CREATE INDEX IF NOT EXISTS idx_metrics_ts      ON metrics_events (ts);
 CREATE INDEX IF NOT EXISTS idx_metrics_adapter ON metrics_events (adapter);
 CREATE INDEX IF NOT EXISTS idx_metrics_version ON metrics_events (cli_version);

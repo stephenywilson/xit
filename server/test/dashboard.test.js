@@ -137,6 +137,19 @@ test("no dashboard query selects a per-user / per-channel / per-run identifier",
   }
 });
 
+test("all dashboard usage queries filter strictly for event = 'run.finished'", () => {
+  for (const cutoff of [null, "2026-06-30T00:00:00Z"]) {
+    const q = buildQueries(cutoff);
+    for (const [name, query] of Object.entries(q)) {
+      assert.match(
+        query.sql,
+        /event\s*=\s*'run\.finished'/,
+        `dashboard query ${name} must filter by event = 'run.finished'`,
+      );
+    }
+  }
+});
+
 test("serialized dashboard JSON never contains a raw install-id value", async () => {
   // Even if a row leaked an id field, it must not survive into the payload.
   const db = fakeDb({

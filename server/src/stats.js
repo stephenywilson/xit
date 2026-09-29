@@ -26,7 +26,7 @@ export const FORBIDDEN_SELECT_COLUMNS = [
 // stats. Exported indirectly via STATS_QUERIES (the unfiltered form) so tests
 // can scan the SQL for forbidden columns.
 export function buildStatsQueries(cutoff) {
-  const w = cutoff ? "WHERE ts >= ?" : "";
+  const w = cutoff ? "WHERE ts >= ? AND event = 'run.finished'" : "WHERE event = 'run.finished'";
   return {
     totals: `
     SELECT

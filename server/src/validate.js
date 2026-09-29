@@ -14,6 +14,10 @@ export const MAX_BODY_BYTES = 4 * 1024; // 4 KiB — a metrics event is tiny.
 
 export const SCHEMA = "xit.metrics.v1";
 
+export const ALLOWED_EVENTS = new Set([
+  "run.finished", "extension.activated",
+]);
+
 export const ALLOWED_ADAPTERS = new Set([
   "codex", "claude", "kimi", "opencode", "cursor", "vscode", "unknown",
 ]);
@@ -88,7 +92,7 @@ export function validateMetrics(body) {
   if (body.schema !== SCHEMA) {
     return { ok: false, status: 400, error: "invalid or missing schema" };
   }
-  if (typeof body.event !== "string" || body.event.length === 0 || body.event.length > 64) {
+  if (typeof body.event !== "string" || !ALLOWED_EVENTS.has(body.event)) {
     return { ok: false, status: 400, error: "invalid event" };
   }
   if (typeof body.anonymous_install_id !== "string" ||

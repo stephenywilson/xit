@@ -53,14 +53,8 @@ import {
   runRecordMatchesActiveTask,
 } from "./logic";
 import {
-  buildMetricsEvent,
   evaluateVersionGate,
   fetchVersionInfo,
-  isTelemetryEnabled,
-  readCliTelemetryEnabled,
-  resolveInstallId,
-  sendMetrics,
-  type TelemetrySetting,
   type VersionInfo,
 } from "./telemetry";
 
@@ -1674,51 +1668,11 @@ function resolveApiBase(): string {
   return (configured || process.env.XIT_API_BASE || DEFAULT_API_BASE || "").trim().replace(/\/+$/, "");
 }
 
-// telemetryAllowed resolves whether the extension may send telemetry, honoring:
-// VS Code global telemetry level (absolute off), the CLI's `xit telemetry off`
-// opt-out (~/.xit/telemetry.json), then the xit.telemetry setting / env.
-function telemetryAllowed(): boolean {
-  const vscodeOn = vscode.env.isTelemetryEnabled;
-  if (!vscodeOn) {
-    return false;
-  }
-  const cliPref = readCliTelemetryEnabled(resolveXiTHome());
-  if (cliPref === false) {
-    return false; // user ran `xit telemetry off`
-  }
-  const setting = vscode.workspace
-    .getConfiguration("xit")
-    .get<TelemetrySetting>("telemetry", "default");
-  return isTelemetryEnabled({
-    vscodeTelemetryEnabled: vscodeOn,
-    xitSetting: setting,
-    envOverride: process.env.XIT_TELEMETRY,
-  });
-}
-
-// initTelemetryAndVersionCheck runs once on activation. Both halves are
-// fully fail-open and never block activation.
+// initTelemetryAndVersionCheck runs once on activation. Version check only;
+// activation pings are eliminated to prevent fake runs. Fully fail-open and
+// never blocks activation.
 function initTelemetryAndVersionCheck(context: vscode.ExtensionContext): void {
   const apiBase = resolveApiBase();
-
-  // Anonymous activation ping (only when allowed and an endpoint exists). The
-  // per-run metrics come from the CLI's `xit auto`; this just records that the
-  // extension is in use, with the same privacy-safe schema.
-  try {
-    if (apiBase && telemetryAllowed()) {
-      const event = buildMetricsEvent({
-        event: "extension.activated",
-        installId: resolveInstallId(resolveXiTHome()),
-        vscodeExtensionVersion: EXTENSION_VERSION,
-        adapter: "vscode",
-        surface: "vscode",
-        status: "success",
-      });
-      sendMetrics(apiBase, event);
-    }
-  } catch {
-    /* fail-open */
-  }
 
   // Version check (cached 24h in globalState), then suggest upgrade once.
   void maybeCheckVersion(context, apiBase);

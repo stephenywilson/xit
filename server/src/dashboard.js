@@ -73,12 +73,12 @@ export function laterCutoff(a, b) {
 // buildQueries returns the {sql, binds} for every dashboard roll-up, scoped to
 // an optional ts cutoff. Exported so tests can scan the SQL for safety.
 export function buildQueries(cutoff) {
-  const w = cutoff ? "WHERE ts >= ?" : "";
+  const w = cutoff ? "WHERE ts >= ? AND event = 'run.finished'" : "WHERE event = 'run.finished'";
   const b = cutoff ? [cutoff] : [];
   // vscode version query needs an extra predicate; compose the WHERE safely.
   const vscodeWhere = cutoff
-    ? "WHERE ts >= ? AND vscode_extension_version <> ''"
-    : "WHERE vscode_extension_version <> ''";
+    ? "WHERE ts >= ? AND event = 'run.finished' AND vscode_extension_version <> ''"
+    : "WHERE event = 'run.finished' AND vscode_extension_version <> ''";
   return {
     totals: {
       sql: `

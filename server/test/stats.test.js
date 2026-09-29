@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   computeStats,
   STATS_QUERIES,
+  buildStatsQueries,
   FORBIDDEN_SELECT_COLUMNS,
 } from "../src/stats.js";
 
@@ -59,6 +60,17 @@ test("no stats query exposes per-user / per-channel / per-run detail", () => {
       /COUNT\(|SUM\(/.test(sql),
       `stats query must aggregate, got: ${sql}`,
     );
+  }
+});
+
+test("stats queries strictly filter for event = 'run.finished'", () => {
+  for (const sql of Object.values(STATS_QUERIES)) {
+    assert.match(sql, /event\s*=\s*'run\.finished'/);
+  }
+  const cutoffQueries = buildStatsQueries("2026-06-30T00:00:00Z");
+  for (const sql of Object.values(cutoffQueries)) {
+    assert.match(sql, /ts\s*>=\s*\?/);
+    assert.match(sql, /event\s*=\s*'run\.finished'/);
   }
 });
 

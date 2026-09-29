@@ -150,6 +150,42 @@ test("all dashboard usage queries filter strictly for event = 'run.finished'", (
   }
 });
 
+test("weighted compression ratio calculates SUM(saved_bytes) / SUM(input_bytes), not unweighted average", async () => {
+  const q = buildQueries(null);
+  assert.match(
+    q.totals.sql,
+    /COALESCE\(CASE WHEN SUM\(input_bytes\) > 0 THEN CAST\(SUM\(saved_bytes\) AS REAL\) \/ SUM\(input_bytes\) ELSE 0 END, 0\) AS avg_compression_ratio/,
+  );
+
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(":memory:");
+  db.exec(`
+    CREATE TABLE metrics_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event TEXT NOT NULL,
+      anonymous_install_id TEXT NOT NULL,
+      ts TEXT NOT NULL,
+      input_bytes INTEGER NOT NULL DEFAULT 0,
+      saved_bytes INTEGER NOT NULL DEFAULT 0,
+      estimated_saved_tokens INTEGER NOT NULL DEFAULT 0,
+      compression_ratio REAL NOT NULL DEFAULT 0,
+      status TEXT NOT NULL
+    );
+    INSERT INTO metrics_events (event, anonymous_install_id, ts, input_bytes, saved_bytes, compression_ratio, status)
+    VALUES ('run.finished', 'inst1', '2026-06-30T00:00:00Z', 100, 90, 0.9, 'success');
+
+    INSERT INTO metrics_events (event, anonymous_install_id, ts, input_bytes, saved_bytes, compression_ratio, status)
+    VALUES ('run.finished', 'inst1', '2026-06-30T00:01:00Z', 100000, 0, 0.0, 'success');
+  `);
+
+  const row = db.prepare(q.totals.sql).get();
+  assert.equal(row.total_runs, 2);
+  assert.equal(row.total_saved_bytes, 90);
+  assert.ok(row.avg_compression_ratio < 0.001, `weighted ratio should be ~0.0009, got ${row.avg_compression_ratio}`);
+  assert.ok(Math.abs(row.avg_compression_ratio - (90 / 100100)) < 1e-6);
+  assert.notEqual(row.avg_compression_ratio, 0.45);
+});
+
 test("serialized dashboard JSON never contains a raw install-id value", async () => {
   // Even if a row leaked an id field, it must not survive into the payload.
   const db = fakeDb({

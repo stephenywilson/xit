@@ -86,7 +86,7 @@ export function buildQueries(cutoff) {
           COUNT(*)                                  AS total_runs,
           COALESCE(SUM(estimated_saved_tokens), 0)  AS total_saved_tokens,
           COALESCE(SUM(saved_bytes), 0)             AS total_saved_bytes,
-          COALESCE(AVG(compression_ratio), 0)       AS avg_compression_ratio,
+          COALESCE(CASE WHEN SUM(input_bytes) > 0 THEN CAST(SUM(saved_bytes) AS REAL) / SUM(input_bytes) ELSE 0 END, 0) AS avg_compression_ratio,
           SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_runs,
           SUM(CASE WHEN status = 'error'   THEN 1 ELSE 0 END) AS error_runs,
           COUNT(DISTINCT anonymous_install_id)      AS active_installs

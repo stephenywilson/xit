@@ -119,3 +119,17 @@ test("D1 insert throws -> endpoint returns 503, never 202", async () => {
   assert.equal(data.error, "metrics storage unavailable");
   assert.notEqual(res.status, 202);
 });
+
+test("/v1/version returns 0.2.53 fallback metadata when no env override is present", async () => {
+  const req = new Request("https://xit-api.stephenwilson.dev/v1/version", {
+    method: "GET",
+  });
+  const worker = (await import("../src/index.js")).default;
+  const res = await worker.fetch(req, {});
+  assert.equal(res.status, 200);
+  const data = await res.json();
+  assert.equal(data.latest_cli, "0.2.53");
+  assert.equal(data.min_cli, "0.2.52");
+  assert.equal(data.latest_vscode, "0.0.36");
+  assert.equal(data.min_vscode, "0.0.36");
+});

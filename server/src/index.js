@@ -25,10 +25,10 @@ import { DASHBOARD_HTML } from "./page.js";
 // Version-check payload. In production this is best served from config/KV so it
 // can change without a redeploy; inline default keeps the Worker self-contained.
 const VERSION_INFO = {
-  latest_cli: "0.2.49",
-  min_cli: "0.2.48",
-  latest_vscode: "0.0.35",
-  min_vscode: "0.0.34",
+  latest_cli: "0.2.53",
+  min_cli: "0.2.52",
+  latest_vscode: "0.0.36",
+  min_vscode: "0.0.36",
   severity: "info",
   message: "",
   npm_command: "npm install -g xitsg@latest",

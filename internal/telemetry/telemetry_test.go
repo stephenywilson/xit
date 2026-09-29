@@ -155,18 +155,45 @@ func TestEnabledEnvOverrideHighestPriority(t *testing.T) {
 	}
 }
 
-func TestDefaultEnabled(t *testing.T) {
+func TestDefaultDisabled(t *testing.T) {
 	home := t.TempDir()
 	os.Unsetenv("XIT_TELEMETRY")
 	os.Unsetenv("DO_NOT_TRACK")
+	if Enabled(home) {
+		t.Fatal("telemetry should be disabled by default (opt-in)")
+	}
+	en, src := EnabledSource(home)
+	if en || src != "default off" {
+		t.Fatalf("expected en=false src='default off', got en=%v src=%q", en, src)
+	}
+}
+
+func TestSetEnabledExplicitOptIn(t *testing.T) {
+	home := t.TempDir()
+	os.Unsetenv("XIT_TELEMETRY")
+	os.Unsetenv("DO_NOT_TRACK")
+	if err := SetEnabled(home, true); err != nil {
+		t.Fatal(err)
+	}
 	if !Enabled(home) {
-		t.Fatal("telemetry should be enabled by default (anonymous-by-default)")
+		t.Fatal("after SetEnabled(true), telemetry should be on")
+	}
+	en, src := EnabledSource(home)
+	if !en || !strings.Contains(src, "versioned local consent") {
+		t.Fatalf("expected versioned local consent, got en=%v src=%q", en, src)
 	}
 }
 
 func TestSetEnabledPersists(t *testing.T) {
 	home := t.TempDir()
 	os.Unsetenv("XIT_TELEMETRY")
+	os.Unsetenv("DO_NOT_TRACK")
+	if err := SetEnabled(home, true); err != nil {
+		t.Fatal(err)
+	}
+	if !Enabled(home) {
+		t.Fatal("after SetEnabled(true), telemetry should be on")
+	}
 	if err := SetEnabled(home, false); err != nil {
 		t.Fatal(err)
 	}
@@ -174,8 +201,48 @@ func TestSetEnabledPersists(t *testing.T) {
 		t.Fatal("after SetEnabled(false), telemetry should be off")
 	}
 	en, src := EnabledSource(home)
-	if en || !strings.Contains(src, "config") {
+	if en || !strings.Contains(src, "telemetry.json") {
 		t.Fatalf("expected disabled-from-config, got en=%v src=%q", en, src)
+	}
+}
+
+func TestNewClientDisabledDoesNotPersistInstallID(t *testing.T) {
+	home := t.TempDir()
+	os.Unsetenv("XIT_TELEMETRY")
+	os.Unsetenv("DO_NOT_TRACK")
+	_ = NewClient(home, "0.2.53")
+	if _, err := os.Stat(statePath(home)); !os.IsNotExist(err) {
+		t.Fatal("NewClient must not create telemetry.json when telemetry is disabled")
+	}
+	if id := CurrentInstallID(home); id != "" {
+		t.Fatalf("CurrentInstallID must be empty when not initialized, got %q", id)
+	}
+}
+
+func TestCurrentInstallIDReadOnly(t *testing.T) {
+	home := t.TempDir()
+	id := CurrentInstallID(home)
+	if id != "" {
+		t.Fatalf("expected empty install id, got %q", id)
+	}
+	if _, err := os.Stat(statePath(home)); !os.IsNotExist(err) {
+		t.Fatal("CurrentInstallID must be read-only and not create telemetry.json")
+	}
+}
+
+func TestDoNotTrackPrecedence(t *testing.T) {
+	home := t.TempDir()
+	_ = SetEnabled(home, true)
+	if !Enabled(home) {
+		t.Fatal("should be enabled")
+	}
+	t.Setenv("DO_NOT_TRACK", "1")
+	if Enabled(home) {
+		t.Fatal("DO_NOT_TRACK=1 must override local consent")
+	}
+	t.Setenv("XIT_TELEMETRY", "on")
+	if !Enabled(home) {
+		t.Fatal("XIT_TELEMETRY=on must override DO_NOT_TRACK=1")
 	}
 }
 

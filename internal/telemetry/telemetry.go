@@ -155,16 +155,26 @@ type Client struct {
 	anonymousInstallID string
 }
 
-// NewClient resolves config + install id. home is the user XiT home (~/.xit).
+// NewClient resolves config. home is the user XiT home (~/.xit).
+// It does not create an install id on disk if telemetry is disabled.
 func NewClient(home, cliVersion string) *Client {
+	st, _ := loadState(home)
 	return &Client{
 		Home:               home,
 		CLIVersion:         cliVersion,
 		APIBase:            resolveAPIBase(),
 		HTTPClient:         &http.Client{Timeout: sendTimeout},
 		now:                time.Now,
-		anonymousInstallID: ensureInstallID(home),
+		anonymousInstallID: st.AnonymousInstallID,
 	}
+}
+
+func (c *Client) getOrEnsureInstallID() string {
+	if c.anonymousInstallID != "" {
+		return c.anonymousInstallID
+	}
+	c.anonymousInstallID = ensureInstallID(c.Home)
+	return c.anonymousInstallID
 }
 
 // resolveAPIBase reads the backend base URL: XIT_API_BASE overrides the
@@ -188,7 +198,7 @@ func (c *Client) Build(m Metrics) Event {
 	return Event{
 		Schema:                 SchemaName,
 		Event:                  emptyTo(m.Event, "run.finished"),
-		AnonymousInstallID:     c.anonymousInstallID,
+		AnonymousInstallID:     c.getOrEnsureInstallID(),
 		Timestamp:              now().UTC().Format(time.RFC3339),
 		CLIVersion:             c.CLIVersion,
 		VSCodeExtensionVersion: c.VSCodeVersion,
@@ -276,93 +286,154 @@ func (c *Client) flushQueue() {
 
 // --- enable/disable resolution -------------------------------------------------
 
+const CommunityConsentVersion = 1
+
 // Enabled resolves whether telemetry should run. Priority (highest first):
 //  1. XIT_TELEMETRY=off / on (env always wins)
 //  2. DO_NOT_TRACK=1 (industry convention => disabled, unless env explicitly on)
-//  3. local state file (~/.xit/telemetry.json)
-//  4. default: enabled (true) — anonymous-by-default, easy to disable
+//  3. versioned community consent in the local state file (~/.xit/telemetry.json)
+//  4. default: disabled — telemetry is strictly opt-in
 func Enabled(home string) bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("XIT_TELEMETRY"))) {
-	case "off", "0", "false", "no", "disable", "disabled":
-		return false
-	case "on", "1", "true", "yes", "enable", "enabled":
-		return true
-	}
-	if v := strings.TrimSpace(os.Getenv("DO_NOT_TRACK")); v == "1" || strings.EqualFold(v, "true") {
-		return false
-	}
-	st, err := loadState(home)
-	if err == nil && st.set {
-		return st.Enabled
-	}
-	return true
+	enabled, _ := resolveEnabled(home)
+	return enabled
 }
 
 // EnabledSource explains *why* telemetry is on/off, for `xit telemetry status`.
 func EnabledSource(home string) (enabled bool, source string) {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("XIT_TELEMETRY"))) {
+	return resolveEnabled(home)
+}
+
+func resolveEnabled(home string) (bool, string) {
+	if enabled, source, ok := parseXITTelemetryEnv(os.Getenv("XIT_TELEMETRY")); ok {
+		return enabled, source
+	}
+	if doNotTrackEnabled(os.Getenv("DO_NOT_TRACK")) {
+		return false, "DO_NOT_TRACK=1"
+	}
+	st, err := LoadState(home)
+	if err == nil && st.hasVersionedCommunityConsent() {
+		return true, "versioned local consent (~/.xit/telemetry.json)"
+	}
+	if err == nil {
+		if st.hasLegacyEnabled {
+			return false, "legacy config requires confirmation"
+		}
+		return false, "local telemetry config off (~/.xit/telemetry.json)"
+	}
+	return false, "default off"
+}
+
+func parseXITTelemetryEnv(value string) (enabled bool, source string, ok bool) {
+	v := strings.ToLower(strings.TrimSpace(value))
+	switch v {
 	case "off", "0", "false", "no", "disable", "disabled":
-		return false, "XIT_TELEMETRY env"
+		return false, "XIT_TELEMETRY=" + v, true
 	case "on", "1", "true", "yes", "enable", "enabled":
-		return true, "XIT_TELEMETRY env"
+		return true, "XIT_TELEMETRY=" + v, true
+	default:
+		return false, "", false
 	}
-	if v := strings.TrimSpace(os.Getenv("DO_NOT_TRACK")); v == "1" || strings.EqualFold(v, "true") {
-		return false, "DO_NOT_TRACK env"
-	}
-	st, err := loadState(home)
-	if err == nil && st.set {
-		return st.Enabled, "config (~/.xit/telemetry.json)"
-	}
-	return true, "default (anonymous metrics on)"
+}
+
+func doNotTrackEnabled(value string) bool {
+	v := strings.ToLower(strings.TrimSpace(value))
+	return v == "1" || v == "true"
 }
 
 // SetEnabled persists the on/off choice to the local state file.
 func SetEnabled(home string, enabled bool) error {
-	st, _ := loadState(home)
-	st.Enabled = enabled
-	st.set = true
-	if st.InstallID == "" {
-		st.InstallID = newInstallID()
+	st, _ := LoadState(home)
+	if st.AnonymousInstallID == "" && enabled {
+		st.AnonymousInstallID = newInstallID()
 	}
-	return saveState(home, st)
+	st.CommunityStatisticsEnabled = enabled
+	if enabled {
+		st.ConsentVersion = CommunityConsentVersion
+		now := time.Now().UTC().Format(time.RFC3339)
+		st.ConsentedAt = &now
+	}
+	return SaveState(home, st)
 }
 
 // InstallID returns the anonymous install id (creating one if needed).
 func InstallID(home string) string { return ensureInstallID(home) }
 
+// CurrentInstallID returns the existing install id without mutating disk.
+// If telemetry has never been enabled or no ID has been created, it returns "".
+func CurrentInstallID(home string) string {
+	st, err := LoadState(home)
+	if err == nil && st.AnonymousInstallID != "" {
+		return st.AnonymousInstallID
+	}
+	return ""
+}
+
+// HasPendingQueue checks whether any events are queued locally.
+func HasPendingQueue(home string) bool {
+	return len(readQueue(home)) > 0
+}
+
 // --- local state file ----------------------------------------------------------
 
-type state struct {
-	InstallID string `json:"anonymous_install_id"`
-	Enabled   bool   `json:"enabled"`
-	set       bool   // whether "enabled" was present in the file
+type State struct {
+	AnonymousInstallID         string  `json:"anonymous_install_id"`
+	CommunityStatisticsEnabled bool    `json:"community_statistics_enabled"`
+	ConsentVersion             int     `json:"consent_version"`
+	ConsentedAt                *string `json:"consented_at,omitempty"`
+
+	hasLegacyEnabled bool
+}
+
+type stateOnDisk struct {
+	AnonymousInstallID         string  `json:"anonymous_install_id"`
+	LegacyEnabled              *bool   `json:"enabled,omitempty"`
+	CommunityStatisticsEnabled bool    `json:"community_statistics_enabled"`
+	ConsentVersion             int     `json:"consent_version"`
+	ConsentedAt                *string `json:"consented_at,omitempty"`
 }
 
 func statePath(home string) string { return filepath.Join(home, "telemetry.json") }
 
-func loadState(home string) (state, error) {
-	var s state
-	data, err := os.ReadFile(statePath(home))
-	if err != nil {
-		return s, err
-	}
-	// detect presence of "enabled" before unmarshalling into the typed struct.
-	var probe map[string]json.RawMessage
-	if json.Unmarshal(data, &probe) == nil {
-		_, s.set = probe["enabled"]
-	}
-	_ = json.Unmarshal(data, &s)
-	return s, nil
+func (s State) hasVersionedCommunityConsent() bool {
+	return s.CommunityStatisticsEnabled && s.ConsentVersion == CommunityConsentVersion
 }
 
-func saveState(home string, s state) error {
+func LoadState(home string) (State, error) {
+	return loadState(home)
+}
+
+func loadState(home string) (State, error) {
+	var disk stateOnDisk
+	data, err := os.ReadFile(statePath(home))
+	if err != nil {
+		return State{}, err
+	}
+	if err := json.Unmarshal(data, &disk); err != nil {
+		return State{}, err
+	}
+	return State{
+		AnonymousInstallID:         disk.AnonymousInstallID,
+		CommunityStatisticsEnabled: disk.CommunityStatisticsEnabled,
+		ConsentVersion:             disk.ConsentVersion,
+		ConsentedAt:                disk.ConsentedAt,
+		hasLegacyEnabled:           disk.LegacyEnabled != nil,
+	}, nil
+}
+
+func SaveState(home string, s State) error {
+	return saveState(home, s)
+}
+
+func saveState(home string, s State) error {
 	if err := os.MkdirAll(home, 0o755); err != nil {
 		return err
 	}
-	out := struct {
-		InstallID string `json:"anonymous_install_id"`
-		Enabled   bool   `json:"enabled"`
-	}{InstallID: s.InstallID, Enabled: s.Enabled}
+	out := stateOnDisk{
+		AnonymousInstallID:         s.AnonymousInstallID,
+		CommunityStatisticsEnabled: s.CommunityStatisticsEnabled,
+		ConsentVersion:             s.ConsentVersion,
+		ConsentedAt:                s.ConsentedAt,
+	}
 	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
 		return err
@@ -372,15 +443,12 @@ func saveState(home string, s state) error {
 
 func ensureInstallID(home string) string {
 	st, err := loadState(home)
-	if err == nil && st.InstallID != "" {
-		return st.InstallID
+	if err == nil && st.AnonymousInstallID != "" {
+		return st.AnonymousInstallID
 	}
-	st.InstallID = newInstallID()
-	if !st.set {
-		st.Enabled = true // default-on; record the id alongside
-	}
+	st.AnonymousInstallID = newInstallID()
 	_ = saveState(home, st)
-	return st.InstallID
+	return st.AnonymousInstallID
 }
 
 func newInstallID() string {

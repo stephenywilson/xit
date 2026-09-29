@@ -15,6 +15,7 @@ import (
 	"github.com/stephenywilson/xit/internal/opencodehook"
 	"github.com/stephenywilson/xit/internal/output"
 	"github.com/stephenywilson/xit/internal/shim"
+	"github.com/stephenywilson/xit/internal/telemetry"
 	"github.com/stephenywilson/xit/internal/vscodebridge"
 )
 
@@ -5073,5 +5074,41 @@ func TestChatGPTSetupAutoRefusesWhenDuplicateExists(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "BLOCKED") {
 		t.Errorf("expected a BLOCKED message, got:\n%s", out)
+	}
+}
+
+func TestCmdTelemetryConsentAndStatusReadOnly(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("XIT_HOME", filepath.Join(fakeHome, ".xit"))
+	os.Unsetenv("XIT_TELEMETRY")
+	os.Unsetenv("DO_NOT_TRACK")
+
+	// 1. Initial status must be off and read-only (no install ID, no file created)
+	if err := cmdTelemetry([]string{"status"}); err != nil {
+		t.Fatalf("cmdTelemetry status failed: %v", err)
+	}
+	telemetryPath := filepath.Join(fakeHome, ".xit", "telemetry.json")
+	if _, err := os.Stat(telemetryPath); !os.IsNotExist(err) {
+		t.Fatalf("status must not create telemetry.json")
+	}
+
+	// 2. Explicit on enables telemetry and writes consent
+	if err := cmdTelemetry([]string{"on"}); err != nil {
+		t.Fatalf("cmdTelemetry on failed: %v", err)
+	}
+	if !telemetry.Enabled(filepath.Join(fakeHome, ".xit")) {
+		t.Fatal("telemetry must be enabled after cmdTelemetry on")
+	}
+	if id := telemetry.CurrentInstallID(filepath.Join(fakeHome, ".xit")); id == "" {
+		t.Fatal("install ID must exist after telemetry on")
+	}
+
+	// 3. Explicit off disables telemetry
+	if err := cmdTelemetry([]string{"off"}); err != nil {
+		t.Fatalf("cmdTelemetry off failed: %v", err)
+	}
+	if telemetry.Enabled(filepath.Join(fakeHome, ".xit")) {
+		t.Fatal("telemetry must be disabled after cmdTelemetry off")
 	}
 }

@@ -2221,7 +2221,16 @@ func cmdTelemetry(args []string) error {
 		fmt.Println()
 		fmt.Printf("status:        %s\n", state)
 		fmt.Printf("source:        %s\n", source)
-		fmt.Printf("install_id:    %s\n", telemetry.InstallID(home))
+		installID := telemetry.CurrentInstallID(home)
+		if installID == "" {
+			installID = "not created"
+		}
+		fmt.Printf("install_id:    %s\n", installID)
+		pendingQueue := "no"
+		if telemetry.HasPendingQueue(home) {
+			pendingQueue = "yes"
+		}
+		fmt.Printf("pending queue: %s\n", pendingQueue)
 		fmt.Printf("endpoint:      %s\n", orUnknown(apibase.Resolve()))
 		fmt.Printf("endpoint src:  %s\n", apibase.Source())
 		fmt.Println()

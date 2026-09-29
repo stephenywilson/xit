@@ -345,3 +345,63 @@ func TestInstallIDStableAndAnonymous(t *testing.T) {
 		t.Fatalf("install id leaked home path: %q", id1)
 	}
 }
+
+func TestFlushQueuePreservesPendingEventsOnPartialFailure(t *testing.T) {
+	home := t.TempDir()
+	var attempts []int
+	var mu sync.Mutex
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var ev Event
+		if err := json.NewDecoder(r.Body).Decode(&ev); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		attempts = append(attempts, ev.InputBytes)
+		mu.Unlock()
+
+		if ev.InputBytes == 1 {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		// Second event fails
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	// Enqueue 5 events: 1, 2, 3, 4, 5
+	for i := 1; i <= 5; i++ {
+		enqueue(home, Event{
+			Schema:             SchemaName,
+			AnonymousInstallID: "test-install",
+			InputBytes:         i,
+			Adapter:            "codex",
+			Surface:            "cli",
+			Status:             "success",
+		})
+	}
+	if len(readQueue(home)) != 5 {
+		t.Fatalf("expected 5 queued events, got %d", len(readQueue(home)))
+	}
+
+	c := &Client{
+		Home:       home,
+		APIBase:    srv.URL,
+		HTTPClient: srv.Client(),
+	}
+
+	c.flushQueue()
+
+	remaining := readQueue(home)
+	if len(remaining) != 4 {
+		t.Fatalf("expected 4 remaining events in queue, got %d", len(remaining))
+	}
+
+	// The remaining events must be exactly 2, 3, 4, 5 in order.
+	for idx, wantInput := range []int{2, 3, 4, 5} {
+		if remaining[idx].InputBytes != wantInput {
+			t.Fatalf("remaining[%d].InputBytes = %d, want %d", idx, remaining[idx].InputBytes, wantInput)
+		}
+	}
+}

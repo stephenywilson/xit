@@ -275,10 +275,12 @@ func (c *Client) postOne(ev Event) bool {
 
 func (c *Client) flushQueue() {
 	pending := drainQueue(c.Home)
-	for _, ev := range pending {
+	for i, ev := range pending {
 		if !c.postOne(ev) {
-			// re-spool the rest and stop; try again next time.
-			enqueue(c.Home, ev)
+			// re-spool the rest (failed event and all subsequent events) and stop; try again next time.
+			for _, rem := range pending[i:] {
+				enqueue(c.Home, rem)
+			}
 			return
 		}
 	}

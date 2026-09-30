@@ -79,15 +79,25 @@ func Load(home string) (*Config, error) {
 }
 
 func Save(home string, c *Config) error {
-	if err := os.MkdirAll(home, 0755); err != nil {
+	if err := os.MkdirAll(home, 0o700); err != nil {
 		return err
 	}
+	_ = os.Chmod(home, 0o700)
 	p := Path(home)
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(p, append(data, '\n'), 0644)
+	tmp := p + ".tmp"
+	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+		return err
+	}
+	_ = os.Chmod(tmp, 0o600)
+	if err := os.Rename(tmp, p); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return os.Chmod(p, 0o600)
 }
 
 func Exists(home string) bool {

@@ -405,3 +405,107 @@ func TestFlushQueuePreservesPendingEventsOnPartialFailure(t *testing.T) {
 		}
 	}
 }
+
+func TestTelemetryPermissionsHardened(t *testing.T) {
+	parent := t.TempDir()
+	home := filepath.Join(parent, ".xit")
+
+	if err := SetEnabled(home, true); err != nil {
+		t.Fatalf("SetEnabled failed: %v", err)
+	}
+
+	dirInfo, err := os.Stat(home)
+	if err != nil {
+		t.Fatalf("stat home failed: %v", err)
+	}
+	if perm := dirInfo.Mode().Perm(); perm != 0o700 {
+		t.Fatalf("home directory permissions = %04o, want 0700", perm)
+	}
+
+	stateInfo, err := os.Stat(statePath(home))
+	if err != nil {
+		t.Fatalf("stat statePath failed: %v", err)
+	}
+	if perm := stateInfo.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("state file permissions = %04o, want 0600", perm)
+	}
+
+	enqueue(home, Event{
+		Schema:             SchemaName,
+		Event:              "run.finished",
+		AnonymousInstallID: "test-id",
+		Adapter:            "claude",
+		Surface:            "cli",
+		Status:             "success",
+	})
+
+	queueInfo, err := os.Stat(queuePath(home))
+	if err != nil {
+		t.Fatalf("stat queuePath failed: %v", err)
+	}
+	if perm := queueInfo.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("queue file permissions = %04o, want 0600", perm)
+	}
+}
+
+func TestTelemetryRewritePreservesStrictPermissions(t *testing.T) {
+	parent := t.TempDir()
+	home := filepath.Join(parent, ".xit")
+
+	// Pre-create directory with loose 0755
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Chmod(home, 0o755)
+
+	// Pre-create state and queue files with loose 0644
+	stPath := statePath(home)
+	if err := os.WriteFile(stPath, []byte(`{"anonymous_install_id":"pre-existing"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Chmod(stPath, 0o644)
+
+	qPath := queuePath(home)
+	if err := os.WriteFile(qPath, []byte(`{"schema":"xit.metrics.v1"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Chmod(qPath, 0o644)
+
+	// Rewrite state
+	if err := SetEnabled(home, true); err != nil {
+		t.Fatalf("SetEnabled failed: %v", err)
+	}
+
+	// Rewrite queue
+	enqueue(home, Event{
+		Schema:             SchemaName,
+		Event:              "run.finished",
+		AnonymousInstallID: "pre-existing",
+		Adapter:            "codex",
+		Surface:            "cli",
+		Status:             "success",
+	})
+
+	// Verify directory permissions hardened to 0700
+	if dirInfo, err := os.Stat(home); err != nil || dirInfo.Mode().Perm() != 0o700 {
+		t.Fatalf("home directory after rewrite = %04o, want 0700 (err: %v)", dirInfo.Mode().Perm(), err)
+	}
+
+	// Verify state file permissions hardened to 0600
+	if stInfo, err := os.Stat(stPath); err != nil || stInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("state file after rewrite = %04o, want 0600 (err: %v)", stInfo.Mode().Perm(), err)
+	}
+
+	// Verify queue file permissions hardened to 0600
+	if qInfo, err := os.Stat(qPath); err != nil || qInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("queue file after rewrite = %04o, want 0600 (err: %v)", qInfo.Mode().Perm(), err)
+	}
+
+	// Second rewrite (disable)
+	if err := SetEnabled(home, false); err != nil {
+		t.Fatalf("SetEnabled(false) failed: %v", err)
+	}
+	if stInfo, err := os.Stat(stPath); err != nil || stInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("state file after second rewrite = %04o, want 0600 (err: %v)", stInfo.Mode().Perm(), err)
+	}
+}

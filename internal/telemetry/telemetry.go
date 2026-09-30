@@ -427,7 +427,7 @@ func SaveState(home string, s State) error {
 }
 
 func saveState(home string, s State) error {
-	if err := os.MkdirAll(home, 0o755); err != nil {
+	if err := ensureSecureDir(home); err != nil {
 		return err
 	}
 	out := stateOnDisk{
@@ -440,7 +440,27 @@ func saveState(home string, s State) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(statePath(home), append(data, '\n'), 0o644)
+	return writeSecureFile(statePath(home), append(data, '\n'))
+}
+
+func ensureSecureDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	return os.Chmod(dir, 0o700)
+}
+
+func writeSecureFile(path string, data []byte) error {
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0o600); err != nil {
+		return err
+	}
+	_ = os.Chmod(tmpPath, 0o600)
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return os.Chmod(path, 0o600)
 }
 
 func ensureInstallID(home string) string {
@@ -500,7 +520,7 @@ func readQueue(home string) []Event {
 }
 
 func writeQueue(home string, events []Event) {
-	if err := os.MkdirAll(home, 0o755); err != nil {
+	if err := ensureSecureDir(home); err != nil {
 		return
 	}
 	var b bytes.Buffer
@@ -512,7 +532,7 @@ func writeQueue(home string, events []Event) {
 		b.Write(data)
 		b.WriteByte('\n')
 	}
-	_ = os.WriteFile(queuePath(home), b.Bytes(), 0o644)
+	_ = writeSecureFile(queuePath(home), b.Bytes())
 }
 
 // --- small helpers --------------------------------------------------------------

@@ -42,12 +42,12 @@ import (
 	"os/exec"
 )
 
-const version = "0.2.52"
+const version = "0.2.53"
 
 // vscodeExtensionVersion is the current VS Code extension version, surfaced in
 // upgrade guidance and the /v1/version comparison. Keep in sync with
 // extensions/vscode/package.json.
-const vscodeExtensionVersion = "0.0.35"
+const vscodeExtensionVersion = "0.0.36"
 
 func main() {
 	// Hook commands (claude-hook, kimi-hook) run inside this same binary and

@@ -293,14 +293,25 @@ func (c *Client) cached() (VersionInfo, bool) {
 }
 
 func (c *Client) writeCache(info VersionInfo) {
-	if err := os.MkdirAll(c.Home, 0o755); err != nil {
+	if err := os.MkdirAll(c.Home, 0o700); err != nil {
 		return
 	}
+	_ = os.Chmod(c.Home, 0o700)
 	data, err := json.MarshalIndent(info, "", "  ")
 	if err != nil {
 		return
 	}
-	_ = os.WriteFile(cachePath(c.Home), append(data, '\n'), 0o644)
+	target := cachePath(c.Home)
+	tmpPath := target + ".tmp"
+	if err := os.WriteFile(tmpPath, append(data, '\n'), 0o600); err != nil {
+		return
+	}
+	_ = os.Chmod(tmpPath, 0o600)
+	if err := os.Rename(tmpPath, target); err != nil {
+		_ = os.Remove(tmpPath)
+		return
+	}
+	_ = os.Chmod(target, 0o600)
 }
 
 // --- helpers ------------------------------------------------------------------
